@@ -520,14 +520,20 @@ async function showNewSession() {
           <div class="composer-bar">
             <div class="composer-tools">
               <select id="new-model" class="composer-model" aria-label="model">
-                <option value="default">Default</option>
-                <option value="fable">Fable</option>
-                <option value="opus">Opus</option>
-                <option value="claude-opus-4-6">Opus 4.6</option>
-                <option value="sonnet">Sonnet</option>
-                <option value="haiku">Haiku</option>
-                <option value="opusplan">Opus Plan</option>
-                <option value="sonnet[1m]">Sonnet [1m]</option>
+                <optgroup label="Claude">
+                  <option value="default">Default</option>
+                  <option value="fable">Fable</option>
+                  <option value="opus">Opus</option>
+                  <option value="claude-opus-4-6">Opus 4.6</option>
+                  <option value="sonnet">Sonnet</option>
+                  <option value="haiku">Haiku</option>
+                  <option value="opusplan">Opus Plan</option>
+                  <option value="sonnet[1m]">Sonnet [1m]</option>
+                </optgroup>
+                <optgroup label="Codex">
+                  <option value="gpt-5.5">GPT-5.5</option>
+                  <option value="gpt-5.4-mini">GPT-5.4 mini</option>
+                </optgroup>
               </select>
             </div>
             <div class="composer-send"><button id="send">send</button></div>
