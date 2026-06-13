@@ -544,18 +544,17 @@ func (s *Server) handleCancelSend(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	path, ok := s.router.SessionPath(id)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
 	limit := 0
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
 	}
-	turns, total, err := jsonl.ReadTurns(path, limit)
+	turns, total, err := s.router.ReadTurns(id, limit)
+	if errors.Is(err, router.ErrSessionNotFound) {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

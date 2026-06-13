@@ -1,10 +1,63 @@
 package router
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"usher/internal/sender"
 )
+
+const codexLog = `{"timestamp":"2026-06-14T00:00:00Z","type":"session_meta","payload":{"id":"id1","cwd":"/c","timestamp":"2026-06-14T00:00:00Z"}}
+{"timestamp":"2026-06-14T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"hello codex"}}
+{"timestamp":"2026-06-14T00:00:02Z","type":"event_msg","payload":{"type":"agent_message","message":"hi"}}
+{"timestamp":"2026-06-14T00:00:09Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
+`
+
+const claudeLog = `{"type":"user","message":{"role":"user","content":"hello claude"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}
+{"type":"system","subtype":"turn_duration"}
+`
+
+func writeTemp(t *testing.T, name, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestReadTurnsForBackend proves the dispatch: each backend's parser
+// understands its own log shape and yields nothing from the other's.
+func TestReadTurnsForBackend(t *testing.T) {
+	codexPath := writeTemp(t, "rollout.jsonl", codexLog)
+	claudePath := writeTemp(t, "claude.jsonl", claudeLog)
+
+	turns, _, err := readTurnsForBackend(codexPath, "codex", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) == 0 || turns[0].Role != "user" || turns[0].Content != "hello codex" {
+		t.Fatalf("codex parser: got %+v", turns)
+	}
+	// The Claude parser must not understand a Codex rollout (event_msg lines are
+	// not user/assistant) — proving the dispatch matters.
+	if wrong, _, _ := readTurnsForBackend(codexPath, "claude", 0); len(wrong) != 0 {
+		t.Errorf("claude parser should yield nothing from a codex log; got %+v", wrong)
+	}
+
+	turns, _, err = readTurnsForBackend(claudePath, "claude", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) == 0 || turns[0].Content != "hello claude" {
+		t.Fatalf("claude parser: got %+v", turns)
+	}
+	if wrong, _, _ := readTurnsForBackend(claudePath, "codex", 0); len(wrong) != 0 {
+		t.Errorf("codex parser should yield nothing from a claude log; got %+v", wrong)
+	}
+}
 
 func TestBackendForModel(t *testing.T) {
 	cases := map[string]string{

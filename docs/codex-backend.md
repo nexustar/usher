@@ -140,12 +140,15 @@ sessions together. Consequences for the design:
 - [~] M6 — coexistence wiring. Done: multi-source discovery (above); router routes
       per-session ops by `session.Backend` and SendNew by `backendForModel(model)`,
       holds a `senders` map (New = claude-only default + `SetSender("codex", …)`), and
-      merges LiveSessions/Has across senders (router_test covers backendForModel). TODO:
-      main.go (build both senders + register codex source/sender/hook), router
-      publishStream → codexrollout.Assembler for Codex transcripts, web model picker
-      lists both backends' models (+ "default" backend disambiguation), and the Codex
-      new-session flow (preAssignsID=false → spawn → discoverNewID → adopt Codex's own
-      id; usher does NOT generate it — see "Design decision" below).
+      merges LiveSessions/Has across senders (router_test covers backendForModel).
+      Batch transcript reads route by backend: `router.ReadTurns(id, limit)` (+
+      `readTurnsForBackend`/`backendOf`) → codexrollout.ReadTurns vs jsonl.ReadTurns;
+      web handleTranscript + ReadSessionTranscript + exit-enrich use it (router_test
+      covers the dispatch). TODO: main.go (build both senders + register codex
+      source/sender/hook), live publishStream → codex assembler, web model picker lists
+      both backends' models (+ "default" disambiguation), and the Codex new-session flow
+      (preAssignsID=false → spawn → discoverNewID → adopt Codex's own id; usher does NOT
+      generate it — see "Design decision" below).
 
 ## Design decision: new-session identity for Codex
 

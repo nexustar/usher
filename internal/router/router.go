@@ -20,12 +20,17 @@ import (
 
 	"usher/internal/archive"
 	"usher/internal/broker"
+	"usher/internal/codexrollout"
 	"usher/internal/core"
 	"usher/internal/discovery"
 	"usher/internal/hook"
 	"usher/internal/jsonl"
 	"usher/internal/sender"
 )
+
+// ErrSessionNotFound is returned when an operation targets a session with no
+// log on disk (so its path/backend can't be resolved).
+var ErrSessionNotFound = errors.New("session not found")
 
 type Router struct {
 	discovery *discovery.Discovery
@@ -109,6 +114,35 @@ func (r *Router) liveSet() map[string]bool {
 		}
 	}
 	return set
+}
+
+// backendOf returns the backend a session belongs to, or the default if the
+// session isn't known to discovery yet.
+func (r *Router) backendOf(id string) string {
+	if s, ok := r.discovery.Get(id); ok && s.Backend != "" {
+		return s.Backend
+	}
+	return r.defaultBackend
+}
+
+// readTurnsForBackend parses a session log into display turns using the parser
+// for its backend: Codex rollouts vs Claude jsonl. Both return the same shape.
+func readTurnsForBackend(path, backend string, limit int) ([]jsonl.Turn, int, error) {
+	if backend == "codex" {
+		return codexrollout.ReadTurns(path, limit)
+	}
+	return jsonl.ReadTurns(path, limit)
+}
+
+// ReadTurns resolves a session's log path and backend and returns its grouped
+// display turns (and the pre-trim total). Returns ErrSessionNotFound when the
+// session has no log on disk.
+func (r *Router) ReadTurns(id string, limit int) ([]jsonl.Turn, int, error) {
+	path, ok := r.discovery.Path(id)
+	if !ok {
+		return nil, 0, ErrSessionNotFound
+	}
+	return readTurnsForBackend(path, r.backendOf(id), limit)
 }
 
 // backendForModel maps a new-session model choice to its backend. Model names
@@ -401,7 +435,7 @@ func (r *Router) enrichExitWithTurnTimestamps(sessionID string, raw json.RawMess
 	if !ok {
 		return raw
 	}
-	turns, _, err := jsonl.ReadTurns(path, 2)
+	turns, _, err := readTurnsForBackend(path, r.backendOf(sessionID), 2)
 	if err != nil || len(turns) == 0 {
 		return raw
 	}
@@ -555,9 +589,9 @@ func (r *Router) IsAutoApprove(sessionID string) bool {
 func (r *Router) ReadSessionTranscript(id string, limit int) ([]core.TranscriptTurn, error) {
 	path, ok := r.discovery.Path(id)
 	if !ok {
-		return nil, errors.New("session not found")
+		return nil, ErrSessionNotFound
 	}
-	turns, _, err := jsonl.ReadTurns(path, limit)
+	turns, _, err := readTurnsForBackend(path, r.backendOf(id), limit)
 	if err != nil {
 		return nil, err
 	}
