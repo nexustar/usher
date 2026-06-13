@@ -14,6 +14,9 @@ import (
 // knowing either layout. Discovery handles the watching/caching; a Source only
 // answers "is this file a session, what's its id, and what's its metadata".
 type Source interface {
+	// Backend names the agent CLI this source's sessions belong to
+	// ("claude" or "codex"); stamped onto each discovered core.Session.
+	Backend() string
 	// Root is the directory to scan and recursively watch.
 	Root() string
 	// IsSessionFile reports whether path is a top-level session log, as opposed
@@ -32,7 +35,8 @@ type ClaudeSource struct{ root string }
 
 func NewClaudeSource(root string) ClaudeSource { return ClaudeSource{root: root} }
 
-func (s ClaudeSource) Root() string { return s.root }
+func (s ClaudeSource) Backend() string { return "claude" }
+func (s ClaudeSource) Root() string    { return s.root }
 
 // IsSessionFile accepts only top-level project files (<root>/<cwd>/<id>.jsonl,
 // i.e. exactly one separator below root). Subagent transcripts
@@ -71,7 +75,8 @@ type CodexSource struct{ root string }
 
 func NewCodexSource(root string) CodexSource { return CodexSource{root: root} }
 
-func (s CodexSource) Root() string { return s.root }
+func (s CodexSource) Backend() string { return "codex" }
+func (s CodexSource) Root() string    { return s.root }
 
 // IsSessionFile accepts rollout files by their name (rollout-…-<uuid>.jsonl).
 // Codex keeps archived sessions under a sibling ~/.codex/archived_sessions, a

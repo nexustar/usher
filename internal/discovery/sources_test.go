@@ -67,6 +67,43 @@ func TestCodexSource_DiscoversDatePartitioned(t *testing.T) {
 	}
 }
 
+// TestMultiSource_CoexistClaudeAndCodex proves one Discovery scans a Claude
+// projects tree and a Codex rollout tree at once, merging both into the session
+// list and tagging each with the backend that found it.
+func TestMultiSource_CoexistClaudeAndCodex(t *testing.T) {
+	claudeRoot := t.TempDir()
+	codexRoot := t.TempDir()
+	writeJSONL(t, filepath.Join(claudeRoot, "-tmp-a", "claudesess.jsonl"),
+		"claudesess", "/tmp/a", "hi claude")
+	writeFile(t, filepath.Join(codexRoot, "2026", "06", "14",
+		"rollout-2026-06-14T00-00-00-"+codexUUID+".jsonl"), codexRollout)
+
+	d, err := NewMulti(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		NewClaudeSource(claudeRoot), NewCodexSource(codexRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.watcher.Close() })
+	if err := d.scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := d.List()
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2 (one per backend); %+v", len(got), got)
+	}
+	backendByID := map[string]string{}
+	for _, s := range got {
+		backendByID[s.ID] = s.Backend
+	}
+	if backendByID["claudesess"] != "claude" {
+		t.Errorf("claude session backend = %q, want claude", backendByID["claudesess"])
+	}
+	if backendByID[codexUUID] != "codex" {
+		t.Errorf("codex session backend = %q, want codex", backendByID[codexUUID])
+	}
+}
+
 // TestCodexSource_IsSessionFile guards the filename predicate.
 func TestCodexSource_IsSessionFile(t *testing.T) {
 	s := NewCodexSource("/root")

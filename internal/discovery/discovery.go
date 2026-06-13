@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
@@ -20,7 +21,7 @@ import (
 )
 
 type Discovery struct {
-	src     Source
+	sources []Source
 	logger  *slog.Logger
 	watcher *fsnotify.Watcher
 
@@ -30,15 +31,22 @@ type Discovery struct {
 }
 
 // New builds a Discovery over Claude Code's projects tree at rootDir. It is a
-// shorthand for NewWithSource(NewClaudeSource(rootDir), logger).
+// shorthand for NewMulti(logger, NewClaudeSource(rootDir)).
 func New(rootDir string, logger *slog.Logger) (*Discovery, error) {
-	return NewWithSource(NewClaudeSource(rootDir), logger)
+	return NewMulti(logger, NewClaudeSource(rootDir))
 }
 
-// NewWithSource builds a Discovery over an arbitrary backend layout (Claude
-// Code, Codex, …). The Source decides which files are sessions and how to read
-// them; everything else — scanning, watching, caching — is backend-agnostic.
+// NewWithSource builds a Discovery over a single backend layout.
 func NewWithSource(src Source, logger *slog.Logger) (*Discovery, error) {
+	return NewMulti(logger, src)
+}
+
+// NewMulti builds a Discovery that scans and watches several backend layouts at
+// once (Claude Code and Codex), merging them into one session view. Each session
+// is tagged with the Backend of the Source that found it; the Source decides
+// which files are sessions and how to read them, everything else — scanning,
+// watching, caching — is backend-agnostic.
+func NewMulti(logger *slog.Logger, sources ...Source) (*Discovery, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -47,12 +55,26 @@ func NewWithSource(src Source, logger *slog.Logger) (*Discovery, error) {
 		logger = slog.Default()
 	}
 	return &Discovery{
-		src:      src,
+		sources:  sources,
 		logger:   logger,
 		watcher:  w,
 		sessions: map[string]core.Session{},
 		paths:    map[string]string{},
 	}, nil
+}
+
+// sourceFor returns the Source that owns path — the one whose Root contains it
+// and whose IsSessionFile accepts it — or nil if path is not a session log.
+func (d *Discovery) sourceFor(path string) Source {
+	for _, s := range d.sources {
+		root := s.Root()
+		if path == root || strings.HasPrefix(path, root+string(os.PathSeparator)) {
+			if s.IsSessionFile(path) {
+				return s
+			}
+		}
+	}
+	return nil
 }
 
 // Start performs an initial scan, registers fsnotify watches on the root and
@@ -68,42 +90,50 @@ func (d *Discovery) Start(ctx context.Context) error {
 	return nil
 }
 
-// scan walks the root once and upserts every session file found.
+// scan walks every source's root once and upserts each session file found.
 func (d *Discovery) scan() error {
-	return filepath.Walk(d.src.Root(), func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			// Best-effort: skip unreadable subtrees.
+	for _, s := range d.sources {
+		_ = filepath.Walk(s.Root(), func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				// Best-effort: skip unreadable subtrees.
+				return nil
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if s.IsSessionFile(path) {
+				d.upsert(path)
+			}
 			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if d.src.IsSessionFile(path) {
-			d.upsert(path)
-		}
-		return nil
-	})
+		})
+	}
+	return nil
 }
 
-// addWatches registers watches on the root dir and every existing subdir, so
-// new files are seen no matter which project (or, for Codex, which date
-// partition) they appear under.
+// addWatches registers watches on each source's root and every existing subdir,
+// so new files are seen no matter which project (or, for Codex, which date
+// partition) they appear under. A missing root (e.g. Codex never used) is
+// skipped, not fatal.
 func (d *Discovery) addWatches() error {
-	root := d.src.Root()
-	if err := d.watcher.Add(root); err != nil {
-		return err
-	}
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
+	for _, s := range d.sources {
+		root := s.Root()
+		if err := d.watcher.Add(root); err != nil {
+			d.logger.Warn("watch root", "path", root, "err", err)
+			continue
 		}
-		if info.IsDir() && path != root {
-			if err := d.watcher.Add(path); err != nil {
-				d.logger.Warn("watch subdir", "path", path, "err", err)
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
 			}
-		}
-		return nil
-	})
+			if info.IsDir() && path != root {
+				if err := d.watcher.Add(path); err != nil {
+					d.logger.Warn("watch subdir", "path", path, "err", err)
+				}
+			}
+			return nil
+		})
+	}
+	return nil
 }
 
 // Upsert synchronously ingests the session file at path. fsnotify would pick
@@ -116,7 +146,11 @@ func (d *Discovery) Upsert(path string) { d.upsert(path) }
 // scanned once at first sight; subsequent writes during streaming only touch
 // mtime, avoiding repeated full-file reads.
 func (d *Discovery) upsert(path string) {
-	id := d.src.SessionID(path)
+	src := d.sourceFor(path)
+	if src == nil {
+		return
+	}
+	id := src.SessionID(path)
 	if id == "" {
 		return
 	}
@@ -135,7 +169,7 @@ func (d *Discovery) upsert(path string) {
 		// the first read can miss them; re-read while either is still empty
 		// (self-limiting once both are set — no re-parse on every later write).
 		if existing.Cwd == "" || existing.Title == "" {
-			if meta, err := d.src.ReadMeta(path); err == nil {
+			if meta, err := src.ReadMeta(path); err == nil {
 				if existing.Cwd == "" {
 					existing.Cwd = meta.Cwd
 				}
@@ -153,7 +187,7 @@ func (d *Discovery) upsert(path string) {
 		return
 	}
 
-	meta, err := d.src.ReadMeta(path)
+	meta, err := src.ReadMeta(path)
 	if err != nil {
 		d.logger.Warn("read session meta", "path", path, "err", err)
 		return
@@ -165,6 +199,7 @@ func (d *Discovery) upsert(path string) {
 		Status:      core.StatusIdle,
 		StartedAt:   meta.StartedAt,
 		LastEventAt: info.ModTime(),
+		Backend:     src.Backend(),
 	}
 	if sess.StartedAt.IsZero() {
 		sess.StartedAt = info.ModTime()
@@ -177,7 +212,9 @@ func (d *Discovery) upsert(path string) {
 }
 
 func (d *Discovery) remove(path string) {
-	d.Remove(d.src.SessionID(path))
+	if src := d.sourceFor(path); src != nil {
+		d.Remove(src.SessionID(path))
+	}
 }
 
 // Remove forgets a session by id. fsnotify would pick a file deletion up
@@ -226,17 +263,11 @@ func (d *Discovery) handle(ev fsnotify.Event) {
 			}
 			return
 		}
-		if d.src.IsSessionFile(ev.Name) {
-			d.upsert(ev.Name)
-		}
+		d.upsert(ev.Name) // upsert resolves the owning source, no-ops if none
 	case ev.Op.Has(fsnotify.Write):
-		if d.src.IsSessionFile(ev.Name) {
-			d.upsert(ev.Name)
-		}
+		d.upsert(ev.Name)
 	case ev.Op.Has(fsnotify.Remove), ev.Op.Has(fsnotify.Rename):
-		if d.src.IsSessionFile(ev.Name) {
-			d.remove(ev.Name)
-		}
+		d.remove(ev.Name)
 	}
 }
 

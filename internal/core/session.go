@@ -26,6 +26,11 @@ type Session struct {
 	Status      Status    `json:"status"`
 	StartedAt   time.Time `json:"started_at"`
 	LastEventAt time.Time `json:"last_event_at"`
+
+	// Backend names the agent CLI this session belongs to ("claude" or "codex").
+	// usher manages both at once; a session belongs to one for its life. Set by
+	// discovery from the Source that found the session's log.
+	Backend string `json:"backend"`
 }
 
 // TranscriptTurn is a single user/assistant turn extracted from a session

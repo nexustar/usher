@@ -92,13 +92,31 @@ flow is far simpler and less race-prone than Claude's** — there is no resume c
 - Config: `~/.codex/config.toml` (TOML). Self-register hooks via `hooks.json`
   (JSON, stdlib-friendly) rather than editing TOML, to keep usher stdlib-only.
 
+## Product decision: coexistence (user, confirmed)
+
+usher runs **both backends at once** — one dashboard lists Claude *and* Codex
+sessions together. Consequences for the design:
+
+- **Discovery is multi-source**: it scans `~/.claude/projects` and
+  `~/.codex/sessions` simultaneously and tags each session with its backend
+  (`core.Session.Backend`), determined by which Source found it.
+- **A session belongs to one backend for life** — there is NO cross-tool
+  migration/handoff. The router routes a send to the matching sender by the
+  session's `Backend` tag.
+- **New-session backend is chosen via the model picker.** Model names
+  disambiguate the backend (claude-* → Claude, gpt-*/o3-* → Codex); only the
+  literal "default" collides, so that one entry needs an explicit backend choice
+  in the UI. No separate "pick a backend" control.
+
 ## Plan / status
 
 - [x] M0 — spike: validate schema/auth/CLI on live 0.139.0; branch; testdata
 - [x] M1 — `internal/codexrollout`: rollout → `jsonl.Turn`/`SessionMeta` parser + tests
-- [x] M2 — discovery: `Source` interface (Root/IsSessionFile/SessionID/ReadMeta)
-      with ClaudeSource + CodexSource; Discovery is now layout-agnostic. Codex's
-      date-partitioned `~/.codex/sessions` is discovered by filename shape, not depth.
+- [x] M2 — discovery: `Source` interface (Backend/Root/IsSessionFile/SessionID/
+      ReadMeta) with ClaudeSource + CodexSource; Discovery is layout-agnostic and now
+      **multi-source** (`NewMulti`) — it scans `~/.claude/projects` and
+      `~/.codex/sessions` at once, merges them, and tags each `core.Session.Backend`.
+      Codex's date-partitioned tree is matched by filename shape, not depth.
 - [x] M3 — backend seam in the sender: tailer turn-completion is a
       `tailConfig.turnComplete` func, and the spawn-command / env-scrub / TUI-prep seams
       are the `backend` interface below (claudeBackend now holds the Claude logic).
