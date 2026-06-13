@@ -257,6 +257,16 @@ func (a *Assembler) feedResponseItem(l line) (part *jsonl.TurnPart) {
 	return nil
 }
 
+// FeedLine is Feed under the name the cross-backend assembler interface expects
+// (jsonl.Assembler exposes the same method), so the router can drive either.
+func (a *Assembler) FeedLine(raw []byte) (completed []jsonl.Turn, part *jsonl.TurnPart) {
+	return a.Feed(raw)
+}
+
+// Model returns "" — Codex's per-turn model isn't tracked from the rollout
+// stream yet (the session_meta carries a provider, not the turn model).
+func (a *Assembler) Model() string { return "" }
+
 func (a *Assembler) ensureTurn(ts time.Time) {
 	if a.cur == nil {
 		a.cur = &jsonl.Turn{Role: "assistant", Time: ts}

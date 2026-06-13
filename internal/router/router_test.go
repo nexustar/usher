@@ -1,12 +1,56 @@
 package router
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"usher/internal/broker"
 	"usher/internal/sender"
 )
+
+// TestPublishStreamDerivesCodexTurns proves the live path: fed Codex rollout
+// lines through the codex assembler, publishStream derives the backend-neutral
+// turn.user / part broker events the web client renders (same as for Claude).
+func TestPublishStreamDerivesCodexTurns(t *testing.T) {
+	b := broker.New()
+	r := &Router{broker: b}
+	sub, unsub := b.Subscribe("s1")
+	defer unsub()
+
+	asm := newStreamAssembler("codex")
+	lines := []string{
+		`{"timestamp":"2026-06-14T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"hello codex"}}`,
+		`{"timestamp":"2026-06-14T00:00:02Z","type":"event_msg","payload":{"type":"agent_message","message":"hi there"}}`,
+		`{"timestamp":"2026-06-14T00:00:09Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}`,
+	}
+	go func() {
+		for _, ln := range lines {
+			r.publishStream("s1", asm, sender.StreamEvent{Type: "event_msg", Raw: json.RawMessage(ln)})
+		}
+		b.Publish(broker.Event{SessionID: "s1", Type: "done"})
+	}()
+
+	var sawUser, sawPart bool
+	for ev := range sub {
+		switch {
+		case ev.Type == "turn.user" && strings.Contains(string(ev.Raw), "hello codex"):
+			sawUser = true
+		case ev.Type == "part" && strings.Contains(string(ev.Raw), "hi there"):
+			sawPart = true
+		case ev.Type == "done":
+			if !sawUser {
+				t.Error("no turn.user derived from codex user_message")
+			}
+			if !sawPart {
+				t.Error("no part derived from codex agent_message")
+			}
+			return
+		}
+	}
+}
 
 const codexLog = `{"timestamp":"2026-06-14T00:00:00Z","type":"session_meta","payload":{"id":"id1","cwd":"/c","timestamp":"2026-06-14T00:00:00Z"}}
 {"timestamp":"2026-06-14T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"hello codex"}}

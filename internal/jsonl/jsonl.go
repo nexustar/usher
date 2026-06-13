@@ -271,6 +271,16 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 	return nil, &p
 }
 
+// FeedLine parses one raw jsonl line and feeds it, the uniform entry point
+// shared with other backends' assemblers (a malformed line is ignored).
+func (a *Assembler) FeedLine(raw []byte) (completed []Turn, part *TurnPart) {
+	ev, err := ParseLine(raw)
+	if err != nil {
+		return nil, nil
+	}
+	return a.Feed(ev)
+}
+
 // Model returns the model id of the in-progress assistant turn ("" if none).
 func (a *Assembler) Model() string {
 	if a.cur == nil {

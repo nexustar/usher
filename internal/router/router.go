@@ -365,7 +365,7 @@ func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok
 		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "error", Raw: errMsg})
 		return
 	}
-	asm := jsonl.NewAssembler()
+	asm := newStreamAssembler(r.backendOf(sessionID))
 	for ev := range ch {
 		r.publishStream(sessionID, asm, ev)
 	}
@@ -389,20 +389,56 @@ func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok
 //
 // Returns the appended part (nil otherwise) so callers that accumulate the
 // turn's text (CreateSession) don't re-parse the payload.
-func (r *Router) publishStream(sessionID string, asm *jsonl.Assembler, ev sender.StreamEvent) *jsonl.TurnPart {
+// streamAssembler is the cross-backend turn-grouping engine: both
+// jsonl.Assembler (Claude) and codexrollout.Assembler (Codex) implement it, so
+// publishStream derives the same turn.user/part events from either backend's
+// log lines.
+type streamAssembler interface {
+	FeedLine(raw []byte) (completed []jsonl.Turn, part *jsonl.TurnPart)
+	Model() string
+}
+
+var (
+	_ streamAssembler = (*jsonl.Assembler)(nil)
+	_ streamAssembler = (*codexrollout.Assembler)(nil)
+)
+
+// newStreamAssembler returns the assembler for a backend's log shape.
+func newStreamAssembler(backend string) streamAssembler {
+	if backend == "codex" {
+		return codexrollout.NewAssembler()
+	}
+	return jsonl.NewAssembler()
+}
+
+// isControlEvent reports whether a StreamEvent is a synthesized control signal
+// (not a backend log line) and so must not be fed to the assembler.
+func isControlEvent(t string) bool {
+	return t == "subprocess.started" || t == "subprocess.exit" || t == "error"
+}
+
+// lineTimestamp pulls the top-level "timestamp" from a log line (present on both
+// Claude and Codex lines); zero time if absent.
+func lineTimestamp(raw json.RawMessage) time.Time {
+	var o struct {
+		Timestamp time.Time `json:"timestamp"`
+	}
+	_ = json.Unmarshal(raw, &o)
+	return o.Timestamp
+}
+
+func (r *Router) publishStream(sessionID string, asm streamAssembler, ev sender.StreamEvent) *jsonl.TurnPart {
 	if ev.Type == "subprocess.exit" {
 		ev.Raw = r.enrichExitWithTurnTimestamps(sessionID, ev.Raw)
 	}
 	r.broker.Publish(broker.Event{SessionID: sessionID, Type: ev.Type, Raw: ev.Raw})
 
-	if ev.Type != "user" && ev.Type != "assistant" {
+	if isControlEvent(ev.Type) {
 		return nil
 	}
-	jev, err := jsonl.ParseLine(ev.Raw)
-	if err != nil {
-		return nil
-	}
-	completed, part := asm.Feed(jev)
+	// Feed every log line; the assembler ignores non-conversational ones
+	// (Claude's system events, Codex's session_meta/token_count, etc.).
+	completed, part := asm.FeedLine(ev.Raw)
 	for _, t := range completed {
 		if t.Role != "user" {
 			// Assistant turns are finalized client-side by the turn-end
@@ -416,7 +452,7 @@ func (r *Router) publishStream(sessionID string, asm *jsonl.Assembler, ev sender
 	}
 	if part != nil {
 		raw, mErr := json.Marshal(map[string]any{
-			"role": "assistant", "ts": jev.Timestamp, "model": asm.Model(), "part": part,
+			"role": "assistant", "ts": lineTimestamp(ev.Raw), "model": asm.Model(), "part": part,
 		})
 		if mErr == nil {
 			r.broker.Publish(broker.Event{SessionID: sessionID, Type: "part", Raw: raw})
@@ -723,7 +759,7 @@ func (r *Router) runStart(ctx context.Context, sessionID, prompt, cwd, model str
 		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "error", Raw: errMsg})
 		return
 	}
-	asm := jsonl.NewAssembler()
+	asm := newStreamAssembler(backendForModel(model))
 	for ev := range ch {
 		r.publishStream(sessionID, asm, ev)
 	}
@@ -765,7 +801,7 @@ func (r *Router) CreateSession(ctx context.Context, cwd, initialMsg string, time
 	}
 
 	var buf strings.Builder
-	asm := jsonl.NewAssembler()
+	asm := newStreamAssembler(r.defaultBackend)
 	for ev := range ch {
 		// Forward to broker (raw + derived part/turn.user events) so any
 		// session-detail subscriber that opens the new tab sees the live

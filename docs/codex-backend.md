@@ -144,9 +144,13 @@ sessions together. Consequences for the design:
       Batch transcript reads route by backend: `router.ReadTurns(id, limit)` (+
       `readTurnsForBackend`/`backendOf`) → codexrollout.ReadTurns vs jsonl.ReadTurns;
       web handleTranscript + ReadSessionTranscript + exit-enrich use it (router_test
-      covers the dispatch). TODO: main.go (build both senders + register codex
-      source/sender/hook), live publishStream → codex assembler, web model picker lists
-      both backends' models (+ "default" disambiguation), and the Codex new-session flow
+      covers the dispatch). Live streaming routes too: a `streamAssembler` interface
+      (FeedLine/Model) is satisfied by both jsonl.Assembler and codexrollout.Assembler;
+      publishStream feeds every log line through it (skipping control events) and derives
+      backend-neutral turn.user/part broker events, so Codex replies stream live like
+      Claude's (router_test drives it with real codex lines). main.go wires both senders
+      + sources, verified live (codex sessions list + transcript render). TODO: web model
+      picker lists both backends' models (+ "default" disambiguation), the Codex new-session flow
       (preAssignsID=false → spawn → discoverNewID → adopt Codex's own id; usher does NOT
       generate it — see "Design decision" below).
 
