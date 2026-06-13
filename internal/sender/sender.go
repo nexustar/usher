@@ -110,6 +110,52 @@ func New(claudeCmd, permissionMode, projectsDir, socket, hookSock string, maxLiv
 	return s
 }
 
+// NewCodex builds a Sender that drives interactive `codex` instead of `claude`.
+// codexCmd is the codex binary; sessionsDir is ~/.codex/sessions (the rollout
+// root, used to locate logs); sandboxArgs are extra codex flags (e.g.
+// --sandbox workspace-write); hookSock, if set, routes the codex permission hook
+// back to this instance; maxLive caps live processes.
+//
+// Resume is fully handled here (`codex resume <id>`, no chooser). The new-session
+// path still relies on run()'s preAssignsID branch (Codex generates its own id),
+// which is added with the router-side id handoff — see docs/codex-backend.md.
+func NewCodex(codexCmd, sessionsDir, socket, hookSock string, sandboxArgs []string, maxLive int, logger *slog.Logger) *Sender {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if socket == "" {
+		socket = tmuxSessionName
+	}
+	var env []string
+	if hookSock != "" {
+		env = append(env, "USHER_HOOK_SOCK="+hookSock)
+	}
+	runner := execRunner{bin: "tmux", socket: socket}
+	t := timing{
+		spawnSettle:   5 * time.Second,
+		trustToInject: 1500 * time.Millisecond,
+		warmSettle:    400 * time.Millisecond,
+		resumeReady:   30 * time.Second,
+		confirm:       8 * time.Second,
+		poll:          150 * time.Millisecond,
+	}
+	p := newPool(runner, codexCmd, nil, env, maxLive, logger)
+	b := codexBackend{p: p, t: t, codexCmd: codexCmd, sessionsDir: sessionsDir, extraArgs: sandboxArgs}
+	// Codex's command differs from the Claude default; route spawn through it.
+	p.spawnOverride = b.spawnCommand
+	s := &Sender{
+		pool:        p,
+		backend:     b,
+		projectsDir: sessionsDir,
+		logger:      logger,
+		busy:        make(map[string]struct{}),
+		t:           t,
+		tail:        tailConfig{poll: 150 * time.Millisecond, appearWait: 20 * time.Second, turnComplete: b.turnComplete},
+	}
+	s.pool.isBusy = s.isBusy
+	return s
+}
+
 // isBusy reports whether sessionID has an in-flight turn (the pool's eviction
 // guard). markBusy/clearBusy bracket a tracked turn in run().
 func (s *Sender) isBusy(sessionID string) bool {

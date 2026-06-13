@@ -1,6 +1,7 @@
 package sender
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,89 @@ import (
 
 func newCodexBackend(sessionsDir string, extra ...string) codexBackend {
 	return codexBackend{codexCmd: "codex", sessionsDir: sessionsDir, extraArgs: extra}
+}
+
+// testCodexSender builds a Sender wired to a codexBackend over a fake tmux, with
+// fast timings — the Codex analog of testSender.
+func testCodexSender(runner tmuxRunner, sessionsDir string) *Sender {
+	tm := timing{
+		spawnSettle:   10 * time.Millisecond,
+		trustToInject: 5 * time.Millisecond,
+		warmSettle:    5 * time.Millisecond,
+		resumeReady:   200 * time.Millisecond,
+		confirm:       1 * time.Second,
+		poll:          10 * time.Millisecond,
+	}
+	p := newPool(runner, "codex", nil, nil, 8, quietLogger())
+	b := codexBackend{p: p, t: tm, codexCmd: "codex", sessionsDir: sessionsDir}
+	p.spawnOverride = b.spawnCommand
+	return &Sender{
+		pool:        p,
+		backend:     b,
+		projectsDir: sessionsDir,
+		logger:      quietLogger(),
+		t:           tm,
+		tail:        tailConfig{poll: 10 * time.Millisecond, appearWait: 2 * time.Second, turnComplete: b.turnComplete},
+	}
+}
+
+// codexTurnLines are real-shaped rollout lines for one turn: the user prompt, an
+// agent reply, and the task_complete end-of-turn marker.
+var codexTurnLines = []string{
+	`{"timestamp":"2026-06-14T00:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"hi"}}`,
+	`{"timestamp":"2026-06-14T00:00:03Z","type":"event_msg","payload":{"type":"agent_message","message":"hello","phase":"final_answer"}}`,
+	`{"timestamp":"2026-06-14T00:00:09Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}`,
+}
+
+func TestCodexSend_ResumeStreamsTurn(t *testing.T) {
+	root := t.TempDir()
+	id := "019ec1ab-6a76-7e32-9499-040331a92a4b"
+	path := writeRollout(t, root, id, "/work", time.Now())
+	// Pane already at the composer (banner + cwd footer): waitReady returns at once.
+	f := &fakeTmux{captureOut: codexBannerMarker + "0.139.0)\n  gpt-5.5 default · /work\n"}
+	s := testCodexSender(f, root)
+
+	ch, err := s.Send(context.Background(), id, "hi", "/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Append the turn only after the prompt is pasted, so the pre-inject offset is
+	// captured first (matches the Claude resume test's ordering).
+	go func() {
+		for f.countCmd("paste-buffer") < 1 {
+			time.Sleep(2 * time.Millisecond)
+		}
+		appendLines(path, 10*time.Millisecond, codexTurnLines...)
+	}()
+
+	got := collect(t, ch, 6*time.Second)
+	// task_complete ends the turn (it is not itself streamed); the two event_msg
+	// lines before it are.
+	want := []string{"subprocess.started", "event_msg", "event_msg", "subprocess.exit"}
+	if !eq(types(got), want) {
+		t.Fatalf("got %v, want %v", types(got), want)
+	}
+	// Resume launched `codex resume <id>` — no chooser, so no Down is sent.
+	if !cmdMatches(f, "new-session", "resume") {
+		t.Fatalf("resume should spawn `codex resume`; cmds=%v", f.cmds)
+	}
+	if cmdMatches(f, "send-keys", "Down") {
+		t.Error("codex resume has no chooser; no Down should be sent")
+	}
+}
+
+func TestNewCodexWiring(t *testing.T) {
+	s := NewCodex("codex", "/home/u/.codex/sessions", "", "", []string{"--sandbox", "workspace-write"}, 8, quietLogger())
+	if s.pool.spawnOverride == nil {
+		t.Error("NewCodex must route spawn through codexBackend.spawnCommand")
+	}
+	if s.backend.preAssignsID() {
+		t.Error("codex backend must not pre-assign ids")
+	}
+	cmd := s.backend.spawnCommand("x", "/c", "", true)
+	if !strings.Contains(cmd, "resume 'x'") || !strings.Contains(cmd, "codex") {
+		t.Errorf("unexpected resume command: %q", cmd)
+	}
 }
 
 func TestCodexSpawnCommand(t *testing.T) {

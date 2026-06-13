@@ -114,11 +114,33 @@ flow is far simpler and less race-prone than Claude's** — there is no resume c
       Wiring done: claudeBackend holds the existing Claude logic (deduped via
       claudeSpawnCommand); Sender delegates waitReady/locate/turnComplete to s.backend;
       pool gained an optional spawnOverride (nil = Claude default → all tests unchanged).
-      TODO: `NewCodex` constructor (sets pool.spawnOverride + codex turnComplete); the
-      Codex new-session flow in run() (preAssignsID=false → discoverNewID + rename the
-      tmux window once Codex's own id is known); main.go backend selection.
+      `NewCodex` done (sets pool.spawnOverride + codex turnComplete); Codex **resume**
+      works end-to-end through Send (spawn `codex resume <id>` → composer → inject →
+      tail rollout → task_complete), covered by a sender test on the fake tmux.
+      TODO: the Codex new-session id handoff (see "Design decision" below) + main.go.
 - [ ] M5 — hook adapter: register `PermissionRequest` hook (hooks.json), map decision shape
 - [ ] M6 — wiring: backend selection, web/router end-to-end, `usher setup` for codex
+
+## Design decision: new-session identity for Codex
+
+Claude lets usher pick a new session's id up front (`claude --session-id <uuid>`);
+the router generates the UUID, registers it in `creating`/`activeSend`, and keys
+broker events on it before the jsonl even exists. **Codex has no such flag — it
+generates its own UUIDv7** — so that contract can't hold for a new Codex session.
+
+Resume is unaffected (the id is already known; implemented + tested). For *new*
+sessions the plan (Option B — backend id is canonical, matching discovery):
+
+1. Spawn `codex` in a window named by a temporary placeholder id; inject the prompt.
+2. `codexBackend.discoverNewID(cwd, known)` finds the rollout Codex just created
+   (newest under the sessions tree, matching cwd, id ∉ the pre-spawn known set).
+3. Rename the tmux window placeholder→real id; re-key the pool LRU/busy.
+4. Hand the real id back to the router so it can re-key `creating`/`activeSend`/
+   broker (e.g. a synthesized `session.id_resolved` StreamEvent that run() emits
+   and runStart/CreateSession act on).
+
+This is the one place the router (not just the sender) changes, so it lands with
+the M6 wiring rather than being rushed. Until then, NewCodex drives resume only.
 
 ## Open items to verify empirically before M4/M5
 
