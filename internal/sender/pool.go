@@ -283,6 +283,24 @@ func (p *pool) acceptTrust(sessionID string) error {
 	return err
 }
 
+// rename retitles a live window from oldID to newID and re-keys the LRU. Used
+// for a new Codex session, whose window is spawned under a temporary handle and
+// renamed to the id Codex assigns itself once it's discovered.
+func (p *pool) rename(oldID, newID string) error {
+	if _, err := p.runner.run("rename-window", "-t", target(oldID), newID); err != nil {
+		return err
+	}
+	_, _ = p.runner.run("set-window-option", "-t", target(newID), "automatic-rename", "off")
+	p.mu.Lock()
+	for i, id := range p.lru {
+		if id == oldID {
+			p.lru[i] = newID
+		}
+	}
+	p.mu.Unlock()
+	return nil
+}
+
 // interrupt sends Ctrl-C to stop the current turn WITHOUT killing the
 // process (the window/claude stays alive for the next send).
 func (p *pool) interrupt(sessionID string) error {

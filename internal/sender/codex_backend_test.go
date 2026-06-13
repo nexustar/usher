@@ -188,3 +188,41 @@ func TestCodexDiscoverNewID(t *testing.T) {
 		t.Errorf("discoverNewID after all known = %q, want empty", got)
 	}
 }
+
+func TestCodexKnownSessionIDs(t *testing.T) {
+	root := t.TempDir()
+	writeRollout(t, root, "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee", "/c", time.Now())
+	writeRollout(t, root, "bbbb2222-cccc-dddd-eeee-ffffffffffff", "/c", time.Now())
+	known := newCodexBackend(root).knownSessionIDs()
+	if len(known) != 2 ||
+		!known["aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee"] ||
+		!known["bbbb2222-cccc-dddd-eeee-ffffffffffff"] {
+		t.Fatalf("knownSessionIDs = %v", known)
+	}
+}
+
+func TestPoolRenameUpdatesWindowAndLRU(t *testing.T) {
+	f := &fakeTmux{}
+	p := newPool(f, "codex", nil, nil, 8, quietLogger())
+	p.lru = []string{"other", "temp"}
+	if err := p.rename("temp", "real-id"); err != nil {
+		t.Fatal(err)
+	}
+	if !cmdMatches(f, "rename-window", "real-id") {
+		t.Errorf("expected rename-window to real-id; cmds=%v", f.cmds)
+	}
+	if len(p.lru) != 2 || p.lru[1] != "real-id" || p.lru[0] != "other" {
+		t.Errorf("LRU not re-keyed: %v", p.lru)
+	}
+}
+
+func TestPreAssignsID(t *testing.T) {
+	cx := testCodexSender(&fakeTmux{}, t.TempDir())
+	if cx.PreAssignsID() {
+		t.Error("codex sender must not pre-assign ids")
+	}
+	cl, _ := testSender(t, &fakeTmux{}, "x")
+	if !cl.PreAssignsID() {
+		t.Error("claude sender must pre-assign ids")
+	}
+}

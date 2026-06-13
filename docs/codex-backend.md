@@ -164,9 +164,14 @@ sessions together. Consequences for the design:
       backend-neutral turn.user/part broker events, so Codex replies stream live like
       Claude's (router_test drives it with real codex lines). main.go wires both senders
       + sources, verified live (codex sessions list + transcript render). TODO: web model
-      picker lists both backends' models (+ "default" disambiguation), the Codex new-session flow
-      (preAssignsID=false → spawn → discoverNewID → adopt Codex's own id; usher does NOT
-      generate it — see "Design decision" below).
+      picker lists both backends' models (+ "default" disambiguation). Codex new-session **sender side
+      done**: Sender.StartCodexSession spawns under a temp window handle, waitReady,
+      injects, discoverWait→real id (diffed against backend.knownSessionIDs snapshot),
+      pool.rename window temp→real, then streams the turn under the real id;
+      Sender.PreAssignsID() exposes the branch (sender_test covers knownSessionIDs/rename/
+      PreAssignsID). TODO: router StartSession/CreateSession branch on PreAssignsID to call
+      StartCodexSession (register creating/activeSend/broker under the discovered id, no
+      placeholder) + live-verify creating a Codex session end to end.
 
 ## Design decision: new-session identity for Codex
 

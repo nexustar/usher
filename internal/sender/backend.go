@@ -35,6 +35,9 @@ type backend interface {
 	// log under the backend's root whose cwd matches and whose id is not in
 	// known. Only meaningful when preAssignsID is false. "" if none yet.
 	discoverNewID(cwd string, known map[string]bool) string
+	// knownSessionIDs snapshots the ids of all existing session logs, taken just
+	// before a !preAssignsID spawn so discoverNewID can tell the new one apart.
+	knownSessionIDs() map[string]bool
 	// turnComplete is the tailer's end-of-turn predicate for this backend's log.
 	turnComplete(line []byte) bool
 	// waitReady prepares the freshly-spawned/resumed TUI to accept a pasted
@@ -62,8 +65,10 @@ type claudeBackend struct {
 func (b claudeBackend) preAssignsID() bool            { return true }
 func (b claudeBackend) turnComplete(line []byte) bool { return isTurnComplete(line) }
 
-// discoverNewID is unused for Claude (usher assigns the id up front).
+// discoverNewID / knownSessionIDs are unused for Claude (usher assigns the id
+// up front via --session-id).
 func (b claudeBackend) discoverNewID(cwd string, known map[string]bool) string { return "" }
+func (b claudeBackend) knownSessionIDs() map[string]bool                       { return nil }
 
 func (b claudeBackend) spawnCommand(sessionID, cwd, model string, resume bool) string {
 	return claudeSpawnCommand(b.claudeCmd, b.extraArgs, sessionID, cwd, model, resume)
@@ -230,6 +235,19 @@ func (b codexBackend) discoverNewID(cwd string, known map[string]bool) string {
 		}
 	}
 	return bestID
+}
+
+// knownSessionIDs globs every rollout under the sessions tree for its embedded
+// id — the pre-spawn snapshot discoverNewID diffs against.
+func (b codexBackend) knownSessionIDs() map[string]bool {
+	out := map[string]bool{}
+	matches, _ := filepath.Glob(filepath.Join(b.sessionsDir, "*", "*", "*", "rollout-*.jsonl"))
+	for _, p := range matches {
+		if id := codexrollout.SessionIDFromPath(p); id != "" {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // waitReady accepts the one-time trust prompt (default option is "Yes,

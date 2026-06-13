@@ -14,9 +14,9 @@ import (
 // inject-path commands. Guarded by mu because the Sender drives the runner
 // from a goroutine while tests inspect cmds.
 type fakeTmux struct {
-	mu        sync.Mutex
-	windows   []string
-	exists    bool
+	mu         sync.Mutex
+	windows    []string
+	exists     bool
 	cmds       [][]string
 	stdins     []string // stdin passed to each runStdin call
 	failSpawn  bool     // when set, new-session/new-window return an error

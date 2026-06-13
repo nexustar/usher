@@ -17,6 +17,7 @@ package sender
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -193,6 +194,95 @@ func (s *Sender) Send(ctx context.Context, sessionID, prompt, cwd string) (<-cha
 // turn; the tailer waits for it to appear.
 func (s *Sender) SendNew(ctx context.Context, sessionID, prompt, cwd, model string) (<-chan StreamEvent, error) {
 	return s.run(ctx, sessionID, prompt, cwd, model, false)
+}
+
+// PreAssignsID reports whether usher picks a new session's id up front (Claude,
+// via --session-id) or the backend assigns its own to be discovered after spawn
+// (Codex). The router uses it to choose the new-session path.
+func (s *Sender) PreAssignsID() bool { return s.backend.preAssignsID() }
+
+// StartCodexSession spawns a brand-new session whose id the backend assigns
+// itself (Codex has no --session-id flag). It spawns under the temporary window
+// handle tempID, gets the TUI ready, injects prompt, discovers the id the
+// backend just wrote, renames the window to it, and returns that real id with
+// the turn's event stream. It blocks only until the id is known (the session log
+// is flushed at start, so this is quick); the turn then streams in the returned
+// channel. Callers gate on PreAssignsID()==false.
+func (s *Sender) StartCodexSession(ctx context.Context, tempID, prompt, cwd, model string, discoverTimeout time.Duration) (string, <-chan StreamEvent, error) {
+	known := s.backend.knownSessionIDs()
+	fresh, err := s.pool.ensure(tempID, cwd, model, false)
+	if err != nil {
+		return "", nil, err
+	}
+	s.markBusy(tempID)
+
+	if !s.backend.waitReady(ctx, tempID, cwd, fresh, false) {
+		s.clearBusy(tempID)
+		return "", nil, ctx.Err()
+	}
+	if err := s.pool.inject(tempID, prompt); err != nil {
+		s.clearBusy(tempID)
+		return "", nil, err
+	}
+
+	realID := s.discoverWait(ctx, cwd, known, discoverTimeout)
+	if realID == "" {
+		s.clearBusy(tempID)
+		return "", nil, errors.New("codex did not create a session log after the prompt")
+	}
+	if err := s.pool.rename(tempID, realID); err != nil {
+		s.logger.Warn("rename codex window", "from", tempID, "to", realID, "err", err)
+	}
+	// The window is now named realID; move the eviction guard with it.
+	s.clearBusy(tempID)
+	s.markBusy(realID)
+
+	path := s.backend.locate(realID)
+	out := make(chan StreamEvent, 64)
+	go func() {
+		defer close(out)
+		defer s.clearBusy(realID)
+		started, _ := json.Marshal(struct {
+			Cwd   string `json:"cwd"`
+			Fresh bool   `json:"fresh"`
+		}{cwd, true})
+		if !sendEvent(ctx, out, StreamEvent{Type: "subprocess.started", Raw: started}) {
+			return
+		}
+		if path == "" {
+			emitError(ctx, out, "codex session log not found: "+realID)
+			return
+		}
+		// Offset 0: a brand-new rollout — tail the whole first turn from the top.
+		for ev := range tailTurn(ctx, path, 0, s.logger, s.tail) {
+			if !sendEvent(ctx, out, ev) {
+				return
+			}
+		}
+	}()
+	return realID, out, nil
+}
+
+// discoverWait polls the backend for the id of the session just spawned in cwd
+// (the newest log not in the pre-spawn snapshot), until it appears or the
+// deadline/ctx fires.
+func (s *Sender) discoverWait(ctx context.Context, cwd string, known map[string]bool, timeout time.Duration) string {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(s.t.poll)
+	defer ticker.Stop()
+	for {
+		if id := s.backend.discoverNewID(cwd, known); id != "" {
+			return id
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-deadline.C:
+			return ""
+		case <-ticker.C:
+		}
+	}
 }
 
 // Inject readies the session's window (resuming if cold) and pastes prompt
