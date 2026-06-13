@@ -16,6 +16,11 @@ import (
 type tailConfig struct {
 	poll       time.Duration // how often to re-check the file for growth
 	appearWait time.Duration // how long to wait for a not-yet-created file
+
+	// turnComplete reports whether a session-log line is the backend's
+	// end-of-turn marker. Backend-specific: Claude Code uses system/turn_duration
+	// (the default below); Codex uses event_msg/task_complete. nil → Claude.
+	turnComplete func(line []byte) bool
 }
 
 func (c tailConfig) withDefaults() tailConfig {
@@ -24,6 +29,9 @@ func (c tailConfig) withDefaults() tailConfig {
 	}
 	if c.appearWait <= 0 {
 		c.appearWait = 15 * time.Second
+	}
+	if c.turnComplete == nil {
+		c.turnComplete = isTurnComplete
 	}
 	return c
 }
@@ -101,7 +109,7 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 				// end_turn on intermediate thinking/tool_use messages too, so
 				// trusting it ends the turn before the tool even runs — which
 				// released ownership and sent permission prompts to the pane).
-				if isTurnComplete(line) {
+				if cfg.turnComplete(line) {
 					emitExit()
 					return
 				}

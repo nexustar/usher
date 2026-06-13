@@ -62,6 +62,27 @@ instructions) only appears in `response_item` user/developer messages and has
 the noise for free. Tool calls only exist in the `response_item` stream. The
 assembler walks all lines in file order and interleaves the two.
 
+## Validated TUI spawn/resume flow (live spike, codex 0.139.0 in tmux)
+
+Driven in a tmux pane exactly as usher's pool drives claude. **The headline: Codex's
+flow is far simpler and less race-prone than Claude's** — there is no resume chooser.
+
+- **Trust prompt** (first time only, untrusted cwd): pane shows `Do you trust the
+  contents of this directory?` with `› 1. Yes, continue` / `2. No, quit`; default is
+  option 1 → accept with **Enter**. Accepting persists the cwd to config.toml, so a
+  later resume of the same dir skips it entirely.
+- **`codex resume <ID>` with an explicit id resumes straight into the input box —
+  NO picker, NO "full session vs summary" chooser.** Prior turns are replayed and the
+  composer is ready. This eliminates the entire `❯`-arrow-row / Down+Enter keystroke
+  dance (and its lost-Enter / resume-into-compact races) that dominates the Claude
+  sender. The only gate on spawn is the one-time trust prompt.
+- **Input-ready marker:** the footer line `<model> <mode> · <cwd>` (e.g.
+  `gpt-5.5 default · /tmp/x`) — bottom-anchored, always visible when the composer is
+  ready (the top banner `OpenAI Codex (v…` can scroll off on a long resumed session).
+  Match `· ` + the known cwd. (Claude's analog is `? for shortcuts`.)
+- Codex's selection arrow is `›` (U+203A), not Claude's `❯` — matters if any chooser
+  ever needs arrow-row matching, but resume currently needs none.
+
 ## CLI shape (0.139.0)
 
 - Spawn new: `codex [PROMPT]` (interactive TUI). Trust gate: a non-git / untrusted
@@ -78,9 +99,16 @@ assembler walks all lines in file order and interleaves the two.
 - [x] M2 — discovery: `Source` interface (Root/IsSessionFile/SessionID/ReadMeta)
       with ClaudeSource + CodexSource; Discovery is now layout-agnostic. Codex's
       date-partitioned `~/.codex/sessions` is discovered by filename shape, not depth.
-- [ ] M3 — `backend.Backend` interface; move Claude spawn/tail/turn-detection behind it
-- [ ] M4 — Codex sender: spawn (`codex` / `codex resume <id>`), TUI spawn/resume markers
-      (live spike), turn-done via `task_complete`
+- [~] M3 — backend seam in the sender. Done: tailer's turn-completion is now a
+      `tailConfig.turnComplete` func (Claude `system/turn_duration` default; Codex plugs
+      `codexrollout.IsTurnComplete`). TODO: spawn-command + env-scrub + TUI-prep seam.
+- [~] M4 — Codex sender. **Live spike done** (markers above). TODO impl:
+      - spawn new: `codex` (no `--session-id` flag exists → can't pre-assign id;
+        spawn, inject, then discover newest rollout in cwd to learn the id)
+      - resume: `codex resume <id>` (straight in, no chooser)
+      - env-scrub: CODEX_* equivalents of nestedClaudeEnv (verify which Codex exports)
+      - locate: glob `<sessionsDir>/*/*/*/rollout-*-<id>.jsonl` (date-partitioned)
+      - turn-done: already wired via turnComplete
 - [ ] M5 — hook adapter: register `PermissionRequest` hook (hooks.json), map decision shape
 - [ ] M6 — wiring: backend selection, web/router end-to-end, `usher setup` for codex
 
