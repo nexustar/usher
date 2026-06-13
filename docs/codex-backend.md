@@ -143,8 +143,9 @@ sessions together. Consequences for the design:
       merges LiveSessions/Has across senders (router_test covers backendForModel). TODO:
       main.go (build both senders + register codex source/sender/hook), router
       publishStream → codexrollout.Assembler for Codex transcripts, web model picker
-      lists both backends' models (+ "default" backend disambiguation), Codex
-      new-session id handoff.
+      lists both backends' models (+ "default" backend disambiguation), and the Codex
+      new-session flow (preAssignsID=false → spawn → discoverNewID → adopt Codex's own
+      id; usher does NOT generate it — see "Design decision" below).
 
 ## Design decision: new-session identity for Codex
 
@@ -153,19 +154,29 @@ the router generates the UUID, registers it in `creating`/`activeSend`, and keys
 broker events on it before the jsonl even exists. **Codex has no such flag — it
 generates its own UUIDv7** — so that contract can't hold for a new Codex session.
 
-Resume is unaffected (the id is already known; implemented + tested). For *new*
-sessions the plan (Option B — backend id is canonical, matching discovery):
+Resume is unaffected (the id is already known; implemented + tested).
 
-1. Spawn `codex` in a window named by a temporary placeholder id; inject the prompt.
-2. `codexBackend.discoverNewID(cwd, known)` finds the rollout Codex just created
-   (newest under the sessions tree, matching cwd, id ∉ the pre-spawn known set).
-3. Rename the tmux window placeholder→real id; re-key the pool LRU/busy.
-4. Hand the real id back to the router so it can re-key `creating`/`activeSend`/
-   broker (e.g. a synthesized `session.id_resolved` StreamEvent that run() emits
-   and runStart/CreateSession act on).
+For *new* sessions, **usher does NOT generate the id** — it adopts the one Codex
+assigns itself, so there is no placeholder and no re-keying of router state (an
+earlier plan re-keyed `creating`/`activeSend`/broker from a placeholder to the
+real id; that complexity came only from usher insisting on knowing the id up
+front, which Codex doesn't allow and doesn't need):
 
-This is the one place the router (not just the sender) changes, so it lands with
-the M6 wiring rather than being rushed. Until then, NewCodex drives resume only.
+1. Spawn `codex` in a window named by a short-lived handle; wait for the composer
+   and inject the first prompt.
+2. `codexBackend.discoverNewID(cwd, known)` reads the new rollout's id — the
+   `session_meta` header is flushed at session start, so this resolves within a
+   few hundred ms (poll briefly).
+3. Rename the tmux window handle→real id (a pure window op; LRU/busy then key on
+   the real id from the start).
+4. Return the real id to the router, which registers `creating`/`activeSend`/
+   broker under it directly — first and only id, no swap.
+
+The router's create flow branches on the existing `backend.preAssignsID()`:
+true → Claude (pre-generate the UUID, unchanged); false → Codex (spawn → discover
+→ adopt). The only user-visible difference is that creating a Codex session
+returns its id after a brief discovery delay instead of instantly — fine behind
+the create spinner. Claude is untouched.
 
 ## Open items to verify empirically before M4/M5
 
