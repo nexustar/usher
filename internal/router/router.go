@@ -729,6 +729,13 @@ func (r *Router) StartSession(cwd, initialMsg, model string) (string, error) {
 	if err := validateCreateInputs(cwd, initialMsg); err != nil {
 		return "", err
 	}
+	backend := backendForModel(model)
+	snd := r.senderForBackend(backend)
+	if !snd.PreAssignsID() {
+		// Codex assigns its own id; spawn, discover it, register under it.
+		return r.startDiscoveredSession(cwd, initialMsg, model, backend, snd)
+	}
+
 	sessionID := newUUIDv4()
 	ctx, cancel := context.WithCancel(context.Background())
 	tok := &sendToken{cancel: cancel}
@@ -744,11 +751,54 @@ func (r *Router) StartSession(cwd, initialMsg, model string) (string, error) {
 		Status:      core.StatusRunning,
 		StartedAt:   now,
 		LastEventAt: now,
+		Backend:     backend,
 	}
 	r.sendMu.Unlock()
 
 	go r.runStart(ctx, sessionID, initialMsg, cwd, model, tok)
 	return sessionID, nil
+}
+
+// codexDiscoverTimeout bounds how long StartSession blocks waiting for Codex to
+// write its new session log (and so reveal the id it assigned itself).
+const codexDiscoverTimeout = 20 * time.Second
+
+// startDiscoveredSession creates a new session for a backend that assigns its
+// own id (Codex). It spawns under a temporary handle, blocks until the real id
+// is discovered, then registers creating/activeSend/broker under that id — first
+// and only id, no placeholder, no re-keying. The turn then streams in the
+// background like a Claude start.
+func (r *Router) startDiscoveredSession(cwd, initialMsg, model, backend string, snd *sender.Sender) (string, error) {
+	tempID := newUUIDv4()
+	ctx, cancel := context.WithCancel(context.Background())
+	realID, ch, err := snd.StartCodexSession(ctx, tempID, initialMsg, cwd, model, codexDiscoverTimeout)
+	if err != nil {
+		cancel()
+		return "", err
+	}
+
+	tok := &sendToken{cancel: cancel}
+	now := time.Now()
+	r.sendMu.Lock()
+	r.activeSend[realID] = tok
+	r.creating[realID] = core.Session{
+		ID:          realID,
+		Cwd:         cwd,
+		Status:      core.StatusRunning,
+		StartedAt:   now,
+		LastEventAt: now,
+		Backend:     backend,
+	}
+	r.sendMu.Unlock()
+
+	go func() {
+		defer r.releaseSend(realID, tok)
+		asm := newStreamAssembler(backend)
+		for ev := range ch {
+			r.publishStream(realID, asm, ev)
+		}
+	}()
+	return realID, nil
 }
 
 func (r *Router) runStart(ctx context.Context, sessionID, prompt, cwd, model string, tok *sendToken) {

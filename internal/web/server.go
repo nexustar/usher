@@ -398,6 +398,10 @@ var allowedModels = map[string]bool{
 	"fable":      true,
 	// Version-pinned full ID (no short alias; plain "opus" resolves to 4.8).
 	"claude-opus-4-6": true,
+	// Codex models — the create form routes these to the Codex backend
+	// (backendForModel: gpt-*/o-series → codex). Passed to codex as `-c model=`.
+	"gpt-5.5":      true,
+	"gpt-5.4-mini": true,
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
