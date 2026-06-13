@@ -164,14 +164,16 @@ sessions together. Consequences for the design:
       backend-neutral turn.user/part broker events, so Codex replies stream live like
       Claude's (router_test drives it with real codex lines). main.go wires both senders
       + sources, verified live (codex sessions list + transcript render). TODO: web model
-      picker lists both backends' models (+ "default" disambiguation). Codex new-session **sender side
-      done**: Sender.StartCodexSession spawns under a temp window handle, waitReady,
-      injects, discoverWait→real id (diffed against backend.knownSessionIDs snapshot),
-      pool.rename window temp→real, then streams the turn under the real id;
-      Sender.PreAssignsID() exposes the branch (sender_test covers knownSessionIDs/rename/
-      PreAssignsID). TODO: router StartSession/CreateSession branch on PreAssignsID to call
-      StartCodexSession (register creating/activeSend/broker under the discovered id, no
-      placeholder) + live-verify creating a Codex session end to end.
+      picker lists both backends' models. **Codex new-session done + live-verified**: StartSession
+      branches on PreAssignsID → startDiscoveredSession → Sender.StartCodexSession (spawn
+      under temp handle → waitReady → inject → discoverWait→real id → pool.rename window
+      temp→real → stream under real id); registers creating/activeSend/broker under the
+      discovered id, no placeholder. allowedModels gains gpt-5.5/gpt-5.4-mini (server
+      gate). Live test: POST {model:gpt-5.5} in an untrusted cwd → Codex's own UUIDv7, trust
+      auto-accepted, turn ran, listed backend=codex status=live, transcript rendered.
+      TODO (polish): web app.js model dropdown should list the Codex models (grouped /
+      labeled by backend, "default" per backend); CreateSession (agent path, no model
+      param) is still Claude-only.
 
 ## Design decision: new-session identity for Codex
 
