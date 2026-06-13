@@ -99,9 +99,9 @@ flow is far simpler and less race-prone than Claude's** — there is no resume c
 - [x] M2 — discovery: `Source` interface (Root/IsSessionFile/SessionID/ReadMeta)
       with ClaudeSource + CodexSource; Discovery is now layout-agnostic. Codex's
       date-partitioned `~/.codex/sessions` is discovered by filename shape, not depth.
-- [~] M3 — backend seam in the sender. Done: tailer's turn-completion is now a
-      `tailConfig.turnComplete` func (Claude `system/turn_duration` default; Codex plugs
-      `codexrollout.IsTurnComplete`). TODO: spawn-command + env-scrub + TUI-prep seam.
+- [x] M3 — backend seam in the sender: tailer turn-completion is a
+      `tailConfig.turnComplete` func, and the spawn-command / env-scrub / TUI-prep seams
+      are the `backend` interface below (claudeBackend now holds the Claude logic).
 - [~] M4 — Codex sender. **Spike + backend logic done** (`internal/sender/backend.go`):
       a `backend` interface (spawnCommand / preAssignsID / locate / discoverNewID /
       turnComplete / waitReady) with the `codexBackend` impl, all pure parts unit-tested:
@@ -110,9 +110,13 @@ flow is far simpler and less race-prone than Claude's** — there is no resume c
       - resume: `codex resume <id>` (straight in, no chooser)
       - env-scrub: nestedCodexEnv = CODEX_THREAD_ID (+ CI/SANDBOX defensively)
       - locate: `<sessionsDir>/*/*/*/rollout-*-<id>.jsonl`
-      - waitReady: trust-accept (Enter) then footer marker (compiles; integration-tested in wiring)
-      TODO: claudeBackend impl + wire pool.spawn & Sender to delegate to `backend`;
-      NewCodex constructor; main.go backend selection.
+      - waitReady: trust-accept (Enter) then footer marker
+      Wiring done: claudeBackend holds the existing Claude logic (deduped via
+      claudeSpawnCommand); Sender delegates waitReady/locate/turnComplete to s.backend;
+      pool gained an optional spawnOverride (nil = Claude default → all tests unchanged).
+      TODO: `NewCodex` constructor (sets pool.spawnOverride + codex turnComplete); the
+      Codex new-session flow in run() (preAssignsID=false → discoverNewID + rename the
+      tmux window once Codex's own id is known); main.go backend selection.
 - [ ] M5 — hook adapter: register `PermissionRequest` hook (hooks.json), map decision shape
 - [ ] M6 — wiring: backend selection, web/router end-to-end, `usher setup` for codex
 

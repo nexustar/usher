@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +48,7 @@ type timing struct {
 
 type Sender struct {
 	pool        *pool
+	backend     backend
 	projectsDir string
 	logger      *slog.Logger
 	t           timing
@@ -87,20 +87,24 @@ func New(claudeCmd, permissionMode, projectsDir, socket, hookSock string, maxLiv
 		env = append(env, "USHER_HOOK_SOCK="+hookSock)
 	}
 	runner := execRunner{bin: "tmux", socket: socket}
+	t := timing{
+		spawnSettle:   5 * time.Second,
+		trustToInject: 1500 * time.Millisecond,
+		warmSettle:    400 * time.Millisecond,
+		resumeReady:   30 * time.Second,
+		confirm:       8 * time.Second,
+		poll:          150 * time.Millisecond,
+	}
+	p := newPool(runner, claudeCmd, extra, env, maxLive, logger)
+	b := claudeBackend{p: p, t: t, projectsDir: projectsDir, claudeCmd: claudeCmd, extraArgs: extra}
 	s := &Sender{
-		pool:        newPool(runner, claudeCmd, extra, env, maxLive, logger),
+		pool:        p,
+		backend:     b,
 		projectsDir: projectsDir,
 		logger:      logger,
 		busy:        make(map[string]struct{}),
-		t: timing{
-			spawnSettle:   5 * time.Second,
-			trustToInject: 1500 * time.Millisecond,
-			warmSettle:    400 * time.Millisecond,
-			resumeReady:   30 * time.Second,
-			confirm:       8 * time.Second,
-			poll:          150 * time.Millisecond,
-		},
-		tail: tailConfig{poll: 150 * time.Millisecond, appearWait: 20 * time.Second},
+		t:           t,
+		tail:        tailConfig{poll: 150 * time.Millisecond, appearWait: 20 * time.Second, turnComplete: b.turnComplete},
 	}
 	s.pool.isBusy = s.isBusy
 	return s
@@ -154,7 +158,7 @@ func (s *Sender) Inject(ctx context.Context, sessionID, prompt, cwd string) erro
 	if err != nil {
 		return err
 	}
-	if !s.readyForInject(ctx, sessionID, fresh, true) {
+	if !s.backend.waitReady(ctx, sessionID, cwd, fresh, true) {
 		return ctx.Err()
 	}
 	return s.pool.inject(sessionID, prompt)
@@ -224,7 +228,7 @@ func (s *Sender) run(ctx context.Context, sessionID, prompt, cwd, model string, 
 		}
 
 		// Get the TUI ready to receive the prompt.
-		if !s.readyForInject(ctx, sessionID, fresh, resume) {
+		if !s.backend.waitReady(ctx, sessionID, cwd, fresh, resume) {
 			return
 		}
 
@@ -266,25 +270,6 @@ func (s *Sender) run(ctx context.Context, sessionID, prompt, cwd, model string, 
 	return out, nil
 }
 
-// readyForInject prepares the TUI to receive a pasted prompt: a fresh resume
-// answers the long-session chooser, a fresh new window dismisses the trust
-// prompt, a warm window just needs a beat. Returns false on ctx cancel. Shared
-// by the tracked (run) and untracked (Inject) paths so both prep identically.
-func (s *Sender) readyForInject(ctx context.Context, sessionID string, fresh, resume bool) bool {
-	switch {
-	case fresh && resume:
-		return s.waitResumeReady(ctx, sessionID)
-	case fresh:
-		if !sleepCtx(ctx, s.t.spawnSettle) {
-			return false
-		}
-		_ = s.pool.acceptTrust(sessionID)
-		return sleepCtx(ctx, s.t.trustToInject)
-	default:
-		return sleepCtx(ctx, s.t.warmSettle)
-	}
-}
-
 // Markers for matching TUI states in a plain pane capture: the resume chooser's
 // two option lines, the idle input box's footer, and the chooser's arrow.
 const (
@@ -307,49 +292,9 @@ func chooserArrowOn(text, option string) bool {
 	return false
 }
 
-// waitResumeReady answers the long-resume chooser ("full session") and waits
-// for the input box, tracking the selection arrow each tick: claude swallows
-// keys aimed at the select before it mounts, so a swallowed Down must self-retry
-// (the arrow hasn't moved). Bounded by s.t.resumeReady; false only on ctx cancel.
-func (s *Sender) waitResumeReady(ctx context.Context, sessionID string) bool {
-	deadline := time.NewTimer(s.t.resumeReady)
-	defer deadline.Stop()
-	ticker := time.NewTicker(s.t.poll)
-	defer ticker.Stop()
-	for {
-		text, _ := s.pool.paneText(sessionID)
-		switch {
-		case strings.Contains(text, inputReadyMarker):
-			// Box ready. Settle first or the Enter after inject's paste races
-			// the still-settling TUI and is dropped (the "lost Enter" on resume).
-			return sleepCtx(ctx, s.t.trustToInject)
-		case chooserArrowOn(text, resumeChooserMarker):
-			// Arrow on "full session": confirm.
-			_ = s.pool.sendKeys(sessionID, "Enter")
-		case chooserArrowOn(text, resumeSummaryMarker):
-			// Arrow on the summary default: step down (a leaked Down is harmless,
-			// unlike a digit or Enter); re-read next tick.
-			_ = s.pool.sendKeys(sessionID, "Down")
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-deadline.C:
-			return true
-		case <-ticker.C:
-		}
-	}
-}
-
-// locate finds the session jsonl by its globally unique id, sidestepping the
-// ambiguous cwd<->dir mapping (a cwd may legitimately contain '-'). Returns ""
-// if not found.
+// locate finds the session log for sessionID via the active backend.
 func (s *Sender) locate(sessionID string) string {
-	matches, err := filepath.Glob(filepath.Join(s.projectsDir, "*", sessionID+".jsonl"))
-	if err != nil || len(matches) == 0 {
-		return ""
-	}
-	return matches[0]
+	return s.backend.locate(sessionID)
 }
 
 // locateWait polls locate until the file appears or timeout/ctx fires.

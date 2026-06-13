@@ -60,6 +60,12 @@ type pool struct {
 	max       int
 	logger    *slog.Logger
 
+	// spawnOverride, if set, builds the in-window command instead of the default
+	// Claude builder (claudeSpawnCommand). The Sender wires it to a backend's
+	// spawnCommand for non-Claude agents (Codex); nil keeps the Claude default,
+	// so the existing path and its tests are unaffected.
+	spawnOverride func(sessionID, cwd, model string, resume bool) string
+
 	// isBusy reports whether a session has an in-flight turn and so must not be
 	// LRU-evicted (killing it mid-turn would drop the running turn's output
 	// before it reaches the jsonl). Set by the Sender after construction; nil
@@ -176,35 +182,42 @@ var nestedClaudeEnv = []string{
 	"AI_AGENT",
 }
 
+// claudeSpawnCommand builds the in-window shell command for an interactive
+// claude: `env -u CLAUDE_* claude --session-id|--resume <id> [--model …] [args]`.
+// The env -u prefix unsets nested-claude markers inside the window itself, so it
+// covers both pollution sources (usher's environ and the tmux server's frozen
+// env) without tracking either; unsetting an absent var is a no-op. --model
+// applies only at brand-new spawn (claude ignores it on --resume, which keeps
+// the model the session was created with), so it rides the --session-id path
+// only. Extracted so claudeBackend and the pool default share one builder.
+func claudeSpawnCommand(claudeCmd string, extraArgs []string, sessionID, cwd, model string, resume bool) string {
+	idFlag := "--session-id"
+	if resume {
+		idFlag = "--resume"
+	}
+	parts := []string{"env"}
+	for _, v := range nestedClaudeEnv {
+		parts = append(parts, "-u", v)
+	}
+	parts = append(parts, shellQuote(claudeCmd), idFlag, shellQuote(sessionID))
+	if !resume && model != "" {
+		parts = append(parts, "--model", shellQuote(model))
+	}
+	for _, a := range extraArgs {
+		parts = append(parts, shellQuote(a))
+	}
+	return strings.Join(parts, " ")
+}
+
 // spawn creates the window running interactive claude and dismisses the
 // first-launch "trust this folder" prompt (CR on the default = trust). The
 // trust prompt only appears for not-yet-trusted cwds; the CR is a harmless
 // no-op on an already-trusted resume.
 func (p *pool) spawn(sessionID, cwd, model string, resume bool) error {
-	idFlag := "--session-id"
-	if resume {
-		idFlag = "--resume"
+	cmd := claudeSpawnCommand(p.claudeCmd, p.extraArgs, sessionID, cwd, model, resume)
+	if p.spawnOverride != nil {
+		cmd = p.spawnOverride(sessionID, cwd, model, resume)
 	}
-	// The env -u prefix unsets nested-claude markers inside the window itself,
-	// so it covers both pollution sources (usher's environ and the tmux
-	// server's frozen env) without tracking either. Unsetting an absent var is
-	// a no-op.
-	parts := []string{"env"}
-	for _, v := range nestedClaudeEnv {
-		parts = append(parts, "-u", v)
-	}
-	parts = append(parts, shellQuote(p.claudeCmd), idFlag, shellQuote(sessionID))
-	// --model applies only at brand-new spawn: claude ignores it on --resume
-	// (a resumed session keeps the model it was created with), so setting it
-	// only on the --session-id path matches that and avoids dead flags. The
-	// model carries through usher's later warm/resume re-spawns for free.
-	if !resume && model != "" {
-		parts = append(parts, "--model", shellQuote(model))
-	}
-	for _, a := range p.extraArgs {
-		parts = append(parts, shellQuote(a))
-	}
-	cmd := strings.Join(parts, " ")
 
 	// -e propagates env (notably USHER_HOOK_SOCK) into the spawned claude, so
 	// its permission hooks route back to THIS usher instance rather than

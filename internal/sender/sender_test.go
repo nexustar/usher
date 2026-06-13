@@ -36,19 +36,22 @@ func testSender(t *testing.T, runner tmuxRunner, id string) (*Sender, string) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	tm := timing{
+		spawnSettle:   10 * time.Millisecond,
+		trustToInject: 5 * time.Millisecond,
+		warmSettle:    5 * time.Millisecond,
+		resumeReady:   100 * time.Millisecond,
+		confirm:       1 * time.Second,
+		poll:          10 * time.Millisecond,
+	}
+	p := newPool(runner, "claude", nil, nil, 8, quietLogger())
 	s := &Sender{
-		pool:        newPool(runner, "claude", nil, nil, 8, quietLogger()),
+		pool:        p,
+		backend:     claudeBackend{p: p, t: tm, projectsDir: dir, claudeCmd: "claude"},
 		projectsDir: dir,
 		logger:      quietLogger(),
-		t: timing{
-			spawnSettle:   10 * time.Millisecond,
-			trustToInject: 5 * time.Millisecond,
-			warmSettle:    5 * time.Millisecond,
-			resumeReady:   100 * time.Millisecond,
-			confirm:       1 * time.Second,
-			poll:          10 * time.Millisecond,
-		},
-		tail: tailConfig{poll: 10 * time.Millisecond, appearWait: 2 * time.Second},
+		t:           tm,
+		tail:        tailConfig{poll: 10 * time.Millisecond, appearWait: 2 * time.Second},
 	}
 	return s, filepath.Join(sub, id+".jsonl")
 }

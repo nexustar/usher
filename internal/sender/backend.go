@@ -42,6 +42,95 @@ type backend interface {
 	waitReady(ctx context.Context, sessionID, cwd string, fresh, resume bool) bool
 }
 
+// --- Claude --------------------------------------------------------------
+
+var _ backend = claudeBackend{}
+
+// claudeBackend drives interactive `claude`, the original behavior, now behind
+// the backend interface. usher pre-assigns the session id (--session-id), the
+// log is a flat <projectsDir>/<cwd>/<id>.jsonl, the turn ends on
+// system/turn_duration, and the TUI may show a "trust this folder" prompt and a
+// long-resume chooser that must be answered toward "full session as-is".
+type claudeBackend struct {
+	p           *pool
+	t           timing
+	projectsDir string
+	claudeCmd   string
+	extraArgs   []string
+}
+
+func (b claudeBackend) preAssignsID() bool            { return true }
+func (b claudeBackend) turnComplete(line []byte) bool { return isTurnComplete(line) }
+
+// discoverNewID is unused for Claude (usher assigns the id up front).
+func (b claudeBackend) discoverNewID(cwd string, known map[string]bool) string { return "" }
+
+func (b claudeBackend) spawnCommand(sessionID, cwd, model string, resume bool) string {
+	return claudeSpawnCommand(b.claudeCmd, b.extraArgs, sessionID, cwd, model, resume)
+}
+
+// locate finds the session jsonl by its globally unique id, sidestepping the
+// ambiguous cwd<->dir mapping (a cwd may legitimately contain '-'). "" if absent.
+func (b claudeBackend) locate(sessionID string) string {
+	matches, err := filepath.Glob(filepath.Join(b.projectsDir, "*", sessionID+".jsonl"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	return matches[0]
+}
+
+// waitReady prepares the TUI to receive a pasted prompt: a fresh resume answers
+// the long-session chooser, a fresh new window dismisses the trust prompt, a
+// warm window just needs a beat. cwd is unused (the markers are global). Returns
+// false on ctx cancel.
+func (b claudeBackend) waitReady(ctx context.Context, sessionID, cwd string, fresh, resume bool) bool {
+	switch {
+	case fresh && resume:
+		return b.waitResumeReady(ctx, sessionID)
+	case fresh:
+		if !sleepCtx(ctx, b.t.spawnSettle) {
+			return false
+		}
+		_ = b.p.acceptTrust(sessionID)
+		return sleepCtx(ctx, b.t.trustToInject)
+	default:
+		return sleepCtx(ctx, b.t.warmSettle)
+	}
+}
+
+// waitResumeReady answers the long-resume chooser ("full session") and waits for
+// the input box, tracking the selection arrow each tick: claude swallows keys
+// aimed at the select before it mounts, so a swallowed Down must self-retry (the
+// arrow hasn't moved). Bounded by t.resumeReady; false only on ctx cancel.
+func (b claudeBackend) waitResumeReady(ctx context.Context, sessionID string) bool {
+	deadline := time.NewTimer(b.t.resumeReady)
+	defer deadline.Stop()
+	ticker := time.NewTicker(b.t.poll)
+	defer ticker.Stop()
+	for {
+		text, _ := b.p.paneText(sessionID)
+		switch {
+		case strings.Contains(text, inputReadyMarker):
+			// Box ready. Settle first or the Enter after inject's paste races the
+			// still-settling TUI and is dropped (the "lost Enter" on resume).
+			return sleepCtx(ctx, b.t.trustToInject)
+		case chooserArrowOn(text, resumeChooserMarker):
+			_ = b.p.sendKeys(sessionID, "Enter")
+		case chooserArrowOn(text, resumeSummaryMarker):
+			// Arrow on the summary default: step down (a leaked Down is harmless,
+			// unlike a digit or Enter); re-read next tick.
+			_ = b.p.sendKeys(sessionID, "Down")
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return true
+		case <-ticker.C:
+		}
+	}
+}
+
 // --- Codex ---------------------------------------------------------------
 
 // nestedCodexEnv lists the per-session markers Codex exports into processes it
