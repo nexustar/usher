@@ -102,10 +102,151 @@ func runSetup(args []string) error {
 		fmt.Printf("  matcher: (all tools)\n")
 		fmt.Printf("  command: %s\n", cmd)
 		fmt.Printf("  timeout: 604800s (7d — effectively unbounded; web UI resolves permissions)\n")
+	}
+
+	// Codex coexists when it's installed. Register its PermissionRequest hook in
+	// ~/.codex/config.toml too. Non-fatal: the Claude hook above is already in.
+	if err := setupCodexHook(home, exe, *sock, *remove); err != nil {
+		fmt.Fprintln(os.Stderr, "codex hook setup:", err)
+	}
+
+	if !*remove {
 		fmt.Println()
 		fmt.Println("Re-run with --remove to uninstall.")
 	}
 	return nil
+}
+
+// Codex's config.toml is TOML, which the standard library can't encode. Rather
+// than parse it, usher manages a single marker-delimited block: setup strips any
+// existing block and (re)appends a fresh one, so re-running is idempotent and a
+// user's own config is never touched.
+const (
+	codexHookBegin = "# >>> usher codex permission hook (managed; do not edit this block) >>>"
+	codexHookEnd   = "# <<< usher codex permission hook <<<"
+)
+
+// setupCodexHook installs (or, with remove, uninstalls) the Codex
+// PermissionRequest hook in ~/.codex/config.toml. It is a no-op when Codex isn't
+// installed (~/.codex absent) and nothing to remove.
+func setupCodexHook(home, exe, sock string, remove bool) error {
+	codexDir := filepath.Join(home, ".codex")
+	configPath := filepath.Join(codexDir, "config.toml")
+
+	if _, err := os.Stat(codexDir); errors.Is(err, os.ErrNotExist) {
+		if !remove {
+			fmt.Println()
+			fmt.Println("codex not detected (~/.codex absent); skipped codex hook — re-run setup after installing codex.")
+		}
+		return nil
+	}
+
+	existing, err := os.ReadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", configPath, err)
+	}
+	content := stripCodexBlock(string(existing))
+
+	if remove {
+		if err := writeCodexConfig(configPath, content); err != nil {
+			return err
+		}
+		fmt.Printf("removed usher hook from %s\n", configPath)
+		return nil
+	}
+
+	// A user's own single-table [hooks.PermissionRequest] would collide with our
+	// array-of-tables append (invalid TOML). Don't risk corrupting it.
+	if hasBareTable(content, "[hooks.PermissionRequest]") {
+		return fmt.Errorf("%s already defines [hooks.PermissionRequest]; add the usher hook manually", configPath)
+	}
+
+	cmd := exe + " hook PermissionRequest"
+	if sock != "" {
+		cmd = "USHER_HOOK_SOCK=" + sock + " " + cmd
+	}
+	block := codexHookBlock(cmd)
+
+	content = strings.TrimRight(content, "\n")
+	if content != "" {
+		content += "\n\n"
+	}
+	content += block
+
+	if err := writeCodexConfig(configPath, content); err != nil {
+		return err
+	}
+	fmt.Printf("installed usher hook in %s\n", configPath)
+	fmt.Printf("  event: PermissionRequest (all tools)\n")
+	fmt.Printf("  command: %s hook PermissionRequest\n", exe)
+	return nil
+}
+
+// codexHookBlock renders the marker-delimited TOML block that registers the
+// usher PermissionRequest hook (matcher omitted = all tools).
+func codexHookBlock(cmd string) string {
+	return codexHookBegin + "\n" +
+		"[[hooks.PermissionRequest]]\n" +
+		"[[hooks.PermissionRequest.hooks]]\n" +
+		"type = \"command\"\n" +
+		"command = " + tomlBasicString(cmd) + "\n" +
+		"timeout = 604800\n" +
+		codexHookEnd + "\n"
+}
+
+// stripCodexBlock removes a previously-installed usher block (between the
+// markers, inclusive) from TOML content, leaving the rest untouched.
+func stripCodexBlock(content string) string {
+	i := strings.Index(content, codexHookBegin)
+	if i < 0 {
+		return content
+	}
+	head := strings.TrimRight(content[:i], "\n ")
+	end := len(content)
+	if k := strings.Index(content[i:], codexHookEnd); k >= 0 {
+		end = i + k + len(codexHookEnd)
+		for end < len(content) && content[end] == '\n' {
+			end++
+		}
+	}
+	tail := content[end:]
+	switch {
+	case head == "":
+		return tail
+	case tail == "":
+		return head + "\n"
+	default:
+		return head + "\n\n" + tail
+	}
+}
+
+// hasBareTable reports whether content has a line that is exactly table (a
+// single-bracket TOML table header), ignoring our own [[…]] array-of-tables.
+func hasBareTable(content, table string) bool {
+	for _, ln := range strings.Split(content, "\n") {
+		if strings.TrimSpace(ln) == table {
+			return true
+		}
+	}
+	return false
+}
+
+// tomlBasicString quotes s as a TOML basic string (double-quoted, backslash and
+// quote escaped) — enough for an executable path + command.
+func tomlBasicString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
+}
+
+func writeCodexConfig(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 const usherHookCmdSuffix = " hook PreToolUse"
