@@ -1065,6 +1065,24 @@ type hookPayload struct {
 	TranscriptPath string          `json:"transcript_path"`
 }
 
+// codexPermissionDecision builds Codex's PermissionRequest hook reply:
+// {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":
+// {"behavior":"allow"|"deny","message":"…"}}}. message is included only on a
+// deny with a reason. An empty/allow reply lets the tool proceed; deny blocks it
+// (Codex's built-in approval flow is skipped because the hook decided).
+func codexPermissionDecision(behavior, reason string) map[string]any {
+	dec := map[string]any{"behavior": behavior}
+	if behavior == "deny" && reason != "" {
+		dec["message"] = reason
+	}
+	return map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName": "PermissionRequest",
+			"decision":      dec,
+		},
+	}
+}
+
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	eventName := r.PathValue("event")
 
@@ -1080,7 +1098,10 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		ev.HookEventName = eventName
 	}
 
-	if eventName != "PreToolUse" {
+	// PreToolUse is Claude Code's tool-approval hook; PermissionRequest is
+	// Codex's. The request payload (snake_case session_id/tool_name/tool_input/
+	// cwd) is identical for both — only the decision the hook must emit differs.
+	if eventName != "PreToolUse" && eventName != "PermissionRequest" {
 		writeJSON(w, http.StatusOK, map[string]any{})
 		return
 	}
@@ -1102,6 +1123,15 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	if decision == "" {
 		decision = "allow"
 	}
+
+	if eventName == "PermissionRequest" {
+		// Codex's shape (see codexPermissionDecision). No updatedInput channel
+		// (reserved → fails closed), so the AskUserQuestion answer-merge below is
+		// Claude-only.
+		writeJSON(w, http.StatusOK, codexPermissionDecision(decision, resp.Reason))
+		return
+	}
+
 	hookOut := map[string]any{
 		"hookEventName":            eventName,
 		"permissionDecision":       decision,

@@ -116,3 +116,33 @@ func TestGzipMiddleware(t *testing.T) {
 		}
 	})
 }
+
+func TestCodexPermissionDecision(t *testing.T) {
+	// allow → behavior allow, no message
+	allow := codexPermissionDecision("allow", "ignored reason")
+	hso, _ := allow["hookSpecificOutput"].(map[string]any)
+	if hso == nil || hso["hookEventName"] != "PermissionRequest" {
+		t.Fatalf("allow: bad hookSpecificOutput: %v", allow)
+	}
+	dec, _ := hso["decision"].(map[string]any)
+	if dec == nil || dec["behavior"] != "allow" {
+		t.Fatalf("allow: behavior = %v", dec)
+	}
+	if _, hasMsg := dec["message"]; hasMsg {
+		t.Errorf("allow must not carry a message: %v", dec)
+	}
+
+	// deny with reason → behavior deny + message
+	deny := codexPermissionDecision("deny", "blocked by usher")
+	dec = deny["hookSpecificOutput"].(map[string]any)["decision"].(map[string]any)
+	if dec["behavior"] != "deny" || dec["message"] != "blocked by usher" {
+		t.Fatalf("deny: decision = %v", dec)
+	}
+
+	// deny without reason → behavior deny, no message key
+	bare := codexPermissionDecision("deny", "")
+	dec = bare["hookSpecificOutput"].(map[string]any)["decision"].(map[string]any)
+	if _, hasMsg := dec["message"]; hasMsg {
+		t.Errorf("deny without reason must omit message: %v", dec)
+	}
+}

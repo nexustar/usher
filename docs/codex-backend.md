@@ -136,7 +136,19 @@ sessions together. Consequences for the design:
       works end-to-end through Send (spawn `codex resume <id>` → composer → inject →
       tail rollout → task_complete), covered by a sender test on the fake tmux.
       TODO: the Codex new-session id handoff (see "Design decision" below) + main.go.
-- [ ] M5 — hook adapter: register `PermissionRequest` hook (hooks.json), map decision shape
+- [~] M5 — hook adapter. Done: the hook server (web handleHook) accepts Codex's
+      `PermissionRequest` alongside Claude's `PreToolUse` — the request payload is
+      identical snake_case (session_id/tool_name/tool_input/cwd), and ownership
+      (router.anyHas) + auto-approve already span backends, so it reuses HandleHook and
+      just emits Codex's reply shape via `codexPermissionDecision`
+      ({hookSpecificOutput:{hookEventName,decision:{behavior,message}}}; web_test locks
+      it). `usher hook` is a transparent pipe, no change. **Registration via config.toml
+      is NOT hooks.json** (corrected from research): codex reads `[hooks.PermissionRequest]`
+      from ~/.codex/config.toml — the command is `sh -lc`-run with the JSON on stdin, cwd
+      set, inheriting USHER_HOOK_SOCK from the codex process. TODO: `usher setup` writes
+      that `[[hooks.PermissionRequest]]` block into ~/.codex/config.toml (TOML append +
+      idempotency marker, no TOML dep), and pass hookSock to the codex sender (already done
+      in main.go).
 - [~] M6 — coexistence wiring. Done: multi-source discovery (above); router routes
       per-session ops by `session.Backend` and SendNew by `backendForModel(model)`,
       holds a `senders` map (New = claude-only default + `SetSender("codex", …)`), and
