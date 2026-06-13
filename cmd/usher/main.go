@@ -82,6 +82,9 @@ func serve(args []string) error {
 	projectsDir := fs.String("projects-dir", defaultProjectsDir(), "Claude Code projects directory")
 	dataDir := fs.String("data-dir", defaultDataDir(), "usher data directory (XDG_DATA_HOME/usher)")
 	claudeCmd := fs.String("claude", "claude", "path to the claude binary")
+	codexCmd := fs.String("codex", "codex", "path to the codex binary (Codex backend)")
+	codexSessionsDir := fs.String("codex-sessions-dir", defaultCodexSessionsDir(),
+		"Codex rollout sessions directory; the Codex backend auto-enables when it exists")
 	permissionMode := fs.String("permission-mode", "default",
 		"--permission-mode passed to claude (default|acceptEdits|bypassPermissions|plan)")
 	tmuxSocket := fs.String("tmux-socket", "usher",
@@ -131,7 +134,18 @@ func serve(args []string) error {
 		)
 	}
 
-	d, err := discovery.New(*projectsDir, logger)
+	// Claude is always present; Codex coexists when its sessions dir exists (it
+	// writes ~/.codex/sessions only once codex has run). A separate tmux socket
+	// keeps each backend's process pool from adopting the other's windows.
+	sources := []discovery.Source{discovery.NewClaudeSource(*projectsDir)}
+	var codexSender *sender.Sender
+	if dir := *codexSessionsDir; dir != "" && isDir(dir) {
+		sources = append(sources, discovery.NewCodexSource(dir))
+		codexSender = sender.NewCodex(*codexCmd, dir, *tmuxSocket+"-codex", hookSockPath(*dataDir), nil, *maxLiveSessions, logger)
+		logger.Info("codex backend enabled", "sessions_dir", dir)
+	}
+
+	d, err := discovery.NewMulti(logger, sources...)
 	if err != nil {
 		return err
 	}
@@ -143,6 +157,9 @@ func serve(args []string) error {
 		time.Duration(*autoArchiveDays)*24*time.Hour,
 	)
 	r := router.New(d, sd, b, h, archiveStore)
+	if codexSender != nil {
+		r.SetSender("codex", codexSender)
+	}
 
 	mainStore, err := mainchat.NewStore(filepath.Join(*dataDir, "mainchats"))
 	if err != nil {
@@ -220,6 +237,19 @@ func defaultProjectsDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".claude", "projects")
+}
+
+func defaultCodexSessionsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex", "sessions")
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 func defaultDataDir() string {
