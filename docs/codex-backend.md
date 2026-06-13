@@ -102,13 +102,17 @@ flow is far simpler and less race-prone than Claude's** — there is no resume c
 - [~] M3 — backend seam in the sender. Done: tailer's turn-completion is now a
       `tailConfig.turnComplete` func (Claude `system/turn_duration` default; Codex plugs
       `codexrollout.IsTurnComplete`). TODO: spawn-command + env-scrub + TUI-prep seam.
-- [~] M4 — Codex sender. **Live spike done** (markers above). TODO impl:
-      - spawn new: `codex` (no `--session-id` flag exists → can't pre-assign id;
-        spawn, inject, then discover newest rollout in cwd to learn the id)
+- [~] M4 — Codex sender. **Spike + backend logic done** (`internal/sender/backend.go`):
+      a `backend` interface (spawnCommand / preAssignsID / locate / discoverNewID /
+      turnComplete / waitReady) with the `codexBackend` impl, all pure parts unit-tested:
+      - spawn new: `env -u CODEX_* codex [-c model=…]` (no id — preAssignsID=false;
+        discoverNewID finds the newest rollout in cwd after spawn)
       - resume: `codex resume <id>` (straight in, no chooser)
-      - env-scrub: CODEX_* equivalents of nestedClaudeEnv (verify which Codex exports)
-      - locate: glob `<sessionsDir>/*/*/*/rollout-*-<id>.jsonl` (date-partitioned)
-      - turn-done: already wired via turnComplete
+      - env-scrub: nestedCodexEnv = CODEX_THREAD_ID (+ CI/SANDBOX defensively)
+      - locate: `<sessionsDir>/*/*/*/rollout-*-<id>.jsonl`
+      - waitReady: trust-accept (Enter) then footer marker (compiles; integration-tested in wiring)
+      TODO: claudeBackend impl + wire pool.spawn & Sender to delegate to `backend`;
+      NewCodex constructor; main.go backend selection.
 - [ ] M5 — hook adapter: register `PermissionRequest` hook (hooks.json), map decision shape
 - [ ] M6 — wiring: backend selection, web/router end-to-end, `usher setup` for codex
 
