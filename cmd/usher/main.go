@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -85,6 +86,9 @@ func serve(args []string) error {
 	codexCmd := fs.String("codex", "codex", "path to the codex binary (Codex backend)")
 	codexSessionsDir := fs.String("codex-sessions-dir", defaultCodexSessionsDir(),
 		"Codex rollout sessions directory; the Codex backend auto-enables when it exists")
+	codexArgs := fs.String("codex-args", "-c approval_policy=untrusted",
+		"extra flags for spawned codex (space-separated). Default routes most tool approvals "+
+			"through usher's hook (like Claude); set empty to use codex's own default policy.")
 	permissionMode := fs.String("permission-mode", "default",
 		"--permission-mode passed to claude (default|acceptEdits|bypassPermissions|plan)")
 	tmuxSocket := fs.String("tmux-socket", "usher",
@@ -141,7 +145,7 @@ func serve(args []string) error {
 	var codexSender *sender.Sender
 	if dir := *codexSessionsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewCodexSource(dir))
-		codexSender = sender.NewCodex(*codexCmd, dir, *tmuxSocket+"-codex", hookSockPath(*dataDir), nil, *maxLiveSessions, logger)
+		codexSender = sender.NewCodex(*codexCmd, dir, *tmuxSocket+"-codex", hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, logger)
 		logger.Info("codex backend enabled", "sessions_dir", dir)
 	}
 

@@ -92,6 +92,30 @@ flow is far simpler and less race-prone than Claude's** — there is no resume c
 - Config: `~/.codex/config.toml` (TOML). Self-register hooks via `hooks.json`
   (JSON, stdlib-friendly) rather than editing TOML, to keep usher stdlib-only.
 
+## Hook firing — verified, with two non-obvious requirements (2026-06-14)
+
+Live-tested the full permission path. Two findings that are easy to miss and both
+turned into required behavior:
+
+1. **Hooks fire in the interactive TUI, NOT in `codex exec`.** In exec mode the
+   hook engine doesn't run (SessionStart/PermissionRequest never fire; permission
+   approvals there sit behind the under-development `exec_permission_approvals`
+   feature). usher drives the interactive TUI, so this is fine — but it means the
+   exec path could never have gated approvals. Confirmed: in the interactive TUI a
+   shell command fires `PermissionRequest` with `{tool_name:"Bash",
+   tool_input:{command:…}}`, and the hook's `{decision:{behavior:"allow"}}` lets
+   Codex proceed **without** its built-in approval prompt — exactly usher's
+   human-in-the-loop routing.
+2. **Codex won't run a config-declared hook until it's "trusted"** (a guard
+   against a malicious repo auto-running hooks). usher registered the hook itself,
+   so the codex sender now always passes **`--dangerously-bypass-hook-trust`**
+   (baked into codexBackend.spawnCommand). Without it the hook never fires and the
+   whole M5 path is silently dead. The codex sender also defaults to
+   `-c approval_policy=untrusted` (main.go `--codex-args`) so most tool calls
+   actually route through the hook, like Claude's permission gating.
+   (Aside: pass the policy via `-c approval_policy=…`, not the `--ask-for-approval`
+   flag — the flag form broke the interactive TUI spawn.)
+
 ## Product decision: coexistence (user, confirmed)
 
 usher runs **both backends at once** — one dashboard lists Claude *and* Codex

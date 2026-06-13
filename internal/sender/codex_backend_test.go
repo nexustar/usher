@@ -116,11 +116,17 @@ func TestCodexSpawnCommand(t *testing.T) {
 	if !strings.HasPrefix(got, "env -u CODEX_THREAD_ID") {
 		t.Errorf("env scrub prefix missing: %q", got)
 	}
+	if !strings.Contains(got, "--dangerously-bypass-hook-trust") {
+		t.Errorf("must bypass hook trust so usher's hook runs: %q", got)
+	}
 
 	// Resume: `codex resume <id>`, no model (resumed keeps its own).
 	got = b.spawnCommand("sess-123", "/tmp/p", "gpt-5.5", true)
 	if !strings.Contains(got, "resume 'sess-123'") {
 		t.Errorf("resume command malformed: %q", got)
+	}
+	if !strings.Contains(got, "--dangerously-bypass-hook-trust") {
+		t.Errorf("resume must also bypass hook trust: %q", got)
 	}
 	if strings.Contains(got, "model=") {
 		t.Errorf("resume must not set model: %q", got)

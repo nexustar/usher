@@ -185,6 +185,13 @@ func (b codexBackend) spawnCommand(sessionID, cwd, model string, resume bool) st
 		parts = append(parts, "-u", v)
 	}
 	parts = append(parts, shellQuote(b.codexCmd))
+	// Codex refuses to run config-declared hooks until they're "trusted"
+	// (a guard against a malicious repo's hooks auto-running). usher registers
+	// the PermissionRequest hook itself — a vetted source — so it bypasses that
+	// trust gate; without this the hook never fires and usher can't gate Codex's
+	// tool approvals at all. (Verified 2026-06-14: hooks fire in the interactive
+	// TUI, not in `codex exec`.)
+	parts = append(parts, "--dangerously-bypass-hook-trust")
 	if resume {
 		parts = append(parts, "resume", shellQuote(sessionID))
 	} else if model != "" {
