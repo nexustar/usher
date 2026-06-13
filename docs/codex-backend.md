@@ -75,8 +75,9 @@ assembler walks all lines in file order and interleaves the two.
 
 - [x] M0 — spike: validate schema/auth/CLI on live 0.139.0; branch; testdata
 - [x] M1 — `internal/codexrollout`: rollout → `jsonl.Turn`/`SessionMeta` parser + tests
-- [ ] M2 — discovery: parameterize root/file-filter/id-extraction/meta-reader so
-      `~/.codex/sessions` (date-partitioned, depth 3) is scanned alongside Claude's
+- [x] M2 — discovery: `Source` interface (Root/IsSessionFile/SessionID/ReadMeta)
+      with ClaudeSource + CodexSource; Discovery is now layout-agnostic. Codex's
+      date-partitioned `~/.codex/sessions` is discovered by filename shape, not depth.
 - [ ] M3 — `backend.Backend` interface; move Claude spawn/tail/turn-detection behind it
 - [ ] M4 — Codex sender: spawn (`codex` / `codex resume <id>`), TUI spawn/resume markers
       (live spike), turn-done via `task_complete`
