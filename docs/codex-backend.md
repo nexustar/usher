@@ -137,7 +137,14 @@ sessions together. Consequences for the design:
       tail rollout → task_complete), covered by a sender test on the fake tmux.
       TODO: the Codex new-session id handoff (see "Design decision" below) + main.go.
 - [ ] M5 — hook adapter: register `PermissionRequest` hook (hooks.json), map decision shape
-- [ ] M6 — wiring: backend selection, web/router end-to-end, `usher setup` for codex
+- [~] M6 — coexistence wiring. Done: multi-source discovery (above); router routes
+      per-session ops by `session.Backend` and SendNew by `backendForModel(model)`,
+      holds a `senders` map (New = claude-only default + `SetSender("codex", …)`), and
+      merges LiveSessions/Has across senders (router_test covers backendForModel). TODO:
+      main.go (build both senders + register codex source/sender/hook), router
+      publishStream → codexrollout.Assembler for Codex transcripts, web model picker
+      lists both backends' models (+ "default" backend disambiguation), Codex
+      new-session id handoff.
 
 ## Design decision: new-session identity for Codex
 

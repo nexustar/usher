@@ -29,10 +29,15 @@ import (
 
 type Router struct {
 	discovery *discovery.Discovery
-	sender    *sender.Sender
-	broker    *broker.Broker
-	hooks     *hook.Manager
-	archive   *archive.Store
+	// senders holds one Sender per backend ("claude", "codex"); usher manages
+	// both at once. A send is routed by the session's Backend tag (existing
+	// sessions) or the chosen model (new sessions). defaultBackend is the
+	// fallback when a backend is unknown/empty.
+	senders        map[string]*sender.Sender
+	defaultBackend string
+	broker         *broker.Broker
+	hooks          *hook.Manager
+	archive        *archive.Store
 
 	sendMu     sync.Mutex
 	activeSend map[string]*sendToken   // sessionID -> latest send's cancel handle
@@ -46,15 +51,79 @@ type sendToken struct {
 	cancel context.CancelFunc
 }
 
+// New builds a Router with a single Claude backend. Register additional
+// backends (Codex) with SetSender.
 func New(d *discovery.Discovery, s *sender.Sender, b *broker.Broker, h *hook.Manager, archiveStore *archive.Store) *Router {
 	return &Router{
-		discovery:  d,
-		sender:     s,
-		broker:     b,
-		hooks:      h,
-		archive:    archiveStore,
-		activeSend: map[string]*sendToken{},
-		creating:   map[string]core.Session{},
+		discovery:      d,
+		senders:        map[string]*sender.Sender{"claude": s},
+		defaultBackend: "claude",
+		broker:         b,
+		hooks:          h,
+		archive:        archiveStore,
+		activeSend:     map[string]*sendToken{},
+		creating:       map[string]core.Session{},
+	}
+}
+
+// SetSender registers the Sender for a backend (e.g. "codex"), enabling
+// coexistence: the router then routes each session to its backend's sender.
+func (r *Router) SetSender(backend string, s *sender.Sender) {
+	r.senders[backend] = s
+}
+
+// senderForBackend returns the Sender for a backend, falling back to the
+// default when the backend is empty or unregistered.
+func (r *Router) senderForBackend(backend string) *sender.Sender {
+	if s, ok := r.senders[backend]; ok {
+		return s
+	}
+	return r.senders[r.defaultBackend]
+}
+
+// senderFor returns the Sender owning an existing session, by its Backend tag.
+func (r *Router) senderFor(id string) *sender.Sender {
+	if s, ok := r.discovery.Get(id); ok {
+		return r.senderForBackend(s.Backend)
+	}
+	return r.senders[r.defaultBackend]
+}
+
+// anyHas reports whether any backend's sender holds a live process for id —
+// used for hook ownership, where the session's backend may not be resolved yet.
+func (r *Router) anyHas(id string) bool {
+	for _, s := range r.senders {
+		if s.Has(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// liveSet unions the live-session ids across every backend's sender.
+func (r *Router) liveSet() map[string]bool {
+	set := map[string]bool{}
+	for _, s := range r.senders {
+		for _, id := range s.LiveSessions() {
+			set[id] = true
+		}
+	}
+	return set
+}
+
+// backendForModel maps a new-session model choice to its backend. Model names
+// are unique across backends except the literal "default" (the UI resolves that
+// to an explicit backend); gpt-*/o-series/codex are Codex, everything else
+// (claude-*, opus, sonnet, haiku, fable) is Claude.
+func backendForModel(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(m, "gpt"), strings.HasPrefix(m, "o1"),
+		strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"),
+		strings.Contains(m, "codex"):
+		return "codex"
+	default:
+		return "claude"
 	}
 }
 
@@ -64,7 +133,7 @@ func New(d *discovery.Discovery, s *sender.Sender, b *broker.Broker, h *hook.Man
 // turn in flight is "running"; otherwise a warm pooled process is "live".
 func (r *Router) ListSessions() []core.Session {
 	sessions := r.discovery.List()
-	live := sliceToSet(r.sender.LiveSessions())
+	live := r.liveSet()
 	r.sendMu.Lock()
 	known := make(map[string]bool, len(sessions))
 	for i := range sessions {
@@ -102,18 +171,10 @@ func (r *Router) GetSession(id string) (core.Session, bool) {
 	r.sendMu.Unlock()
 	if running {
 		sess.Status = core.StatusRunning
-	} else if r.sender.Has(id) {
+	} else if r.senderForBackend(sess.Backend).Has(id) {
 		sess.Status = core.StatusLive
 	}
 	return sess, true
-}
-
-func sliceToSet(xs []string) map[string]bool {
-	m := make(map[string]bool, len(xs))
-	for _, x := range xs {
-		m[x] = true
-	}
-	return m
 }
 
 func (r *Router) SessionPath(id string) (string, bool) {
@@ -195,7 +256,7 @@ func (r *Router) DeleteSession(id string) error {
 	if tok != nil {
 		tok.cancel()
 	}
-	if err := r.sender.Kill(id); err != nil {
+	if err := r.senderFor(id).Kill(id); err != nil {
 		slog.Warn("kill session window on delete", "session", id, "err", err)
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -250,7 +311,7 @@ func (r *Router) SendToSession(id, text string) error {
 func (r *Router) injectDirect(sessionID, text, cwd string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := r.sender.Inject(ctx, sessionID, text, cwd); err != nil {
+	if err := r.senderFor(sessionID).Inject(ctx, sessionID, text, cwd); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"message": err.Error()})
 		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "error", Raw: errMsg})
 		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "subprocess.exit", Raw: json.RawMessage(`{}`)})
@@ -264,7 +325,7 @@ func (r *Router) injectDirect(sessionID, text, cwd string) {
 func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok *sendToken) {
 	defer r.releaseSend(sessionID, tok)
 
-	ch, err := r.sender.Send(ctx, sessionID, prompt, cwd)
+	ch, err := r.senderFor(sessionID).Send(ctx, sessionID, prompt, cwd)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"message": err.Error()})
 		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "error", Raw: errMsg})
@@ -385,7 +446,7 @@ func (r *Router) CancelSend(sessionID string) error {
 	if !ok {
 		return errors.New("no active send")
 	}
-	if err := r.sender.Interrupt(sessionID); err != nil {
+	if err := r.senderFor(sessionID).Interrupt(sessionID); err != nil {
 		slog.Warn("interrupt session turn", "session", sessionID, "err", err)
 	}
 	tok.cancel()
@@ -404,20 +465,22 @@ func (r *Router) SubscribeSession(id string) (<-chan broker.Event, func()) {
 // mirror unless usher has a live window (sender.Has), and we must not reach
 // into the user's own terminal/IDE claude on a shared socket.
 func (r *Router) CaptureScreen(id string) (string, error) {
-	if !r.sender.Has(id) {
+	snd := r.senderFor(id)
+	if !snd.Has(id) {
 		return "", errors.New("session not live")
 	}
-	return r.sender.CapturePane(id)
+	return snd.CapturePane(id)
 }
 
 // SendKeys forwards navigation keys to a live session's pane, powering the
 // terminal mirror's soft keys. Same ownership gate as CaptureScreen. The web
 // layer restricts which key names reach here; this only enforces ownership.
 func (r *Router) SendKeys(id string, keys ...string) error {
-	if !r.sender.Has(id) {
+	snd := r.senderFor(id)
+	if !snd.Has(id) {
 		return errors.New("session not live")
 	}
-	if err := r.sender.SendKeys(id, keys...); err != nil {
+	if err := snd.SendKeys(id, keys...); err != nil {
 		return err
 	}
 	// Esc while a turn is running interrupts claude in the pane, but an
@@ -444,10 +507,11 @@ func (r *Router) SendKeys(id string, keys ...string) error {
 // derived client-side from the viewer. Same ownership gate; a no-op error for
 // unowned sessions is ignored by the caller.
 func (r *Router) ResizeCanvas(id string, cols, rows int) error {
-	if !r.sender.Has(id) {
+	snd := r.senderFor(id)
+	if !snd.Has(id) {
 		return errors.New("session not live")
 	}
-	return r.sender.ResizeCanvas(id, cols, rows)
+	return snd.ResizeCanvas(id, cols, rows)
 }
 
 // --- hook / interactions -------------------------------------------------
@@ -470,7 +534,7 @@ func (r *Router) HandleHook(ctx context.Context, ev hook.Event) (hook.Response, 
 	if resp, ok := r.hooks.QuickDecide(ev); ok {
 		return resp, nil
 	}
-	if !r.sender.Has(ev.SessionID) {
+	if !r.anyHas(ev.SessionID) {
 		return hook.Response{}, errors.New("session not owned by usher")
 	}
 	return r.hooks.Submit(ctx, ev)
@@ -619,7 +683,7 @@ func (r *Router) StartSession(cwd, initialMsg, model string) (string, error) {
 
 func (r *Router) runStart(ctx context.Context, sessionID, prompt, cwd, model string, tok *sendToken) {
 	defer r.releaseSend(sessionID, tok)
-	ch, err := r.sender.SendNew(ctx, sessionID, prompt, cwd, model)
+	ch, err := r.senderForBackend(backendForModel(model)).SendNew(ctx, sessionID, prompt, cwd, model)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"message": err.Error()})
 		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "error", Raw: errMsg})
@@ -661,7 +725,7 @@ func (r *Router) CreateSession(ctx context.Context, cwd, initialMsg string, time
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ch, err := r.sender.SendNew(waitCtx, sessionID, initialMsg, cwd, "")
+	ch, err := r.senderForBackend(r.defaultBackend).SendNew(waitCtx, sessionID, initialMsg, cwd, "")
 	if err != nil {
 		return "", "", err
 	}
