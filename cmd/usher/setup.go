@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -155,8 +157,8 @@ func setupCodexHook(home, exe, sock string, remove bool) error {
 		return nil
 	}
 
-	// A user's own single-table [hooks.PermissionRequest] would collide with our
-	// array-of-tables append (invalid TOML). Don't risk corrupting it.
+	// A single-table [hooks.PermissionRequest] can't coexist with our
+	// array-of-tables append — refuse rather than write invalid TOML.
 	if hasBareTable(content, "[hooks.PermissionRequest]") {
 		return fmt.Errorf("%s already defines [hooks.PermissionRequest]; add the usher hook manually", configPath)
 	}
@@ -165,32 +167,84 @@ func setupCodexHook(home, exe, sock string, remove bool) error {
 	if sock != "" {
 		cmd = "USHER_HOOK_SOCK=" + sock + " " + cmd
 	}
-	block := codexHookBlock(cmd)
+
+	// Persist Codex's hook-trust (so no spawn-time bypass flag is needed) ONLY
+	// when our hook is the sole PermissionRequest group and no [hooks.state]
+	// exists: then the trust key is "<config-path>:permission_request:0:0" and
+	// the [hooks.state."key"] sub-table can't collide. With pre-existing
+	// PermissionRequest hooks or state, the positional key / table could be
+	// wrong, so we register the hook but leave trusting to the user.
+	trustState := ""
+	autoTrust := !hasBareTable(content, "[[hooks.PermissionRequest]]") && !strings.Contains(content, "hooks.state")
+	if autoTrust {
+		key := configPath + ":permission_request:0:0"
+		trustState = "\n[hooks.state." + tomlBasicString(key) + "]\n" +
+			"trusted_hash = " + tomlBasicString(codexHookTrustedHash(cmd)) + "\n"
+	}
 
 	content = strings.TrimRight(content, "\n")
 	if content != "" {
 		content += "\n\n"
 	}
-	content += block
+	content += codexHookBlock(cmd, trustState)
 
 	if err := writeCodexConfig(configPath, content); err != nil {
 		return err
 	}
 	fmt.Printf("installed usher hook in %s\n", configPath)
-	fmt.Printf("  event: PermissionRequest (all tools)\n")
 	fmt.Printf("  command: %s hook PermissionRequest\n", exe)
+	if autoTrust {
+		fmt.Printf("  trust: persisted (no bypass flag needed)\n")
+	} else {
+		fmt.Printf("  trust: NOT auto-set (existing codex hooks/state) — trust it once in\n" +
+			"         codex's /hooks, or run usher with --codex-args=--dangerously-bypass-hook-trust.\n")
+	}
 	return nil
 }
 
-// codexHookBlock renders the marker-delimited TOML block that registers the
-// usher PermissionRequest hook (matcher omitted = all tools).
-func codexHookBlock(cmd string) string {
+// codexHookTimeoutSec is the hook command timeout (7d ≈ unbounded; a human
+// resolves the prompt in the usher UI). Folded into the trust hash, so it must
+// match what Codex normalizes to.
+const codexHookTimeoutSec = 604800
+
+// codexHookTrustedHash mirrors Codex's content hash for the hook: sha256 of the
+// canonical JSON (sorted keys) of the normalized identity
+//
+//	{"event_name":"permission_request",
+//	 "hooks":[{"async":false,"command":<cmd>,"timeout":604800,"type":"command"}]}
+//
+// Struct fields are declared alphabetically so Go's marshal matches Codex's
+// sorted-key form. Pinned by a golden test against codex 0.139.0.
+func codexHookTrustedHash(command string) string {
+	type handler struct {
+		Async   bool   `json:"async"`
+		Command string `json:"command"`
+		Timeout uint64 `json:"timeout"`
+		Type    string `json:"type"`
+	}
+	type identity struct {
+		EventName string    `json:"event_name"`
+		Hooks     []handler `json:"hooks"`
+	}
+	b, _ := json.Marshal(identity{
+		EventName: "permission_request",
+		Hooks:     []handler{{Async: false, Command: command, Timeout: codexHookTimeoutSec, Type: "command"}},
+	})
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// codexHookBlock renders the marker-delimited block: the PermissionRequest hook
+// registration (matcher omitted = all tools) plus trustState (the optional
+// [hooks.state."key"] sub-table, or "" to leave trusting to the user).
+func codexHookBlock(cmd, trustState string) string {
 	return codexHookBegin + "\n" +
 		"[[hooks.PermissionRequest]]\n" +
 		"[[hooks.PermissionRequest.hooks]]\n" +
 		"type = \"command\"\n" +
 		"command = " + tomlBasicString(cmd) + "\n" +
-		"timeout = 604800\n" +
+		fmt.Sprintf("timeout = %d\n", codexHookTimeoutSec) +
+		trustState +
 		codexHookEnd + "\n"
 }
 

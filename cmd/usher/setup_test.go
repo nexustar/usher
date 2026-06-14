@@ -7,7 +7,7 @@ import (
 
 func TestStripCodexBlock_RoundTrip(t *testing.T) {
 	user := "[projects.\"/home/dev\"]\ntrust_level = \"trusted\"\n"
-	block := codexHookBlock("/usr/bin/usher hook PermissionRequest")
+	block := codexHookBlock("/usr/bin/usher hook PermissionRequest", "\n[hooks.state.\"k\"]\ntrusted_hash = \"sha256:abc\"\n")
 
 	// Install = append the block after the user's config.
 	installed := strings.TrimRight(user, "\n") + "\n\n" + block
@@ -63,5 +63,16 @@ func TestTomlBasicString(t *testing.T) {
 	}
 	if got := tomlBasicString(`a"b\c`); got != `"a\"b\\c"` {
 		t.Errorf("escapes: %q", got)
+	}
+}
+
+func TestCodexHookTrustedHash_MatchesCodex(t *testing.T) {
+	// Golden value: codex 0.139.0's own persisted trusted_hash for this exact
+	// command (captured via its /hooks "Trust all" flow). Locks our canonical
+	// JSON to Codex's. If this breaks, Codex changed the hashed hook identity.
+	const cmd = "/tmp/usher-trust hook PermissionRequest"
+	const want = "sha256:4964a28b890c7a8358f72cf3641330d2c3feae4014987c0e5f7e6eed618ea92e"
+	if got := codexHookTrustedHash(cmd); got != want {
+		t.Errorf("codexHookTrustedHash mismatch:\n got: %s\nwant: %s", got, want)
 	}
 }
