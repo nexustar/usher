@@ -128,6 +128,19 @@ turned into required behavior:
    (Aside: pass the policy via `-c approval_policy=…`, not the `--ask-for-approval`
    flag — the flag form broke the interactive TUI spawn.)
 
+
+## nestedCodexEnv — verified (no Claude-style trap)
+
+Tested 2026-06-14: spawned a fresh codex with a bogus inherited `CODEX_THREAD_ID`
+(+ CODEX_SANDBOX / CODEX_SANDBOX_NETWORK_DISABLED). It still created a NEW rollout
+with a fresh UUIDv7 and persisted normally — `forked_from_id`/`parent_thread_id`
+stayed None. So **Codex does NOT have Claude's silent-non-persist trap**:
+`CODEX_THREAD_ID` is only injected outbound (codex → the commands it runs, for
+parent-thread lineage), not read at startup to suppress persistence. usher's
+`nestedCodexEnv` scrub (CODEX_THREAD_ID + sandbox markers) is therefore
+belt-and-suspenders — safe and defensive, but not load-bearing the way
+nestedClaudeEnv is. Keeping it.
+
 ## Product decision: coexistence (user, confirmed)
 
 usher runs **both backends at once** — one dashboard lists Claude *and* Codex
