@@ -150,6 +150,7 @@ func ReadTurns(path string, limit int) (turns []jsonl.Turn, total int, err error
 type Assembler struct {
 	cur     *jsonl.Turn
 	pending map[string]toolStash // call_id -> tool call awaiting its output
+	model   string               // last model seen on a turn_context line (sticky)
 }
 
 type toolStash struct {
@@ -175,8 +176,26 @@ func (a *Assembler) Feed(raw []byte) (completed []jsonl.Turn, part *jsonl.TurnPa
 		return a.feedEvent(l)
 	case "response_item":
 		return nil, a.feedResponseItem(l)
+	case "turn_context":
+		a.feedTurnContext(l)
 	}
 	return nil, nil
+}
+
+// feedTurnContext captures the per-turn model Codex records on each turn_context
+// line (the session_meta header carries only a provider). It's sticky: the model
+// holds for subsequent turns until a later turn_context changes it.
+func (a *Assembler) feedTurnContext(l line) {
+	var p struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(l.Payload, &p); err != nil || p.Model == "" {
+		return
+	}
+	a.model = p.Model
+	if a.cur != nil && a.cur.Model == "" {
+		a.cur.Model = p.Model
+	}
 }
 
 func (a *Assembler) feedEvent(l line) (completed []jsonl.Turn, part *jsonl.TurnPart) {
@@ -268,13 +287,13 @@ func (a *Assembler) FeedLine(raw []byte) (completed []jsonl.Turn, part *jsonl.Tu
 	return a.Feed(raw)
 }
 
-// Model returns "" — Codex's per-turn model isn't tracked from the rollout
-// stream yet (the session_meta carries a provider, not the turn model).
-func (a *Assembler) Model() string { return "" }
+// Model returns the most recent model seen on a turn_context line, or "" before
+// the first one (the session_meta header carries only a provider, not the model).
+func (a *Assembler) Model() string { return a.model }
 
 func (a *Assembler) ensureTurn(ts time.Time) {
 	if a.cur == nil {
-		a.cur = &jsonl.Turn{Role: "assistant", Time: ts}
+		a.cur = &jsonl.Turn{Role: "assistant", Time: ts, Model: a.model}
 	}
 }
 

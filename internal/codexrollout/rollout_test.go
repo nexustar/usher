@@ -116,6 +116,35 @@ func TestReadTurns_HelloSession(t *testing.T) {
 	}
 }
 
+func TestAssemblerModelFromTurnContext(t *testing.T) {
+	asm := NewAssembler()
+	for _, ln := range []string{
+		`{"timestamp":"2026-06-15T00:00:00Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5.5"}}`,
+		`{"timestamp":"2026-06-15T00:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"hi"}}`,
+		`{"timestamp":"2026-06-15T00:00:02Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}`,
+	} {
+		asm.Feed([]byte(ln))
+	}
+	if got := asm.Model(); got != "gpt-5.5" {
+		t.Errorf("Model() = %q, want gpt-5.5 (from turn_context)", got)
+	}
+	turns, _, err := ReadTurns(helloFixture, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's assistant turns should carry the model stamped from its own
+	// turn_context lines (proving the file path, not just the synthetic feed).
+	var stamped bool
+	for _, tn := range turns {
+		if tn.Role == "assistant" && tn.Model != "" {
+			stamped = true
+		}
+	}
+	if !stamped {
+		t.Error("no assistant turn carried a model from the rollout's turn_context")
+	}
+}
+
 func TestIsTurnComplete(t *testing.T) {
 	complete := `{"timestamp":"2026-06-14T00:00:00Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"x"}}`
 	if !IsTurnComplete([]byte(complete)) {
