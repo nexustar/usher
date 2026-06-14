@@ -558,13 +558,21 @@ async function showNewSession() {
   // Restore the last-picked model (the <select> defaults to Opus in markup; an
   // unknown stored value just leaves that default). Run AFTER codex models load
   // so a saved codex pick can be restored once its option exists.
+  // Tint the picker by the selected model's backend (Claude coral / Codex green),
+  // keyed off the chosen option's optgroup so it tracks whichever group it's in.
+  const syncModelColor = () => {
+    const og = modelEl.selectedOptions[0] && modelEl.selectedOptions[0].closest('optgroup');
+    modelEl.classList.toggle('codex', !!og && og.label === 'Codex');
+  };
   const applySavedModel = () => {
     try {
       const saved = localStorage.getItem('usher.newModel');
       if (saved && [...modelEl.options].some(o => o.value === saved)) modelEl.value = saved;
     } catch {/* private mode → keep default */}
+    syncModelColor();
   };
   modelEl.addEventListener('change', () => {
+    syncModelColor();
     try { localStorage.setItem('usher.newModel', modelEl.value); } catch {/* private mode */}
   });
   // Codex's model list is per-account (free/Plus/Pro), read from codex's own

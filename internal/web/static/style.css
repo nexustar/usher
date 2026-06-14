@@ -38,8 +38,9 @@
   /* Agent purple */
   --purple: #6e40c9;
 
-  /* Claude brand coral — used for the model picker (tweak to taste). */
+  /* Model-picker accents: Claude coral / Codex logo blue. */
   --claude: #bd5b3d;
+  --codex: #3429ff;
 
   /* Code */
   --inline-code-bg: #e4e7eb;
@@ -1115,6 +1116,7 @@ pre.raw-markdown {
   border-radius: 4px;
   cursor: pointer;
 }
+.composer-model.codex { color: var(--codex); }
 .composer-model:hover { background: var(--bg-subtle); }
 .composer-model:focus { outline: none; }
 .new-cwd-field input {
@@ -1173,6 +1175,7 @@ pre.raw-markdown {
 
     --purple: #bc8cff;
     --claude: #e0916f;
+    --codex: #7c78ff;
 
     --inline-code-bg: rgba(110, 118, 129, 0.3);
     --code-block-bg: #0a0d12;
