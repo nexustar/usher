@@ -110,8 +110,26 @@ type modelOption struct {
 // own picker (lowest priority number first).
 func (s *Server) codexModels() []modelOption {
 	if s.codexModelsPath == "" {
-		return nil
+		return nil // codex backend not enabled
 	}
+	out := s.codexCatalog()
+	if len(out) == 0 {
+		// Codex is enabled but its catalog is missing/unreadable (cache not yet
+		// written, deleted, …). Fall back to the current named models so a session
+		// can still be created; codex retires old models slowly, so these stay
+		// valid well past any new release, and a present cache supersedes them.
+		return []modelOption{
+			{Value: "gpt-5.5", Label: "GPT-5.5"},
+			{Value: "gpt-5.4-mini", Label: "GPT-5.4 Mini"},
+		}
+	}
+	return out
+}
+
+// codexCatalog reads codex's per-account model catalog (models_cache.json),
+// returning the user-listable models ordered as codex's own picker. Empty when
+// the cache is unreadable or has no listable models.
+func (s *Server) codexCatalog() []modelOption {
 	raw, err := os.ReadFile(s.codexModelsPath)
 	if err != nil {
 		return nil

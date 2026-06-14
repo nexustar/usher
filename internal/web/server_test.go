@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -144,5 +146,28 @@ func TestCodexPermissionDecision(t *testing.T) {
 	dec = bare["hookSpecificOutput"].(map[string]any)["decision"].(map[string]any)
 	if _, hasMsg := dec["message"]; hasMsg {
 		t.Errorf("deny without reason must omit message: %v", dec)
+	}
+}
+
+func TestCodexModels(t *testing.T) {
+	// codex disabled → nil
+	if got := (&Server{codexModelsPath: ""}).codexModels(); got != nil {
+		t.Errorf("disabled → nil, got %v", got)
+	}
+	// codex enabled but cache missing → fallback to the current named models.
+	got := (&Server{codexModelsPath: "/no/such/models_cache.json"}).codexModels()
+	if len(got) != 2 || got[0].Value != "gpt-5.5" {
+		t.Fatalf("missing-cache fallback = %v, want gpt-5.5 then mini", got)
+	}
+	// a real catalog → list-visible only, sorted by priority
+	p := filepath.Join(t.TempDir(), "models_cache.json")
+	os.WriteFile(p, []byte(`{"models":[
+		{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","priority":2},
+		{"slug":"auto-review","display_name":"x","visibility":"hide","priority":1},
+		{"slug":"gpt-5.4-mini","display_name":"GPT-5.4 Mini","visibility":"list","priority":1}
+	]}`), 0o644)
+	got = (&Server{codexModelsPath: p}).codexModels()
+	if len(got) != 2 || got[0].Value != "gpt-5.4-mini" || got[1].Value != "gpt-5.5" {
+		t.Fatalf("catalog parse/sort = %v (want mini then 5.5, hide excluded)", got)
 	}
 }
