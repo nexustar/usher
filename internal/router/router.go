@@ -223,11 +223,23 @@ func (r *Router) SessionPath(id string) (string, bool) {
 func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 	path, ok := r.discovery.Path(srcID)
 	if !ok {
-		return "", errors.New("session not found")
+		return "", ErrSessionNotFound
 	}
 	newID := newUUIDv4()
-	dstPath := filepath.Join(filepath.Dir(path), newID+".jsonl")
-	if err := jsonl.ForkCopy(path, dstPath, afterUUID, newID); err != nil {
+	dir := filepath.Dir(path)
+
+	var dstPath string
+	var err error
+	if r.backendOf(srcID) == "codex" {
+		// Codex rollout: name the fork rollout-<ts>-<id>.jsonl (the shape discovery
+		// matches) and truncate at the turn whose task_complete is afterUUID.
+		dstPath = filepath.Join(dir, codexrollout.RolloutFilename(newID, time.Now()))
+		err = codexrollout.ForkCopy(path, dstPath, afterUUID, newID, srcID)
+	} else {
+		dstPath = filepath.Join(dir, newID+".jsonl")
+		err = jsonl.ForkCopy(path, dstPath, afterUUID, newID)
+	}
+	if err != nil {
 		return "", err
 	}
 	// Ingest synchronously so the id resolves the moment the client navigates

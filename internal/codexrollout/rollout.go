@@ -183,6 +183,7 @@ func (a *Assembler) feedEvent(l line) (completed []jsonl.Turn, part *jsonl.TurnP
 	var p struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
+		TurnID  string `json:"turn_id"`
 	}
 	if err := json.Unmarshal(l.Payload, &p); err != nil {
 		return nil, nil
@@ -210,7 +211,11 @@ func (a *Assembler) feedEvent(l line) (completed []jsonl.Turn, part *jsonl.TurnP
 		a.cur.Parts = append(a.cur.Parts, tp)
 		return nil, &tp
 	case "task_complete":
-		// End-of-turn marker: flush the assistant turn it closes.
+		// End-of-turn marker: stamp the turn with its turn_id (the fork point a
+		// client passes back to ForkCopy) and flush the assistant turn it closes.
+		if a.cur != nil {
+			a.cur.UUID = p.TurnID
+		}
 		if t := a.Flush(); t != nil {
 			completed = append(completed, *t)
 		}
