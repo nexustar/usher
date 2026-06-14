@@ -864,12 +864,22 @@ func (r *Router) CreateSession(ctx context.Context, cwd, initialMsg string, time
 		return "", "", err
 	}
 
-	sessionID := newUUIDv4()
-
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ch, err := r.senderForBackend(r.defaultBackend).SendNew(waitCtx, sessionID, initialMsg, cwd, "")
+	// Create in the default backend with its default model (empty model → the
+	// CLI's own default). Claude lets usher pick the id up front; Codex assigns
+	// its own, so discover it first (mirrors StartSession's preAssignsID split).
+	snd := r.senderForBackend(r.defaultBackend)
+	var sessionID string
+	var ch <-chan sender.StreamEvent
+	var err error
+	if snd.PreAssignsID() {
+		sessionID = newUUIDv4()
+		ch, err = snd.SendNew(waitCtx, sessionID, initialMsg, cwd, "")
+	} else {
+		sessionID, ch, err = snd.StartCodexSession(waitCtx, newUUIDv4(), initialMsg, cwd, "", codexDiscoverTimeout)
+	}
 	if err != nil {
 		return "", "", err
 	}
