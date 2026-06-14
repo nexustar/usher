@@ -154,8 +154,8 @@ var nestedCodexEnv = []string{
 }
 
 // Markers for matching Codex TUI states in a plain pane capture (validated on
-// codex 0.139.0 — see docs/codex-backend.md). Codex's resume has no chooser, so
-// the only gate is the one-time trust prompt; readiness is the bottom footer.
+// codex 0.139.0). Codex's resume has no chooser, so the only gate is the
+// one-time trust prompt; readiness is the bottom footer.
 const (
 	codexTrustMarker  = "Do you trust the contents"
 	codexBannerMarker = "OpenAI Codex (v"

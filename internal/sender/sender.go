@@ -138,9 +138,8 @@ func New(claudeCmd, permissionMode, projectsDir, socket, hookSock string, maxLiv
 // --sandbox workspace-write); hookSock, if set, routes the codex permission hook
 // back to this instance; maxLive caps live processes.
 //
-// Resume is fully handled here (`codex resume <id>`, no chooser). The new-session
-// path still relies on run()'s preAssignsID branch (Codex generates its own id),
-// which is added with the router-side id handoff — see docs/codex-backend.md.
+// Resume goes straight in (`codex resume <id>`, no chooser); a brand-new session
+// (Codex assigns its own id) is created via StartCodexSession.
 func NewCodex(codexCmd, sessionsDir, socket, hookSock string, sandboxArgs []string, maxLive int, logger *slog.Logger) *Sender {
 	if logger == nil {
 		logger = slog.Default()
