@@ -575,12 +575,20 @@ async function showNewSession() {
     syncModelColor();
     try { localStorage.setItem('usher.newModel', modelEl.value); } catch {/* private mode */}
   });
-  // Codex's model list is per-account (free/Plus/Pro), read from codex's own
-  // catalog server-side. Populate the group dynamically; drop it if none.
-  fetch('/api/models/codex').then(r => r.ok ? r.json() : []).then(models => {
+  // Show only installed backends. Drop the Claude group if Claude isn't present
+  // (so the default lands on an available model), and populate Codex's group from
+  // its per-account catalog (or drop it if empty). The browser then selects the
+  // first remaining option as the default.
+  fetch('/api/models').then(r => r.ok ? r.json() : {}).then(data => {
+    const backends = (data && data.backends) || ['claude'];
+    if (!backends.includes('claude')) {
+      const cg = modelEl.querySelector('optgroup[label="Claude"]');
+      if (cg) cg.remove();
+    }
     const grp = document.getElementById('codex-modelgroup');
     if (grp) {
-      if (!models || !models.length) {
+      const models = (data && data.codex) || [];
+      if (!models.length) {
         grp.remove();
       } else {
         for (const m of models) {

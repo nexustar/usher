@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -56,13 +57,15 @@ type sendToken struct {
 	cancel context.CancelFunc
 }
 
-// New builds a Router with a single Claude backend. Register additional
-// backends (Codex) with SetSender.
-func New(d *discovery.Discovery, s *sender.Sender, b *broker.Broker, h *hook.Manager, archiveStore *archive.Store) *Router {
+// New builds a Router over the given backends (at least one). senders maps a
+// backend name ("claude"/"codex") to its Sender; defaultBackend names the one to
+// fall back to for unknown/empty backends and is the new-session default — it
+// must be a key in senders.
+func New(d *discovery.Discovery, senders map[string]*sender.Sender, defaultBackend string, b *broker.Broker, h *hook.Manager, archiveStore *archive.Store) *Router {
 	return &Router{
 		discovery:      d,
-		senders:        map[string]*sender.Sender{"claude": s},
-		defaultBackend: "claude",
+		senders:        senders,
+		defaultBackend: defaultBackend,
 		broker:         b,
 		hooks:          h,
 		archive:        archiveStore,
@@ -71,10 +74,15 @@ func New(d *discovery.Discovery, s *sender.Sender, b *broker.Broker, h *hook.Man
 	}
 }
 
-// SetSender registers the Sender for a backend (e.g. "codex"), enabling
-// coexistence: the router then routes each session to its backend's sender.
-func (r *Router) SetSender(backend string, s *sender.Sender) {
-	r.senders[backend] = s
+// Backends returns the enabled backend names, sorted ("claude" before "codex").
+// The web layer uses it to show only available backends in the model picker.
+func (r *Router) Backends() []string {
+	out := make([]string, 0, len(r.senders))
+	for b := range r.senders {
+		out = append(out, b)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // senderForBackend returns the Sender for a backend, falling back to the

@@ -146,8 +146,17 @@ func (s *Server) codexModels() []modelOption {
 	return out
 }
 
-func (s *Server) handleCodexModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.codexModels())
+// handleModels feeds the new-session model picker: which backends are installed
+// (so it drops an unavailable one) and Codex's per-account model catalog (Claude's
+// list is static in the page markup).
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, struct {
+		Backends []string      `json:"backends"`
+		Codex    []modelOption `json:"codex"`
+	}{
+		Backends: s.router.Backends(),
+		Codex:    s.codexModels(),
+	})
 }
 
 // codexModelAllowed reports whether slug is in the account's Codex catalog.
@@ -174,7 +183,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	webMux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	webMux.HandleFunc("POST /api/sessions", s.handleCreateSession)
-	webMux.HandleFunc("GET /api/models/codex", s.handleCodexModels)
+	webMux.HandleFunc("GET /api/models", s.handleModels)
 	webMux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	webMux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	webMux.HandleFunc("GET /api/sessions/{id}/transcript", s.handleTranscript)

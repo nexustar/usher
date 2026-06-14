@@ -33,8 +33,6 @@ func runSetup(args []string) error {
 	if err != nil {
 		return err
 	}
-	settingsPath := filepath.Join(home, ".claude", "settings.json")
-
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -44,40 +42,59 @@ func runSetup(args []string) error {
 		return err
 	}
 
+	// usher modifies only the backends that are installed (their config dir
+	// exists); at least one must be present.
+	claudePresent := isDir(filepath.Join(home, ".claude"))
+	codexPresent := isDir(filepath.Join(home, ".codex"))
+	if !claudePresent && !codexPresent {
+		return fmt.Errorf("no backend found: neither ~/.claude (Claude Code) nor ~/.codex (Codex) exists; install/run one first")
+	}
+
+	if claudePresent {
+		if err := setupClaudeHook(home, exe, *sock, *remove); err != nil {
+			return err
+		}
+	} else if !*remove {
+		fmt.Println("claude not detected (~/.claude absent); skipped claude hook.")
+	}
+
+	if err := setupCodexHook(home, exe, *sock, *remove); err != nil {
+		fmt.Fprintln(os.Stderr, "codex hook setup:", err)
+	}
+
+	if !*remove {
+		fmt.Println()
+		fmt.Println("Re-run with --remove to uninstall.")
+	}
+	return nil
+}
+
+// setupClaudeHook installs (or removes) the PreToolUse hook in
+// ~/.claude/settings.json. The 7-day timeout is effectively unbounded — a human
+// resolves the prompt via usher's web UI; on timeout claude falls back to its
+// pane TUI prompt, which the web UI can't answer.
+func setupClaudeHook(home, exe, sock string, remove bool) error {
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
 	settings, err := readSettings(settingsPath)
 	if err != nil {
 		return err
 	}
-
 	hooksRoot, _ := settings["hooks"].(map[string]any)
 	if hooksRoot == nil {
 		hooksRoot = map[string]any{}
 	}
-
 	preToolUse, _ := hooksRoot["PreToolUse"].([]any)
 	preToolUse = stripUsherEntries(preToolUse)
 
-	if !*remove {
+	if !remove {
 		cmd := exe + " hook PreToolUse"
-		if *sock != "" {
-			cmd = "USHER_HOOK_SOCK=" + *sock + " " + cmd
+		if sock != "" {
+			cmd = "USHER_HOOK_SOCK=" + sock + " " + cmd
 		}
 		preToolUse = append(preToolUse, map[string]any{
 			"matcher": "",
 			"hooks": []any{
-				map[string]any{
-					"type":    "command",
-					"command": cmd,
-					// Effectively unbounded (7 days). The permission request is
-					// resolved by a human via usher's web UI, who may take a
-					// while (checking from a phone, away from the desk). If this
-					// hook times out, interactive claude falls back to the TUI
-					// permission prompt INSIDE its tmux pane — which usher's web
-					// UI can no longer answer, stranding the turn. So we never
-					// want it to time out in practice. (Can't be truly infinite:
-					// Claude's setTimeout caps near ~24.8 days; 7d stays safe.)
-					"timeout": 604800,
-				},
+				map[string]any{"type": "command", "command": cmd, "timeout": 604800},
 			},
 		})
 	}
@@ -96,25 +113,12 @@ func runSetup(args []string) error {
 	if err := writeSettings(settingsPath, settings); err != nil {
 		return err
 	}
-	if *remove {
+	if remove {
 		fmt.Printf("removed usher hook from %s\n", settingsPath)
 	} else {
-		cmd := exe + " hook PreToolUse"
 		fmt.Printf("installed usher hook in %s\n", settingsPath)
-		fmt.Printf("  matcher: (all tools)\n")
-		fmt.Printf("  command: %s\n", cmd)
-		fmt.Printf("  timeout: 604800s (7d — effectively unbounded; web UI resolves permissions)\n")
-	}
-
-	// Codex coexists when it's installed. Register its PermissionRequest hook in
-	// ~/.codex/config.toml too. Non-fatal: the Claude hook above is already in.
-	if err := setupCodexHook(home, exe, *sock, *remove); err != nil {
-		fmt.Fprintln(os.Stderr, "codex hook setup:", err)
-	}
-
-	if !*remove {
-		fmt.Println()
-		fmt.Println("Re-run with --remove to uninstall.")
+		fmt.Printf("  command: %s hook PreToolUse\n", exe)
+		fmt.Printf("  timeout: 604800s (7d — web UI resolves permissions)\n")
 	}
 	return nil
 }

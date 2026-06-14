@@ -71,7 +71,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "commands:")
 	fmt.Fprintln(os.Stderr, "  serve              start the web server")
-	fmt.Fprintln(os.Stderr, "  setup              install/remove the PreToolUse hook in ~/.claude/settings.json")
+	fmt.Fprintln(os.Stderr, "  setup              register usher's permission hook with installed backends (Claude/Codex)")
 	fmt.Fprintln(os.Stderr, "  set-password       set/change the web UI password (required for non-loopback bind)")
 	fmt.Fprintln(os.Stderr, "  hook <event-name>  invoked by Claude Code; not for direct use")
 	fmt.Fprintln(os.Stderr, "  version            print version")
@@ -117,12 +117,6 @@ func serve(args []string) error {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if *projectsDir == "" {
-		return fmt.Errorf("could not resolve projects dir; pass --projects-dir")
-	}
-	if _, err := os.Stat(*projectsDir); err != nil {
-		return fmt.Errorf("projects dir %q: %w", *projectsDir, err)
-	}
 	if *dataDir == "" {
 		return fmt.Errorf("could not resolve data dir; pass --data-dir")
 	}
@@ -139,18 +133,36 @@ func serve(args []string) error {
 		)
 	}
 
-	// Claude is always present; Codex coexists when its sessions dir exists (it
-	// writes ~/.codex/sessions only once codex has run). A separate tmux socket
-	// keeps each backend's process pool from adopting the other's windows.
-	sources := []discovery.Source{discovery.NewClaudeSource(*projectsDir)}
-	var codexSender *sender.Sender
+	// Each backend is enabled only when its session dir exists (created once that
+	// CLI has run). usher works with either or both; at least one is required. A
+	// separate tmux socket per backend keeps their process pools from adopting
+	// each other's windows. defaultBackend (new-session/fallback) prefers Claude.
+	sources := []discovery.Source{}
+	senders := map[string]*sender.Sender{}
+	defaultBackend := ""
 	var codexModelsPath string
+
+	if dir := *projectsDir; dir != "" && isDir(dir) {
+		sources = append(sources, discovery.NewClaudeSource(dir))
+		senders["claude"] = sender.New(*claudeCmd, *permissionMode, dir, *tmuxSocket, hookSockPath(*dataDir), *maxLiveSessions, logger)
+		defaultBackend = "claude"
+		logger.Info("claude backend enabled", "projects_dir", dir)
+	}
 	if dir := *codexSessionsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewCodexSource(dir))
-		codexSender = sender.NewCodex(*codexCmd, dir, *tmuxSocket+"-codex", hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, logger)
+		senders["codex"] = sender.NewCodex(*codexCmd, dir, *tmuxSocket+"-codex", hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, logger)
 		// codex's per-account model catalog sits next to the sessions dir.
 		codexModelsPath = filepath.Join(filepath.Dir(dir), "models_cache.json")
+		if defaultBackend == "" {
+			defaultBackend = "codex"
+		}
 		logger.Info("codex backend enabled", "sessions_dir", dir)
+	}
+
+	if len(senders) == 0 {
+		return fmt.Errorf("no backend found: neither %q (Claude Code) nor %q (Codex) exists.\n"+
+			"  run claude or codex once first, or pass --projects-dir / --codex-sessions-dir.",
+			*projectsDir, *codexSessionsDir)
 	}
 
 	d, err := discovery.NewMulti(logger, sources...)
@@ -158,16 +170,12 @@ func serve(args []string) error {
 		return err
 	}
 	b := broker.New()
-	sd := sender.New(*claudeCmd, *permissionMode, *projectsDir, *tmuxSocket, hookSockPath(*dataDir), *maxLiveSessions, logger)
 	h := hook.New(filepath.Join(*dataDir, "auto-approve.json"))
 	archiveStore := archive.New(
 		filepath.Join(*dataDir, "archived.json"),
 		time.Duration(*autoArchiveDays)*24*time.Hour,
 	)
-	r := router.New(d, sd, b, h, archiveStore)
-	if codexSender != nil {
-		r.SetSender("codex", codexSender)
-	}
+	r := router.New(d, senders, defaultBackend, b, h, archiveStore)
 
 	mainStore, err := mainchat.NewStore(filepath.Join(*dataDir, "mainchats"))
 	if err != nil {
