@@ -92,6 +92,18 @@ flow is far simpler and less race-prone than Claude's** — there is no resume c
 - Config: `~/.codex/config.toml` (TOML). Self-register hooks via `hooks.json`
   (JSON, stdlib-friendly) rather than editing TOML, to keep usher stdlib-only.
 
+## Fork (codex) — done + live-verified
+
+Codex's `codex fork` is interactive-TUI-only (latest/picker), so usher implements
+fork itself as a pure file transform, matching its processless / fork-from-any-turn
+/ lazy-resume model. `codexrollout.ForkCopy` copies the rollout prefix through the
+chosen turn's task_complete, rewriting ONLY the session_meta header (new id +
+forked_from_id + parent_thread_id) — other lines carry no session id so they copy
+verbatim (simpler than Claude's per-line rewrite). codex turns now carry
+Turn.UUID = turn_id (the fork point); router.ForkSession dispatches by backend.
+Live-verified: forked a 2-turn session after turn 1 → fork held only turn 1 and
+`codex resume <forkid>` loaded the hand-written rollout and appended to it.
+
 ## Hook firing — verified, with two non-obvious requirements (2026-06-14)
 
 Live-tested the full permission path. Two findings that are easy to miss and both
