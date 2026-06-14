@@ -37,7 +37,7 @@ func TestCodexSource_DiscoversDatePartitioned(t *testing.T) {
 	// A stray non-rollout file in the tree must be ignored.
 	writeFile(t, filepath.Join(tmp, "2026", "06", "14", "notes.jsonl"), "{}\n")
 
-	d, err := NewWithSource(NewCodexSource(tmp), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d, err := NewMulti(slog.New(slog.NewTextHandler(io.Discard, nil)), NewCodexSource(tmp))
 	if err != nil {
 		t.Fatal(err)
 	}

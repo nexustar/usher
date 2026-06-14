@@ -30,17 +30,6 @@ type Discovery struct {
 	paths    map[string]string       // id -> path
 }
 
-// New builds a Discovery over Claude Code's projects tree at rootDir. It is a
-// shorthand for NewMulti(logger, NewClaudeSource(rootDir)).
-func New(rootDir string, logger *slog.Logger) (*Discovery, error) {
-	return NewMulti(logger, NewClaudeSource(rootDir))
-}
-
-// NewWithSource builds a Discovery over a single backend layout.
-func NewWithSource(src Source, logger *slog.Logger) (*Discovery, error) {
-	return NewMulti(logger, src)
-}
-
 // NewMulti builds a Discovery that scans and watches several backend layouts at
 // once (Claude Code and Codex), merging them into one session view. Each session
 // is tagged with the Backend of the Source that found it; the Source decides

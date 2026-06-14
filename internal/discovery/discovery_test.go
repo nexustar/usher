@@ -12,7 +12,7 @@ import (
 
 func newTestDiscovery(t *testing.T, root string) *Discovery {
 	t.Helper()
-	d, err := New(root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d, err := NewMulti(slog.New(slog.NewTextHandler(io.Discard, nil)), NewClaudeSource(root))
 	if err != nil {
 		t.Fatal(err)
 	}
