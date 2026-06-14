@@ -122,11 +122,15 @@ turned into required behavior:
    against a malicious repo auto-running hooks). usher registered the hook itself,
    so the codex sender now always passes **`--dangerously-bypass-hook-trust`**
    (baked into codexBackend.spawnCommand). Without it the hook never fires and the
-   whole M5 path is silently dead. The codex sender also defaults to
-   `-c approval_policy=untrusted` (main.go `--codex-args`) so most tool calls
-   actually route through the hook, like Claude's permission gating.
-   (Aside: pass the policy via `-c approval_policy=…`, not the `--ask-for-approval`
-   flag — the flag form broke the interactive TUI spawn.)
+   whole M5 path is silently dead.
+
+   **Approval policy: aligned with the codex CLI, not Claude.** usher leaves codex's
+   own default policy (`on-request`) in place — it gates whatever codex natively
+   escalates (sandbox-exceeding actions), routing those to usher's UI instead of
+   codex's pane prompt, and runs in-sandbox safe ops freely just like the codex CLI.
+   `--codex-args "-c approval_policy=untrusted"` opts into Claude-style "ask for
+   most". (Aside: set the policy via `-c approval_policy=…`, not the
+   `--ask-for-approval` flag — the flag form broke the interactive TUI spawn.)
 
 
 ## nestedCodexEnv — verified (no Claude-style trap)

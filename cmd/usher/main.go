@@ -86,9 +86,10 @@ func serve(args []string) error {
 	codexCmd := fs.String("codex", "codex", "path to the codex binary (Codex backend)")
 	codexSessionsDir := fs.String("codex-sessions-dir", defaultCodexSessionsDir(),
 		"Codex rollout sessions directory; the Codex backend auto-enables when it exists")
-	codexArgs := fs.String("codex-args", "-c approval_policy=untrusted",
-		"extra flags for spawned codex (space-separated). Default routes most tool approvals "+
-			"through usher's hook (like Claude); set empty to use codex's own default policy.")
+	codexArgs := fs.String("codex-args", "",
+		"extra flags for spawned codex (space-separated). Empty uses codex's own approval "+
+			"policy (usher gates whatever codex natively escalates); e.g. \"-c approval_policy=untrusted\" "+
+			"to route most commands through usher like Claude.")
 	permissionMode := fs.String("permission-mode", "default",
 		"--permission-mode passed to claude (default|acceptEdits|bypassPermissions|plan)")
 	tmuxSocket := fs.String("tmux-socket", "usher",
