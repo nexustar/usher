@@ -93,7 +93,7 @@ func serve(args []string) error {
 	permissionMode := fs.String("permission-mode", "default",
 		"--permission-mode passed to claude (default|acceptEdits|bypassPermissions|plan)")
 	tmuxSocket := fs.String("tmux-socket", "usher",
-		"dedicated tmux server socket name (tmux -L <name>) holding usher's interactive claude windows")
+		"prefix for usher's dedicated tmux server sockets (tmux -L <prefix>-claude / <prefix>-codex)")
 	maxLiveSessions := fs.Int("max-live-sessions", 8,
 		"max concurrent live interactive claude processes; least-recently-used sessions are evicted beyond this")
 	agentMode := fs.String("agent-mode", "rule",
@@ -144,7 +144,7 @@ func serve(args []string) error {
 
 	if dir := *projectsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewClaudeSource(dir))
-		senders["claude"] = sender.New(*claudeCmd, *permissionMode, dir, *tmuxSocket, hookSockPath(*dataDir), *maxLiveSessions, logger)
+		senders["claude"] = sender.New(*claudeCmd, *permissionMode, dir, *tmuxSocket+"-claude", hookSockPath(*dataDir), *maxLiveSessions, logger)
 		defaultBackend = "claude"
 		logger.Info("claude backend enabled", "projects_dir", dir)
 	}
