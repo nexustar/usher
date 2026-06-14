@@ -61,6 +61,27 @@ type Sender struct {
 	// that goroutine exits (any path), so the flag can't leak.
 	busyMu sync.Mutex
 	busy   map[string]struct{}
+
+	// cwdLocks serialize new Codex-session creation per cwd so two concurrent
+	// same-cwd creates can't mis-identify each other's rollout in discoverNewID.
+	cwdLocksMu sync.Mutex
+	cwdLocks   map[string]*sync.Mutex
+}
+
+// lockCwd acquires the per-cwd creation lock and returns its unlock func.
+func (s *Sender) lockCwd(cwd string) func() {
+	s.cwdLocksMu.Lock()
+	if s.cwdLocks == nil {
+		s.cwdLocks = map[string]*sync.Mutex{}
+	}
+	m := s.cwdLocks[cwd]
+	if m == nil {
+		m = &sync.Mutex{}
+		s.cwdLocks[cwd] = m
+	}
+	s.cwdLocksMu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // New builds a Sender. claudeCmd is the claude binary; permissionMode (if
@@ -209,6 +230,10 @@ func (s *Sender) PreAssignsID() bool { return s.backend.preAssignsID() }
 // is flushed at start, so this is quick); the turn then streams in the returned
 // channel. Callers gate on PreAssignsID()==false.
 func (s *Sender) StartCodexSession(ctx context.Context, tempID, prompt, cwd, model string, discoverTimeout time.Duration) (string, <-chan StreamEvent, error) {
+	// Serialize same-cwd creates across snapshot→spawn→discover (released on
+	// return, before the tail goroutine, which runs unlocked).
+	defer s.lockCwd(cwd)()
+
 	known := s.backend.knownSessionIDs()
 	fresh, err := s.pool.ensure(tempID, cwd, model, false)
 	if err != nil {

@@ -232,3 +232,21 @@ func TestPreAssignsID(t *testing.T) {
 		t.Error("claude sender must pre-assign ids")
 	}
 }
+
+func TestLockCwdSerializesSameCwdNotDifferent(t *testing.T) {
+	s := &Sender{}
+	release := s.lockCwd("/a") // hold /a
+
+	got := make(chan string, 2)
+	go func() { u := s.lockCwd("/a"); got <- "a"; u() }() // must block until release
+	go func() { u := s.lockCwd("/b"); got <- "b"; u() }() // different cwd: must proceed
+
+	// While /a is held, only the /b goroutine can make progress.
+	if first := <-got; first != "b" {
+		t.Fatalf("a different cwd must not block; got %q first", first)
+	}
+	release()
+	if second := <-got; second != "a" {
+		t.Fatalf("same cwd must proceed only after release; got %q", second)
+	}
+}
