@@ -144,9 +144,12 @@ func serve(args []string) error {
 	// keeps each backend's process pool from adopting the other's windows.
 	sources := []discovery.Source{discovery.NewClaudeSource(*projectsDir)}
 	var codexSender *sender.Sender
+	var codexModelsPath string
 	if dir := *codexSessionsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewCodexSource(dir))
 		codexSender = sender.NewCodex(*codexCmd, dir, *tmuxSocket+"-codex", hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, logger)
+		// codex's per-account model catalog sits next to the sessions dir.
+		codexModelsPath = filepath.Join(filepath.Dir(dir), "models_cache.json")
 		logger.Info("codex backend enabled", "sessions_dir", dir)
 	}
 
@@ -194,7 +197,7 @@ func serve(args []string) error {
 		"loopback_bind", addrIsLoopback(*addr),
 	)
 
-	srv := web.NewServer(*addr, hookSockPath(*dataDir), authStore, r, mainStore, agent, logger)
+	srv := web.NewServer(*addr, hookSockPath(*dataDir), authStore, r, mainStore, agent, codexModelsPath, logger)
 	return srv.Run(ctx)
 }
 

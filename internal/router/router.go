@@ -145,6 +145,10 @@ func (r *Router) ReadTurns(id string, limit int) ([]jsonl.Turn, int, error) {
 	return readTurnsForBackend(path, r.backendOf(id), limit)
 }
 
+// BackendForModel exposes backendForModel to other packages (the web layer's
+// model gate) — which backend a chosen model routes to.
+func BackendForModel(model string) string { return backendForModel(model) }
+
 // backendForModel maps a new-session model choice to its backend. Model names
 // are unique across backends except the literal "default" (the UI resolves that
 // to an explicit backend); gpt-*/o-series/codex are Codex, everything else

@@ -521,19 +521,15 @@ async function showNewSession() {
             <div class="composer-tools">
               <select id="new-model" class="composer-model" aria-label="model">
                 <optgroup label="Claude">
-                  <option value="default">Default</option>
-                  <option value="fable">Fable</option>
-                  <option value="opus">Opus</option>
+                  <option value="opus" selected>Opus</option>
                   <option value="claude-opus-4-6">Opus 4.6</option>
                   <option value="sonnet">Sonnet</option>
-                  <option value="haiku">Haiku</option>
-                  <option value="opusplan">Opus Plan</option>
                   <option value="sonnet[1m]">Sonnet [1m]</option>
+                  <option value="haiku">Haiku</option>
+                  <option value="fable">Fable</option>
+                  <option value="opusplan">Opus Plan</option>
                 </optgroup>
-                <optgroup label="Codex">
-                  <option value="gpt-5.5">GPT-5.5</option>
-                  <option value="gpt-5.4-mini">GPT-5.4 mini</option>
-                </optgroup>
+                <optgroup label="Codex" id="codex-modelgroup"></optgroup>
               </select>
             </div>
             <div class="composer-send"><button id="send">send</button></div>
@@ -559,16 +555,36 @@ async function showNewSession() {
   const errEl = document.getElementById('new-session-err');
   cwdEl.focus();
 
-  // Restore the last-picked model so it carries across new sessions (the
-  // <select> defaults to "default" in markup; an unknown stored value just
-  // leaves that default in place). Persist on change.
-  try {
-    const saved = localStorage.getItem('usher.newModel');
-    if (saved && [...modelEl.options].some(o => o.value === saved)) modelEl.value = saved;
-  } catch {/* private mode → keep default */}
+  // Restore the last-picked model (the <select> defaults to Opus in markup; an
+  // unknown stored value just leaves that default). Run AFTER codex models load
+  // so a saved codex pick can be restored once its option exists.
+  const applySavedModel = () => {
+    try {
+      const saved = localStorage.getItem('usher.newModel');
+      if (saved && [...modelEl.options].some(o => o.value === saved)) modelEl.value = saved;
+    } catch {/* private mode → keep default */}
+  };
   modelEl.addEventListener('change', () => {
     try { localStorage.setItem('usher.newModel', modelEl.value); } catch {/* private mode */}
   });
+  // Codex's model list is per-account (free/Plus/Pro), read from codex's own
+  // catalog server-side. Populate the group dynamically; drop it if none.
+  fetch('/api/models/codex').then(r => r.ok ? r.json() : []).then(models => {
+    const grp = document.getElementById('codex-modelgroup');
+    if (grp) {
+      if (!models || !models.length) {
+        grp.remove();
+      } else {
+        for (const m of models) {
+          const o = document.createElement('option');
+          o.value = m.value;
+          o.textContent = m.label;
+          grp.appendChild(o);
+        }
+      }
+    }
+    applySavedModel();
+  }).catch(applySavedModel);
 
   const submit = async () => {
     if (sendBtn.disabled) return; // re-entrancy guard during in-flight submit

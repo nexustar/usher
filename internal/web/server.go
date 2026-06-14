@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,6 +66,10 @@ type Server struct {
 	main         *mainchat.Store
 	agent        usheragent.Agent
 	logger       *slog.Logger
+	// codexModelsPath is ~/.codex/models_cache.json (codex's per-account model
+	// catalog). "" when codex isn't enabled. Read per request so a plan change
+	// (cache refetch) shows up without restarting usher.
+	codexModelsPath string
 }
 
 func NewServer(
@@ -74,20 +79,85 @@ func NewServer(
 	r *router.Router,
 	main *mainchat.Store,
 	agent usheragent.Agent,
+	codexModelsPath string,
 	logger *slog.Logger,
 ) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Server{
-		addr:         addr,
-		hookSockPath: hookSockPath,
-		auth:         authStore,
-		router:       r,
-		main:         main,
-		agent:        agent,
-		logger:       logger,
+		addr:            addr,
+		hookSockPath:    hookSockPath,
+		auth:            authStore,
+		router:          r,
+		main:            main,
+		agent:           agent,
+		logger:          logger,
+		codexModelsPath: codexModelsPath,
 	}
+}
+
+// modelOption is one entry for the new-session model picker.
+type modelOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// codexModels returns the user-selectable Codex models from codex's own
+// per-account catalog (models_cache.json) — so the picker matches whatever the
+// account's plan (free/Plus/Pro) actually offers, with no hardcoded list.
+// Empty when codex isn't enabled or the cache is unreadable. Ordered as codex's
+// own picker (lowest priority number first).
+func (s *Server) codexModels() []modelOption {
+	if s.codexModelsPath == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(s.codexModelsPath)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Models []struct {
+			Slug        string `json:"slug"`
+			DisplayName string `json:"display_name"`
+			Visibility  string `json:"visibility"`
+			Priority    int    `json:"priority"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	picks := doc.Models[:0:0]
+	for _, m := range doc.Models {
+		if m.Visibility == "list" && m.Slug != "" { // "hide" = internal (e.g. auto-review)
+			picks = append(picks, m)
+		}
+	}
+	// Lower priority number = higher up in codex's own picker.
+	sort.SliceStable(picks, func(i, j int) bool { return picks[i].Priority < picks[j].Priority })
+	out := make([]modelOption, 0, len(picks))
+	for _, m := range picks {
+		label := m.DisplayName
+		if label == "" {
+			label = m.Slug
+		}
+		out = append(out, modelOption{Value: m.Slug, Label: label})
+	}
+	return out
+}
+
+func (s *Server) handleCodexModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.codexModels())
+}
+
+// codexModelAllowed reports whether slug is in the account's Codex catalog.
+func (s *Server) codexModelAllowed(slug string) bool {
+	for _, m := range s.codexModels() {
+		if m.Value == slug {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -104,6 +174,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	webMux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	webMux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	webMux.HandleFunc("GET /api/models/codex", s.handleCodexModels)
 	webMux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	webMux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	webMux.HandleFunc("GET /api/sessions/{id}/transcript", s.handleTranscript)
@@ -398,10 +469,9 @@ var allowedModels = map[string]bool{
 	"fable":      true,
 	// Version-pinned full ID (no short alias; plain "opus" resolves to 4.8).
 	"claude-opus-4-6": true,
-	// Codex models — the create form routes these to the Codex backend
-	// (backendForModel: gpt-*/o-series → codex). Passed to codex as `-c model=`.
-	"gpt-5.5":      true,
-	"gpt-5.4-mini": true,
+	// Codex models are NOT listed here — they're validated per request against
+	// the account's live catalog (see codexModelAllowed), so the picker supports
+	// whatever the plan offers without a hardcoded list.
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -410,7 +480,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	if !allowedModels[req.Model] {
+	// Codex models are validated against the account's live catalog (no hardcoded
+	// list — supports whatever the plan offers); Claude models against the static
+	// allowlist.
+	if router.BackendForModel(req.Model) == "codex" {
+		if !s.codexModelAllowed(req.Model) {
+			writeErr(w, http.StatusBadRequest, "invalid model: "+req.Model)
+			return
+		}
+	} else if !allowedModels[req.Model] {
 		writeErr(w, http.StatusBadRequest, "invalid model: "+req.Model)
 		return
 	}
