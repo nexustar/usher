@@ -585,6 +585,20 @@ func (r *Router) SubscribeSession(id string) (<-chan broker.Event, func()) {
 	return r.broker.Subscribe(id)
 }
 
+// SubscribeAllSessions returns a stream of events across every session, for
+// frontends (the Telegram hub) that mirror all active sessions rather than one
+// open one. Counterpart to SubscribeSession for the SSE-per-session web path.
+func (r *Router) SubscribeAllSessions() (<-chan broker.Event, func()) {
+	return r.broker.SubscribeAll()
+}
+
+// SubscribePendingInteractions returns a stream of newly-submitted permission
+// requests, so the Telegram hub can push inline allow/deny buttons without
+// polling ListPendingInteractions.
+func (r *Router) SubscribePendingInteractions() (<-chan hook.Pending, func()) {
+	return r.hooks.SubscribePending()
+}
+
 // --- terminal mirror -----------------------------------------------------
 
 // CaptureScreen returns the current rendered pane contents (with colour

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/nexustar/usher/internal/push"
 	"github.com/nexustar/usher/internal/router"
 	"github.com/nexustar/usher/internal/sender"
+	"github.com/nexustar/usher/internal/telegram"
 	"github.com/nexustar/usher/internal/web"
 )
 
@@ -124,6 +126,10 @@ func serve(args []string) error {
 		"do not register usher's own MCP tools (currently just show_image, which renders an image inline "+
 			"in the web UI) on spawned claude sessions. On by default; the tools self-gate to usher-managed "+
 			"sessions and don't touch the user's own MCP servers.")
+	tgGroupID := fs.Int64("telegram-group-id", 0,
+		"forum supergroup chat id to mirror sessions into; set the bot token in $TELEGRAM_BOT_TOKEN to enable")
+	tgAllowedUsers := fs.String("telegram-allowed-user-ids", "",
+		"comma-separated Telegram user ids allowed to drive sessions; empty = any member of the group")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -251,9 +257,76 @@ func serve(args []string) error {
 		"loopback_bind", addrIsLoopback(*addr),
 	)
 
+	if err := startTelegramHub(ctx, r, *tgGroupID, *tgAllowedUsers, *dataDir, logger); err != nil {
+		return err
+	}
+
 	srv := web.NewServer(*addr, hookSockPath(*dataDir), authStore, r, mainStore, agent, pushMgr, codexModelsPath, *uiDir, logger)
 	return srv.Run(ctx)
 }
+
+// telegramTokenEnv is the env var holding the bot token; setting it enables the
+// Telegram integration (the token is a secret, so it's never a flag).
+const telegramTokenEnv = "TELEGRAM_BOT_TOKEN"
+
+// startTelegramHub launches the Telegram forum mirror in a background goroutine
+// when $TELEGRAM_BOT_TOKEN is set. No token disables it silently; a token
+// without --telegram-group-id is a misconfiguration and errors out.
+func startTelegramHub(ctx context.Context, r *router.Router, groupID int64, allowedUsers, dataDir string, logger *slog.Logger) error {
+	token := os.Getenv(telegramTokenEnv)
+	if token == "" {
+		return nil // integration disabled
+	}
+	if groupID == 0 {
+		return fmt.Errorf("--telegram-group-id is required when %s is set", telegramTokenEnv)
+	}
+	allowed, err := parseUserIDs(allowedUsers)
+	if err != nil {
+		return fmt.Errorf("--telegram-allowed-user-ids: %w", err)
+	}
+	hub, err := telegram.NewHub(
+		telegram.NewClient(token, ""),
+		r,
+		telegram.Config{
+			GroupID:        groupID,
+			StatePath:      filepath.Join(dataDir, "telegram-topics.json"),
+			AllowedUserIDs: allowed,
+		},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("init telegram hub: %w", err)
+	}
+	go func() {
+		if err := hub.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Warn("telegram hub stopped", "err", err)
+		}
+	}()
+	return nil
+}
+
+// parseUserIDs parses a comma-separated list of Telegram user ids. Empty
+// entries are skipped; an empty string yields a nil slice (no whitelist).
+func parseUserIDs(s string) ([]int64, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var ids []int64
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid user id %q", part)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+var _ telegram.RouterAPI = (*router.Router)(nil)
 
 // addrIsLoopback reports whether the host part of addr binds only on loopback
 // interfaces. Empty host (e.g. ":7777") means all interfaces ⇒ not loopback.
