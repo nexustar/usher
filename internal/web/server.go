@@ -37,6 +37,7 @@ import (
 	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/jsonl"
 	"github.com/nexustar/usher/internal/mainchat"
+	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/push"
 	"github.com/nexustar/usher/internal/router"
 )
@@ -747,7 +748,7 @@ func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "not a supported image type")
 		return
 	}
-	full, ok := resolveWithinDir(sess.Cwd, rel)
+	full, ok := pathutil.ResolveWithinDir(sess.Cwd, rel)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "image not found")
 		return
@@ -767,44 +768,6 @@ func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=60")
 	http.ServeContent(w, r, filepath.Base(full), info.ModTime(), f)
-}
-
-// resolveWithinDir resolves rel (absolute, or relative to dir) and returns the
-// real path only if it lies inside dir after symlink evaluation. The lexical
-// check defends against ../ in rel; the EvalSymlinks check defends against a
-// symlink inside dir pointing out. Both the file and dir must exist.
-func resolveWithinDir(dir, rel string) (string, bool) {
-	if dir == "" || rel == "" {
-		return "", false
-	}
-	full := rel
-	if !filepath.IsAbs(full) {
-		full = filepath.Join(dir, rel)
-	}
-	full = filepath.Clean(full)
-	if !withinDir(dir, full) {
-		return "", false
-	}
-	realFull, err := filepath.EvalSymlinks(full)
-	if err != nil {
-		return "", false
-	}
-	realDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return "", false
-	}
-	if !withinDir(realDir, realFull) {
-		return "", false
-	}
-	return realFull, true
-}
-
-func withinDir(dir, path string) bool {
-	rp, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rp != ".." && !strings.HasPrefix(rp, ".."+string(filepath.Separator))
 }
 
 // sseForward is the event vocabulary the web client consumes. Raw jsonl
