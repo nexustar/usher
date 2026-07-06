@@ -174,7 +174,9 @@ func subscribe[T any](c *Client, path string) (<-chan T, func()) {
 			if ctx.Err() != nil {
 				return
 			}
+			connected := false
 			err := c.streamOnce(ctx, path, func(data []byte) bool {
+				connected = true
 				var v T
 				if err := json.Unmarshal(data, &v); err != nil {
 					c.logger.Warn("plugin api: bad SSE frame", "path", path, "err", err)
@@ -189,6 +191,9 @@ func subscribe[T any](c *Client, path string) (<-chan T, func()) {
 			})
 			if ctx.Err() != nil {
 				return
+			}
+			if connected {
+				backoff = time.Second // the drop ended a working stream; retry eagerly
 			}
 			if err != nil {
 				c.logger.Warn("plugin api: stream dropped, reconnecting", "path", path, "err", err, "backoff", backoff)
