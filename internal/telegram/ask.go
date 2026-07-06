@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"encoding/json"
 	"html"
 	"strconv"
 	"strings"
@@ -20,33 +19,13 @@ type askEntry struct {
 	thread   int64
 }
 
-// askQuestion is the subset of an AskUserQuestion question we render.
-type askQuestion struct {
-	Header      string `json:"header"`
-	Question    string `json:"question"`
-	MultiSelect bool   `json:"multiSelect"`
-	Options     []struct {
-		Label string `json:"label"`
-	} `json:"options"`
-}
-
-func parseQuestions(raw json.RawMessage) []askQuestion {
-	var in struct {
-		Questions []askQuestion `json:"questions"`
-	}
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return nil
-	}
-	return in.Questions
-}
-
 // postAskQuestion surfaces an AskUserQuestion in its topic. A single-select
 // question with options gets tappable buttons; any single question can also be
 // answered by just typing a reply in the topic (covering multiSelect and
 // free-form "other"). Only a multi-question prompt can't be mapped to one typed
 // reply, so that alone falls back to the web UI.
 func (h *Hub) postAskQuestion(ctx context.Context, thread int64, p hook.Pending) {
-	qs := parseQuestions(p.ToolInput)
+	qs := imutil.ParseQuestions(p.ToolInput)
 	if len(qs) != 1 {
 		text := "🔢 Multi-step question — please answer in the web UI."
 		h.sendAskPrompt(ctx, thread, p.ID, text, ignoreOnly(p.ID))

@@ -25,13 +25,21 @@ func ExtractUserText(raw json.RawMessage) string {
 	if err := json.Unmarshal(line.Message.Content, &s); err == nil {
 		return s
 	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
+	var blocks []textBlock
 	if err := json.Unmarshal(line.Message.Content, &blocks); err != nil {
 		return ""
 	}
+	return joinTextBlocks(blocks)
+}
+
+type textBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// joinTextBlocks concatenates the text blocks with blank lines between them;
+// non-text blocks contribute nothing.
+func joinTextBlocks(blocks []textBlock) string {
 	var b strings.Builder
 	for _, blk := range blocks {
 		if blk.Type == "text" && blk.Text != "" {
@@ -49,25 +57,13 @@ func ExtractUserText(raw json.RawMessage) string {
 func AssistantText(raw json.RawMessage) string {
 	var line struct {
 		Message struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
+			Content []textBlock `json:"content"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(raw, &line); err != nil {
 		return ""
 	}
-	var b strings.Builder
-	for _, blk := range line.Message.Content {
-		if blk.Type == "text" && blk.Text != "" {
-			if b.Len() > 0 {
-				b.WriteString("\n\n")
-			}
-			b.WriteString(blk.Text)
-		}
-	}
-	return b.String()
+	return joinTextBlocks(line.Message.Content)
 }
 
 // ImageExts mirrors the show_image allowlist (cmd/usher/mcpcmd.go mcpImageExts
@@ -106,6 +102,28 @@ func ImageRefs(raw json.RawMessage) []string {
 
 func isShowImage(name string) bool {
 	return name == "show_image" || strings.HasSuffix(name, "__show_image")
+}
+
+// AskQuestion is the subset of an AskUserQuestion question IM frontends
+// render: the prompt text, its short header, and the option labels.
+type AskQuestion struct {
+	Header      string `json:"header"`
+	Question    string `json:"question"`
+	MultiSelect bool   `json:"multiSelect"`
+	Options     []struct {
+		Label string `json:"label"`
+	} `json:"options"`
+}
+
+// ParseQuestions extracts the questions of an AskUserQuestion tool input.
+func ParseQuestions(raw json.RawMessage) []AskQuestion {
+	var in struct {
+		Questions []AskQuestion `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil
+	}
+	return in.Questions
 }
 
 // TurnDuration reads the elapsed time of a turn from a subprocess.exit event,
@@ -162,10 +180,11 @@ func ShortID(id string) string {
 }
 
 // SplitMessage breaks text into chunks of at most max runes, preferring to cut
-// at a newline boundary so code/paragraphs stay intact.
+// at a newline boundary so code/paragraphs stay intact. A non-positive max is
+// nonsense from a miscomputed limit; return the text whole rather than loop.
 func SplitMessage(text string, max int) []string {
 	runes := []rune(text)
-	if len(runes) <= max {
+	if max <= 0 || len(runes) <= max {
 		return []string{text}
 	}
 	var chunks []string
