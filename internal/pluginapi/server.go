@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nexustar/usher/internal/broker"
@@ -52,7 +53,7 @@ func NewServer(router RouterAPI, logger *slog.Logger) *Server {
 
 // Run listens on the Unix socket at path and serves until ctx is cancelled.
 func (s *Server) Run(ctx context.Context, path string) error {
-	ln, err := listenUnixSocket(path)
+	ln, err := ListenUnixSocket(path)
 	if err != nil {
 		return fmt.Errorf("plugin socket: %w", err)
 	}
@@ -140,12 +141,25 @@ func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleEvents streams every session's broker events as SSE.
+// handleEvents streams every session's broker events as SSE. An optional
+// ?types=a,b,c query keeps only those event types — a tool_result "user"
+// event drags a whole tool output through the socket, so a plugin that only
+// renders a few types should filter server-side.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	events, cancel := s.router.SubscribeAllSessions()
 	defer cancel()
-	s.serveSSE(w, r, nil, func(w http.ResponseWriter, flush func()) bool {
-		return forward(r.Context(), w, flush, events)
+	flush, ok := sseStart(w)
+	if !ok {
+		return
+	}
+	keep := map[string]bool{}
+	if q := r.URL.Query().Get("types"); q != "" {
+		for _, t := range strings.Split(q, ",") {
+			keep[t] = true
+		}
+	}
+	forward(r.Context(), w, flush, events, func(ev broker.Event) bool {
+		return len(keep) == 0 || keep[ev.Type]
 	})
 }
 
@@ -157,62 +171,60 @@ func (s *Server) handleInteractions(w http.ResponseWriter, r *http.Request) {
 	pending, cancel := s.router.SubscribePendingInteractions()
 	defer cancel()
 	snapshot := s.router.ListPendingInteractions()
-	s.serveSSE(w, r, func(w http.ResponseWriter, flush func()) bool {
-		for _, p := range snapshot {
-			if !writeSSE(w, flush, p) {
-				return false
-			}
+	flush, ok := sseStart(w)
+	if !ok {
+		return
+	}
+	for _, p := range snapshot {
+		if !writeSSE(w, flush, p) {
+			return
 		}
-		return true
-	}, func(w http.ResponseWriter, flush func()) bool {
-		return forward(r.Context(), w, flush, pending)
-	})
+	}
+	forward(r.Context(), w, flush, pending, nil)
 }
 
-// serveSSE writes the SSE preamble, runs the optional prologue (snapshot
-// replay), then the stream func until it reports the client is gone.
-func (s *Server) serveSSE(
-	w http.ResponseWriter,
-	r *http.Request,
-	prologue func(http.ResponseWriter, func()) bool,
-	stream func(http.ResponseWriter, func()) bool,
-) {
+// sseStart writes the SSE preamble (same header set as the web package's
+// sseStart) and returns the flush func.
+func sseStart(w http.ResponseWriter) (func(), bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
-		return
+		return nil, false
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-	if prologue != nil && !prologue(w, flusher.Flush) {
-		return
-	}
-	stream(w, flusher.Flush)
+	return flusher.Flush, true
 }
 
 // forward pumps channel values to the SSE stream until the client disconnects
-// or the channel closes. A periodic comment line keeps the connection
-// verifiably alive for the client's reconnect logic.
-func forward[T any](ctx context.Context, w http.ResponseWriter, flush func(), ch <-chan T) bool {
+// or the channel closes, skipping values keep rejects (nil = keep all). A
+// periodic comment line keeps the connection verifiably alive for the
+// client's reconnect logic.
+func forward[T any](ctx context.Context, w http.ResponseWriter, flush func(), ch <-chan T, keep func(T) bool) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return
 		case <-keepalive.C:
 			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
-				return false
+				return
 			}
 			flush()
 		case v, ok := <-ch:
 			if !ok {
-				return false
+				return
+			}
+			if keep != nil && !keep(v) {
+				continue
 			}
 			if !writeSSE(w, flush, v) {
-				return false
+				return
 			}
 		}
 	}
@@ -241,10 +253,31 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// listenUnixSocket binds a Unix domain socket at path with mode 0600. A
+// DefaultDataDir resolves usher's data directory ($XDG_DATA_HOME/usher,
+// falling back to ~/.local/share/usher) — the same resolution `usher serve`
+// uses for its --data-dir default. Exported so out-of-process plugins derive
+// the identical socket rendezvous instead of duplicating the logic.
+func DefaultDataDir() string {
+	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
+		return filepath.Join(v, "usher")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "usher")
+}
+
+// SocketPath returns the plugin API socket path inside dataDir. The one
+// definition both `usher serve` and plugins use.
+func SocketPath(dataDir string) string {
+	return filepath.Join(dataDir, "plugin.sock")
+}
+
+// ListenUnixSocket binds a Unix domain socket at path with mode 0600. A
 // stale socket file from a previous unclean shutdown is removed first.
-// (Same idiom as the web package's hook listener.)
-func listenUnixSocket(path string) (net.Listener, error) {
+// Shared with the web package's hook listener.
+func ListenUnixSocket(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}

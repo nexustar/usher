@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -24,6 +25,12 @@ import (
 type Client struct {
 	http   *http.Client
 	logger *slog.Logger
+
+	// EventTypes, when set before SubscribeAllSessions, asks the server to
+	// stream only those event types. A tool_result "user" event carries an
+	// entire tool output, so a consumer that renders a few types should not
+	// pull the rest across the socket.
+	EventTypes []string
 }
 
 // callTimeout bounds the synchronous calls (get / send / respond). SSE
@@ -95,10 +102,15 @@ func (c *Client) RespondInteraction(id string, resp hook.Response) error {
 	return c.post(ctx, "/v1/interactions/"+id+"/respond", resp)
 }
 
-// SubscribeAllSessions streams every session's events. The subscription
-// reconnects with backoff until cancelled, so a usher restart heals itself.
+// SubscribeAllSessions streams every session's events (filtered to
+// EventTypes when set). The subscription reconnects with backoff until
+// cancelled, so a usher restart heals itself.
 func (c *Client) SubscribeAllSessions() (<-chan broker.Event, func()) {
-	return subscribe[broker.Event](c, "/v1/events")
+	path := "/v1/events"
+	if len(c.EventTypes) > 0 {
+		path += "?types=" + neturl.QueryEscape(strings.Join(c.EventTypes, ","))
+	}
+	return subscribe[broker.Event](c, path)
 }
 
 // SubscribePendingInteractions streams pending permission prompts. On each
@@ -145,6 +157,22 @@ func (c *Client) post(ctx context.Context, path string, body any) error {
 	return nil
 }
 
+// APIError is a rejection the server itself returned (the router refused the
+// call — e.g. an interaction already resolved). Its absence on a failed call
+// means the transport failed and usher may never have seen the request;
+// consumers use that split to decide between "give up" and "retry".
+type APIError struct {
+	Status int
+	Msg    string
+}
+
+func (e *APIError) Error() string {
+	if e.Msg != "" {
+		return e.Msg
+	}
+	return fmt.Sprintf("plugin api status %d", e.Status)
+}
+
 // apiError extracts the server's {"error": ...} message from a non-2xx reply.
 func apiError(resp *http.Response) error {
 	var e struct {
@@ -152,9 +180,9 @@ func apiError(resp *http.Response) error {
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if json.Unmarshal(body, &e) == nil && e.Error != "" {
-		return fmt.Errorf("%s", e.Error)
+		return &APIError{Status: resp.StatusCode, Msg: e.Error}
 	}
-	return fmt.Errorf("plugin api status %d", resp.StatusCode)
+	return &APIError{Status: resp.StatusCode}
 }
 
 // maxSSELine caps one SSE data frame; an assistant event carries a whole
@@ -175,8 +203,7 @@ func subscribe[T any](c *Client, path string) (<-chan T, func()) {
 				return
 			}
 			connected := false
-			err := c.streamOnce(ctx, path, func(data []byte) bool {
-				connected = true
+			err := c.streamOnce(ctx, path, func() { connected = true }, func(data []byte) bool {
 				var v T
 				if err := json.Unmarshal(data, &v); err != nil {
 					c.logger.Warn("plugin api: bad SSE frame", "path", path, "err", err)
@@ -211,9 +238,10 @@ func subscribe[T any](c *Client, path string) (<-chan T, func()) {
 	return ch, cancel
 }
 
-// streamOnce runs one SSE connection, invoking onData per data frame until
-// the stream ends (error) or onData returns false (cancelled).
-func (c *Client) streamOnce(ctx context.Context, path string, onData func([]byte) bool) error {
+// streamOnce runs one SSE connection, invoking onConnect once the server
+// accepts the stream and onData per data frame, until the stream ends
+// (error) or onData returns false (cancelled).
+func (c *Client) streamOnce(ctx context.Context, path string, onConnect func(), onData func([]byte) bool) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url(path), nil)
 	if err != nil {
 		return err
@@ -226,6 +254,7 @@ func (c *Client) streamOnce(ctx context.Context, path string, onData func([]byte
 	if resp.StatusCode != http.StatusOK {
 		return apiError(resp)
 	}
+	onConnect()
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64<<10), maxSSELine)
 	var data []byte

@@ -270,7 +270,7 @@ func serve(args []string) error {
 	// same Router seam the Telegram hub uses, over a 0600 Unix socket. Always
 	// on — it is inert until a plugin connects.
 	go func() {
-		if err := pluginapi.NewServer(r, logger).Run(ctx, pluginSockPath(*dataDir)); err != nil && ctx.Err() == nil {
+		if err := pluginapi.NewServer(r, logger).Run(ctx, pluginapi.SocketPath(*dataDir)); err != nil && ctx.Err() == nil {
 			logger.Warn("plugin api stopped", "err", err)
 		}
 	}()
@@ -369,11 +369,6 @@ func hookSockPath(dataDir string) string {
 	return filepath.Join(dataDir, "hook.sock")
 }
 
-// pluginSockPath returns the Unix socket path for the plugin API listener.
-func pluginSockPath(dataDir string) string {
-	return filepath.Join(dataDir, "plugin.sock")
-}
-
 func buildAgent(r *router.Router, mode, baseURL, model, apiKeyEnv string, strict bool) (usheragent.Agent, error) {
 	switch mode {
 	case "", "rule":
@@ -414,13 +409,4 @@ func isDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func defaultDataDir() string {
-	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
-		return filepath.Join(v, "usher")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share", "usher")
-}
+func defaultDataDir() string { return pluginapi.DefaultDataDir() }

@@ -286,3 +286,34 @@ func publishUntilReceived(t *testing.T, f *fakeRouter, events <-chan broker.Even
 		}
 	}
 }
+
+// TestEventTypeFilter: a client with EventTypes set must not receive other
+// event types (the server filters before marshaling).
+func TestEventTypeFilter(t *testing.T) {
+	f := newFakeRouter()
+	c := startServer(t, f)
+	c.EventTypes = []string{"assistant"}
+
+	events, cancel := c.SubscribeAllSessions()
+	defer cancel()
+
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case ev := <-events:
+			if ev.Type != "assistant" {
+				t.Fatalf("filtered stream delivered %q", ev.Type)
+			}
+			return
+		case <-tick.C:
+			// The noise event is published first each round; receiving the
+			// assistant event implies the earlier noise was filtered out.
+			f.broker.Publish(broker.Event{SessionID: "s", Type: "user"})
+			f.broker.Publish(broker.Event{SessionID: "s", Type: "assistant"})
+		case <-deadline:
+			t.Fatal("no event received")
+		}
+	}
+}

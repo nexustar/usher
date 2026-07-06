@@ -39,6 +39,7 @@ import (
 	"github.com/nexustar/usher/internal/jsonl"
 	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/pathutil"
+	"github.com/nexustar/usher/internal/pluginapi"
 	"github.com/nexustar/usher/internal/push"
 	"github.com/nexustar/usher/internal/router"
 )
@@ -296,7 +297,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("web listen %s: %w", s.addr, err)
 	}
 
-	sockListener, err := listenUnixSocket(s.hookSockPath)
+	sockListener, err := pluginapi.ListenUnixSocket(s.hookSockPath)
 	if err != nil {
 		_ = webListener.Close()
 		return fmt.Errorf("hook socket: %w", err)
@@ -331,26 +332,6 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return err
 	}
-}
-
-// listenUnixSocket binds a Unix domain socket at path with mode 0600. A
-// stale socket file from a previous unclean shutdown is removed first.
-func listenUnixSocket(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	if info, err := os.Stat(path); err == nil && info.Mode()&os.ModeSocket != 0 {
-		_ = os.Remove(path)
-	}
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("chmod %s: %w", path, err)
-	}
-	return ln, nil
 }
 
 // --- auth middleware + handlers -----------------------------------------
