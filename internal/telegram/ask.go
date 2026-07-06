@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/imutil"
 )
 
 // askEntry remembers a posted AskUserQuestion awaiting an answer: the question
@@ -60,16 +61,16 @@ func (h *Hub) postAskQuestion(ctx context.Context, thread int64, p hook.Pending)
 	// Register first so a typed reply in this topic resolves the question.
 	h.putAsk(p.ID, askEntry{question: q.Question, labels: labels, thread: thread})
 
-	head := "❓ " + html.EscapeString(truncate(q.Question, 800))
+	head := "❓ " + html.EscapeString(imutil.Truncate(q.Question, 800))
 	if q.Header != "" {
-		head = "❓ " + html.EscapeString(truncate(q.Header, 200)) + "\n" + html.EscapeString(truncate(q.Question, 800))
+		head = "❓ " + html.EscapeString(imutil.Truncate(q.Header, 200)) + "\n" + html.EscapeString(imutil.Truncate(q.Question, 800))
 	}
 
 	if !q.MultiSelect && len(q.Options) > 0 {
 		rows := make([][]InlineKeyboardButton, 0, len(q.Options))
 		for i, o := range q.Options {
 			rows = append(rows, []InlineKeyboardButton{{
-				Text:         truncate(o.Label, 60),
+				Text:         imutil.Truncate(o.Label, 60),
 				CallbackData: "q:" + p.ID + ":" + strconv.Itoa(i),
 			}})
 		}
@@ -163,7 +164,7 @@ func (h *Hub) handleAskCallback(ctx context.Context, cb *CallbackQuery) {
 	if err := h.router.RespondInteraction(id, resp); err != nil {
 		toast = "already resolved"
 	}
-	_ = h.client.AnswerCallbackQuery(ctx, cb.ID, truncate(toast, 200))
+	_ = h.client.AnswerCallbackQuery(ctx, cb.ID, imutil.Truncate(toast, 200))
 	h.clearKeyboard(ctx, cb)
 }
 

@@ -20,41 +20,7 @@ import (
 	"github.com/nexustar/usher/internal/hook"
 )
 
-func TestAssistantText(t *testing.T) {
-	cases := []struct {
-		raw, want string
-	}{
-		{`{"message":{"content":[{"type":"text","text":"hello"}]}}`, "hello"},
-		{`{"message":{"content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}}`, "a\n\nb"},
-		{`{"message":{"content":[{"type":"tool_use","id":"x"}]}}`, ""},
-		{`{"message":{"content":[{"type":"text","text":"keep"},{"type":"tool_use"}]}}`, "keep"},
-		{`not json`, ""},
-	}
-	for _, c := range cases {
-		if got := assistantText(json.RawMessage(c.raw)); got != c.want {
-			t.Errorf("assistantText(%s) = %q, want %q", c.raw, got, c.want)
-		}
-	}
-}
 
-func TestSplitMessage(t *testing.T) {
-	if got := splitMessage("short"); len(got) != 1 || got[0] != "short" {
-		t.Fatalf("short text should be one chunk, got %v", got)
-	}
-	long := strings.Repeat("x", telegramMaxMessage+50)
-	chunks := splitMessage(long)
-	if len(chunks) != 2 {
-		t.Fatalf("want 2 chunks, got %d", len(chunks))
-	}
-	for _, c := range chunks {
-		if len([]rune(c)) > telegramMaxMessage {
-			t.Fatalf("chunk over limit: %d", len([]rune(c)))
-		}
-	}
-	if chunks[0]+chunks[1] != long {
-		t.Fatal("chunks should reassemble to original when no newline cut")
-	}
-}
 
 // fakeRouter implements RouterAPI with a hand-fed event channel and records
 // the messages routed to sessions.
@@ -358,38 +324,7 @@ func TestPermissionHTML(t *testing.T) {
 	}
 }
 
-func TestTurnDuration(t *testing.T) {
-	raw := json.RawMessage(`{"user_ts":"2026-06-25T03:00:00Z","assistant_ts":"2026-06-25T03:01:12Z"}`)
-	d, ok := turnDuration(raw)
-	if !ok || d != 72*time.Second {
-		t.Fatalf("turnDuration = %v,%v want 72s,true", d, ok)
-	}
-	if got := humanizeDuration(d); got != "1m12s" {
-		t.Errorf("humanizeDuration = %q, want 1m12s", got)
-	}
-	// Missing / out-of-order timestamps → no duration.
-	if _, ok := turnDuration(json.RawMessage(`{}`)); ok {
-		t.Error("empty exit event should yield no duration")
-	}
-	if _, ok := turnDuration(json.RawMessage(`{"user_ts":"2026-06-25T03:01:00Z","assistant_ts":"2026-06-25T03:00:00Z"}`)); ok {
-		t.Error("out-of-order timestamps should yield no duration")
-	}
-}
 
-func TestExtractUserText(t *testing.T) {
-	cases := []struct{ raw, want string }{
-		{`{"message":{"content":"do the thing"}}`, "do the thing"},
-		{`{"message":{"content":[{"type":"text","text":"hello"}]}}`, "hello"},
-		// tool_result user event carries no prompt text → not echoed.
-		{`{"message":{"content":[{"type":"tool_result","tool_use_id":"x","content":"out"}]}}`, ""},
-		{`not json`, ""},
-	}
-	for _, c := range cases {
-		if got := extractUserText(json.RawMessage(c.raw)); got != c.want {
-			t.Errorf("extractUserText(%s) = %q, want %q", c.raw, got, c.want)
-		}
-	}
-}
 
 func TestPromptEchoAndDedup(t *testing.T) {
 	const group = int64(-100200)

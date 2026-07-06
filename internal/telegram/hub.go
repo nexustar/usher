@@ -16,6 +16,7 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/pathutil"
 )
 
@@ -433,7 +434,7 @@ func (h *Hub) handleEvent(ctx context.Context, ev broker.Event) {
 // topic shows the question). Prompts typed in Telegram are recorded by
 // handleInbound and skipped; tool_result "user" events have no prompt text.
 func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
-	text := strings.TrimSpace(extractUserText(ev.Raw))
+	text := strings.TrimSpace(imutil.ExtractUserText(ev.Raw))
 	if text == "" || h.consumeRecentSent(ev.SessionID, text) {
 		return
 	}
@@ -451,7 +452,7 @@ func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 		}
 		return
 	}
-	for _, chunk := range splitMessage(text) {
+	for _, chunk := range imutil.SplitMessage(text, telegramMaxMessage) {
 		if _, err := h.client.SendMessage(ctx, SendMessageParams{
 			ChatID:              h.group,
 			MessageThreadID:     thread,
@@ -467,8 +468,8 @@ func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 // mirrorAssistant posts the assistant text and any show_image attachments of an
 // event into its topic as silent messages.
 func (h *Hub) mirrorAssistant(ctx context.Context, ev broker.Event) {
-	text := assistantText(ev.Raw)
-	images := imageRefs(ev.Raw)
+	text := imutil.AssistantText(ev.Raw)
+	images := imutil.ImageRefs(ev.Raw)
 	if text == "" && len(images) == 0 {
 		return
 	}
@@ -478,7 +479,7 @@ func (h *Hub) mirrorAssistant(ctx context.Context, ev broker.Event) {
 		return
 	}
 	if text != "" {
-		for _, chunk := range splitMessage(text) {
+		for _, chunk := range imutil.SplitMessage(text, telegramMaxMessage) {
 			if err := h.sendProse(ctx, thread, chunk); err != nil {
 				// Give up on the remaining text, but still mirror any images —
 				// they're independent of a text-send failure.
@@ -540,7 +541,7 @@ func (h *Hub) mirrorImage(ctx context.Context, sessionID string, thread int64, r
 		h.logger.Warn("telegram: image outside allowed dirs", "session", sessionID, "path", ref)
 		return
 	}
-	if !imageExts[strings.ToLower(filepath.Ext(full))] {
+	if !imutil.ImageExts[strings.ToLower(filepath.Ext(full))] {
 		return
 	}
 	name := filepath.Base(full)
@@ -587,8 +588,8 @@ func (h *Hub) notifyTurnComplete(ctx context.Context, ev broker.Event) {
 		return
 	}
 	text := "✅ responded"
-	if d, ok := turnDuration(ev.Raw); ok {
-		text += " in " + humanizeDuration(d)
+	if d, ok := imutil.TurnDuration(ev.Raw); ok {
+		text += " in " + imutil.HumanizeDuration(d)
 	}
 	// No @mention here: turn completion fires every turn, so it stays audible
 	// (notifies when the group isn't muted) but does NOT pierce a mute. Only the
@@ -651,11 +652,11 @@ func (h *Hub) topicFor(ctx context.Context, sessionID string) (int64, error) {
 // topicName derives a human-friendly topic title from the session's title,
 // falling back to a short id. Telegram caps topic names at 128 chars.
 func (h *Hub) topicName(sessionID string) string {
-	name := shortID(sessionID)
+	name := imutil.ShortID(sessionID)
 	if sess, ok := h.router.GetSession(sessionID); ok && strings.TrimSpace(sess.Title) != "" {
 		name = sess.Title
 	}
-	return truncate(name, 128)
+	return imutil.Truncate(name, 128)
 }
 
 // recordSent remembers the prompt usher just forwarded from Telegram, for the
