@@ -21,6 +21,7 @@ import (
 	"github.com/nexustar/usher/internal/discovery"
 	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/mainchat"
+	"github.com/nexustar/usher/internal/pluginapi"
 	"github.com/nexustar/usher/internal/push"
 	"github.com/nexustar/usher/internal/sessionmeta"
 	"github.com/nexustar/usher/internal/router"
@@ -265,6 +266,15 @@ func serve(args []string) error {
 		return err
 	}
 
+	// Plugin API: out-of-process IM frontends (e.g. usher-lark) consume the
+	// same Router seam the Telegram hub uses, over a 0600 Unix socket. Always
+	// on — it is inert until a plugin connects.
+	go func() {
+		if err := pluginapi.NewServer(r, logger).Run(ctx, pluginSockPath(*dataDir)); err != nil && ctx.Err() == nil {
+			logger.Warn("plugin api stopped", "err", err)
+		}
+	}()
+
 	srv := web.NewServer(*addr, hookSockPath(*dataDir), authStore, r, mainStore, agent, pushMgr, codexModelsPath, *editorURL, *uiDir, logger)
 
 	// Foreign-turn watcher: turns usher didn't start (background workflow
@@ -338,6 +348,7 @@ func parseUserIDs(s string) ([]int64, error) {
 }
 
 var _ telegram.RouterAPI = (*router.Router)(nil)
+var _ pluginapi.RouterAPI = (*router.Router)(nil)
 
 // addrIsLoopback reports whether the host part of addr binds only on loopback
 // interfaces. Empty host (e.g. ":7777") means all interfaces ⇒ not loopback.
@@ -356,6 +367,11 @@ func addrIsLoopback(addr string) bool {
 // hookSockPath returns the Unix socket path for the hook listener.
 func hookSockPath(dataDir string) string {
 	return filepath.Join(dataDir, "hook.sock")
+}
+
+// pluginSockPath returns the Unix socket path for the plugin API listener.
+func pluginSockPath(dataDir string) string {
+	return filepath.Join(dataDir, "plugin.sock")
 }
 
 func buildAgent(r *router.Router, mode, baseURL, model, apiKeyEnv string, strict bool) (usheragent.Agent, error) {
