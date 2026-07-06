@@ -3,7 +3,7 @@
 # Plain GNU make. No build tool dependencies beyond `go` itself; this matches
 # the project's "stdlib-first, minimal toolchain" philosophy.
 
-.PHONY: build test vet check install run clean dist icons help
+.PHONY: build test vet check install run clean dist icons lark test-lark help
 
 OUTPUT  := usher
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -34,13 +34,21 @@ install:
 run: build
 	./$(OUTPUT) serve
 
+# Build the Lark IM plugin (separate module: its SDK deps stay out of usher's go.mod).
+lark:
+	cd plugins/lark && $(GO_ENV) go build $(GO_TAGS) $(GO_LD) -o ../../usher-lark .
+
+# Test the Lark plugin module.
+test-lark:
+	cd plugins/lark && go test ./... && go vet ./...
+
 # Regenerate icon variants from the source SVG.
 icons:
 	python3 internal/web/icons-src/gen-icons.py
 
 # Remove build artifacts.
 clean:
-	rm -rf $(OUTPUT) dist
+	rm -rf $(OUTPUT) usher-lark dist
 
 # Cross-compile release binaries for common targets into dist/.
 # Each binary is statically linked (CGO off) and has debug info stripped.
@@ -62,5 +70,6 @@ help:
 	@echo "  run      build + ./$(OUTPUT) serve"
 	@echo "  install  go install (into \$$GOBIN)"
 	@echo "  dist     cross-compile linux/darwin amd64+arm64 into dist/"
+	@echo "  lark     build the Lark IM plugin (./usher-lark)"
 	@echo "  icons    regenerate icon PNGs from icons-src/icon-raw.svg"
 	@echo "  clean    remove $(OUTPUT) and dist/"

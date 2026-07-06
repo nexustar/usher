@@ -20,8 +20,6 @@ import (
 	"github.com/nexustar/usher/internal/hook"
 )
 
-
-
 // fakeRouter implements RouterAPI with a hand-fed event channel and records
 // the messages routed to sessions.
 type fakeRouter struct {
@@ -323,8 +321,6 @@ func TestPermissionHTML(t *testing.T) {
 		t.Errorf("command should be escaped inside <pre>, got %q", got)
 	}
 }
-
-
 
 func TestPromptEchoAndDedup(t *testing.T) {
 	const group = int64(-100200)
