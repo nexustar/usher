@@ -94,6 +94,9 @@ func run(args []string) error {
 	defer cancel()
 
 	router := pluginapi.NewClient(*socket, logger)
+	// Only the event types the hub renders; tool_result user events in
+	// particular carry whole tool outputs the mirror would just discard.
+	router.EventTypes = []string{"user", "assistant", "subprocess.exit"}
 	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 	err = router.Ping(pingCtx)
 	pingCancel()
@@ -172,29 +175,19 @@ func splitIDs(s string) []string {
 	return ids
 }
 
-// defaultPluginSocket mirrors usher's default data dir resolution.
+// defaultPluginSocket derives the socket path the same way `usher serve`
+// does — pluginapi owns the rendezvous, so the two binaries can't drift.
 func defaultPluginSocket() string {
-	if dir := defaultDataDir(); dir != "" {
-		return filepath.Join(dir, "plugin.sock")
+	if dir := pluginapi.DefaultDataDir(); dir != "" {
+		return pluginapi.SocketPath(dir)
 	}
 	return ""
 }
 
 // defaultStatePath keeps the thread map next to usher's other state.
 func defaultStatePath() string {
-	if dir := defaultDataDir(); dir != "" {
+	if dir := pluginapi.DefaultDataDir(); dir != "" {
 		return filepath.Join(dir, "lark-threads.json")
 	}
 	return "lark-threads.json"
-}
-
-func defaultDataDir() string {
-	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
-		return filepath.Join(v, "usher")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share", "usher")
 }

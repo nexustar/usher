@@ -13,6 +13,7 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/pluginapi"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -26,11 +27,12 @@ type sentMsg struct {
 }
 
 type fakeLark struct {
-	mu       sync.Mutex
-	sent     []sentMsg
-	reacted  []string
-	nextRoot int
-	failSend bool
+	mu        sync.Mutex
+	sent      []sentMsg
+	reacted   []string
+	nextRoot  int
+	failSend  bool
+	failCards bool
 }
 
 func (f *fakeLark) SendText(_ context.Context, chatID, text string) (string, error) {
@@ -54,6 +56,9 @@ func (f *fakeLark) ReplyText(_ context.Context, rootID, text string) (string, er
 func (f *fakeLark) ReplyCard(_ context.Context, rootID, cardJSON string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failCards {
+		return "", errors.New("boom")
+	}
 	f.sent = append(f.sent, sentMsg{kind: "card", to: rootID, body: cardJSON})
 	return "omt_" + rootID, nil
 }
@@ -88,11 +93,12 @@ func itoa(i int) string { data, _ := json.Marshal(i); return string(data) }
 type fakeRouter struct {
 	broker *broker.Broker
 
-	mu        sync.Mutex
-	sessions  map[string]core.Session
-	sent      map[string][]string
-	pendingCh chan hook.Pending
-	responses map[string]hook.Response
+	mu         sync.Mutex
+	sessions   map[string]core.Session
+	sent       map[string][]string
+	pendingCh  chan hook.Pending
+	responses  map[string]hook.Response
+	respondErr error // forced RespondInteraction failure (transport-style)
 }
 
 func newFakeRouter() *fakeRouter {
@@ -133,8 +139,12 @@ func (f *fakeRouter) SubscribePendingInteractions() (<-chan hook.Pending, func()
 func (f *fakeRouter) RespondInteraction(id string, resp hook.Response) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.respondErr != nil {
+		return f.respondErr
+	}
 	if _, done := f.responses[id]; done {
-		return errors.New("already resolved")
+		// The real hub sees server rejections as pluginapi.APIError.
+		return &pluginapi.APIError{Status: 409, Msg: "already resolved"}
 	}
 	f.responses[id] = resp
 	return nil
@@ -486,5 +496,147 @@ func TestDecisionCodec(t *testing.T) {
 		if behavior != c.behavior || scope != c.scope || ok != c.ok {
 			t.Errorf("decode(%v) = %q %q %v, want %q %q %v", c.value, behavior, scope, ok, c.behavior, c.scope, c.ok)
 		}
+	}
+}
+
+// TestFailedPermissionPostIsRetriedOnReplay: a card that never reached Lark
+// must not be suppressed by the posted-dedupe when the snapshot replays it.
+func TestFailedPermissionPostIsRetriedOnReplay(t *testing.T) {
+	f, r := &fakeLark{failSend: true, failCards: true}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1"}
+	h := newTestHub(t, f, r)
+	runHub(t, h)
+
+	p := hook.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash"}
+	r.pendingCh <- p
+	waitFor(t, "failed post unclaimed", func() bool {
+		h.postedMu.Lock()
+		defer h.postedMu.Unlock()
+		return len(h.posted) == 0
+	})
+
+	f.mu.Lock()
+	f.failSend, f.failCards = false, false
+	f.mu.Unlock()
+	r.pendingCh <- p // the snapshot replay after a reconnect
+	waitFor(t, "replayed card", func() bool {
+		msgs := f.messages()
+		return len(msgs) >= 2 && msgs[len(msgs)-1].kind == "card"
+	})
+}
+
+// TestStaleAskDoesNotSwallowPrompt: a question answered in the web UI leaves
+// a stale ask entry; the next typed message must reach the session as a
+// prompt, not vanish as an "answer".
+func TestStaleAskDoesNotSwallowPrompt(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1"}
+	h := newTestHub(t, f, r, testUser)
+	runHub(t, h)
+
+	r.pendingCh <- hook.Pending{ID: "q1", SessionID: "s1", ToolName: "AskUserQuestion",
+		ToolInput: json.RawMessage(`{"questions":[{"question":"Deploy?","options":[{"label":"Yes"}]}]}`)}
+	waitFor(t, "ask card", func() bool { return len(f.messages()) >= 2 })
+
+	// Resolve it "in the web UI" (directly on the router).
+	if err := r.RespondInteraction("q1", hook.Response{Behavior: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.HandleMessage(context.Background(), inboundMessage(testChat, testUser, "omt_om_root_1", "", "new prompt"))
+	if got := r.sent["s1"]; len(got) != 1 || got[0] != "new prompt" {
+		t.Fatalf("typed message after stale ask should route as a prompt, got %v", got)
+	}
+}
+
+// TestTransportFailureKeepsAskAnswerable: a socket failure while answering
+// must keep the entry so retyping retries, and must not ack.
+func TestTransportFailureKeepsAskAnswerable(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1"}
+	h := newTestHub(t, f, r, testUser)
+	runHub(t, h)
+
+	r.pendingCh <- hook.Pending{ID: "q1", SessionID: "s1", ToolName: "AskUserQuestion",
+		ToolInput: json.RawMessage(`{"questions":[{"question":"Deploy?","options":[{"label":"Yes"}]}]}`)}
+	waitFor(t, "ask card", func() bool { return len(f.messages()) >= 2 })
+
+	r.mu.Lock()
+	r.respondErr = errors.New("dial unix: connection refused")
+	r.mu.Unlock()
+	h.HandleMessage(context.Background(), inboundMessage(testChat, testUser, "omt_om_root_1", "", "Yes"))
+	if len(f.reacted) != 0 {
+		t.Fatal("failed answer delivery must not ack")
+	}
+	if len(r.sent["s1"]) != 0 {
+		t.Fatalf("failed answer must not become a prompt: %v", r.sent["s1"])
+	}
+
+	r.mu.Lock()
+	r.respondErr = nil
+	r.mu.Unlock()
+	h.HandleMessage(context.Background(), inboundMessage(testChat, testUser, "omt_om_root_1", "", "Yes"))
+	if got, _ := r.response("q1"); got.Answers["Deploy?"] != "Yes" {
+		t.Fatalf("retyped answer should resolve the ask, got %+v", got.Answers)
+	}
+}
+
+// TestResolvedCardReplacesButtons: a decided card comes back buttonless with
+// the outcome, and a malformed ask tap does not consume the entry.
+func TestResolvedCardReplacesButtons(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1"}
+	h := newTestHub(t, f, r, testUser)
+	runHub(t, h)
+
+	r.pendingCh <- hook.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash",
+		ToolInput: json.RawMessage(`{"command":"make build"}`)}
+	waitFor(t, "card", func() bool { return len(f.messages()) >= 2 })
+
+	resp := h.HandleCardAction(context.Background(), cardTap(testChat, testUser, obj{"k": "a", "id": "p1"}))
+	if resp.Card == nil || resp.Card.Type != "raw" {
+		t.Fatalf("decided card should be re-rendered, got %+v", resp.Card)
+	}
+	rendered := cardJSON(resp.Card.Data.(obj))
+	if strings.Contains(rendered, `"tag":"button"`) || !strings.Contains(rendered, "make build") {
+		t.Fatalf("resolved card should keep the body and drop buttons: %s", rendered)
+	}
+
+	// Ask flow: malformed opt keeps the entry; the valid tap still works.
+	r.pendingCh <- hook.Pending{ID: "q1", SessionID: "s1", ToolName: "AskUserQuestion",
+		ToolInput: json.RawMessage(`{"questions":[{"question":"Go?","options":[{"label":"Yes"}]}]}`)}
+	waitFor(t, "ask card", func() bool { return len(f.messages()) >= 3 })
+	if resp := h.HandleCardAction(context.Background(), cardTap(testChat, testUser, obj{"k": "q", "id": "q1", "opt": "7"})); resp.Toast == nil || resp.Toast.Content != "expired" {
+		t.Fatalf("out-of-range opt should toast expired, got %+v", resp.Toast)
+	}
+	if resp := h.HandleCardAction(context.Background(), cardTap(testChat, testUser, obj{"k": "q", "id": "q1", "opt": "0"})); resp.Card == nil {
+		t.Fatalf("valid tap after malformed one should still resolve, got %+v", resp)
+	}
+	if got, _ := r.response("q1"); got.Answers["Go?"] != "Yes" {
+		t.Fatalf("answer = %+v", got.Answers)
+	}
+}
+
+// TestCardFenceInjectionDefanged: a tool input containing ``` cannot close
+// the code fence and smuggle lark_md markup into the card.
+func TestCardFenceInjectionDefanged(t *testing.T) {
+	p := hook.Pending{ID: "p1", ToolName: "Bash",
+		ToolInput: json.RawMessage("{\"command\":\"echo hi\\n```\\n<at id=all></at> harmless\"}")}
+	rendered := cardJSON(permissionCard(p, nil, ""))
+	if strings.Contains(rendered, "<at id=all>") && !strings.Contains(rendered, "'''") {
+		t.Fatalf("fence not defanged: %s", rendered)
+	}
+	var c struct {
+		Elements []struct {
+			Text struct {
+				Content string `json:"content"`
+			} `json:"text"`
+		} `json:"elements"`
+	}
+	if err := json.Unmarshal([]byte(rendered), &c); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.Elements[0].Text.Content, "'''") {
+		t.Fatalf("``` should be rewritten inside the fence: %q", c.Elements[0].Text.Content)
 	}
 }

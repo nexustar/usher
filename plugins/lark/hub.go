@@ -1,12 +1,15 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +19,7 @@ import (
 	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/pathutil"
+	"github.com/nexustar/usher/internal/pluginapi"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -74,7 +78,9 @@ type Hub struct {
 	store   *threadStore
 	chat    string
 	allowed map[string]bool // empty = any chat member allowed
-	logger  *slog.Logger
+	// mentionIDs is the whitelist in stable order, for card @-mentions.
+	mentionIDs []string
+	logger     *slog.Logger
 
 	createMu sync.Mutex // serializes lazy root-message creation (see rootFor)
 
@@ -82,10 +88,13 @@ type Hub struct {
 	asks          map[string]askEntry
 	asksBySession map[string]string
 
-	// posted dedupes permission prompts: the plugin-socket subscription
-	// replays the pending snapshot on every reconnect.
+	// posted holds the prompts currently shown as live cards, by pending id.
+	// It dedupes the snapshot replays the plugin-socket subscription sends on
+	// every reconnect, and keeps the prompt body so a decided card can be
+	// re-rendered without buttons. Entries leave on resolution via Lark;
+	// prompts resolved elsewhere (web UI) linger — bounded by usage, not time.
 	postedMu sync.Mutex
-	posted   map[string]bool
+	posted   map[string]hook.Pending
 
 	// recentSent: last prompt forwarded FROM Lark per session, so the
 	// prompt-echo skips it (else the user's own message mirrors back twice).
@@ -107,37 +116,21 @@ func NewHub(client larkAPI, router RouterAPI, cfg Config, logger *slog.Logger) (
 	for _, id := range cfg.AllowedUserIDs {
 		allowed[id] = true
 	}
+	mentionIDs := slices.Clone(cfg.AllowedUserIDs)
+	slices.Sort(mentionIDs)
 	return &Hub{
 		lark:          client,
 		router:        router,
 		store:         store,
 		chat:          cfg.ChatID,
 		allowed:       allowed,
+		mentionIDs:    slices.Compact(mentionIDs),
 		logger:        logger,
 		asks:          map[string]askEntry{},
 		asksBySession: map[string]string{},
-		posted:        map[string]bool{},
+		posted:        map[string]hook.Pending{},
 		recentSent:    map[string]string{},
 	}, nil
-}
-
-// mentions returns the whitelisted open ids in stable order, for card
-// @-mentions.
-func (h *Hub) mentions() []string {
-	ids := make([]string, 0, len(h.allowed))
-	for id := range h.allowed {
-		ids = append(ids, id)
-	}
-	sortStrings(ids)
-	return ids
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 // Run runs the hub's loops until ctx is cancelled. Inbound Lark traffic
@@ -210,23 +203,46 @@ func (h *Hub) permissionLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if h.markPosted(p.ID) {
-				h.postPermission(ctx, p)
+			if !h.claimPending(p) {
+				continue // a snapshot replay of a card already posted
+			}
+			if !h.postPermission(ctx, p) {
+				// The card never reached Lark; unclaim so the next snapshot
+				// replay (reconnect) retries instead of dropping the prompt.
+				h.unclaimPending(p.ID)
 			}
 		}
 	}
 }
 
-// markPosted records a pending id, returning false when it was already
-// posted (a snapshot replay after reconnect).
-func (h *Hub) markPosted(id string) bool {
+// claimPending records a prompt as posted, returning false when it already
+// was (a snapshot replay after reconnect).
+func (h *Hub) claimPending(p hook.Pending) bool {
 	h.postedMu.Lock()
 	defer h.postedMu.Unlock()
-	if h.posted[id] {
+	if _, ok := h.posted[p.ID]; ok {
 		return false
 	}
-	h.posted[id] = true
+	h.posted[p.ID] = p
 	return true
+}
+
+func (h *Hub) unclaimPending(id string) {
+	h.postedMu.Lock()
+	delete(h.posted, id)
+	h.postedMu.Unlock()
+}
+
+// takePosted removes and returns the prompt behind a live card, for the
+// resolved re-render. !ok after a plugin restart (the map is in-memory).
+func (h *Hub) takePosted(id string) (hook.Pending, bool) {
+	h.postedMu.Lock()
+	defer h.postedMu.Unlock()
+	p, ok := h.posted[id]
+	if ok {
+		delete(h.posted, id)
+	}
+	return p, ok
 }
 
 // handleEvent mirrors a single session event into its thread.
@@ -369,34 +385,35 @@ func (h *Hub) notifyTurnComplete(ctx context.Context, ev broker.Event) {
 // postPermission posts a pending interaction into its session's thread as an
 // interactive card (lazily creating the thread). AskUserQuestion gets its
 // own option prompt instead.
-func (h *Hub) postPermission(ctx context.Context, p hook.Pending) {
+func (h *Hub) postPermission(ctx context.Context, p hook.Pending) bool {
 	root, err := h.rootFor(ctx, p.SessionID)
 	if err != nil {
 		h.logger.Warn("lark: permission thread", "session", p.SessionID, "err", err)
-		return
+		return false
 	}
-	card := ""
+	var c obj
 	if p.ToolName == "AskUserQuestion" {
-		card = h.registerAsk(p)
+		c = h.registerAsk(p)
 	} else {
-		card = permissionCard(p, h.mentions(), "")
+		c = permissionCard(p, h.mentionIDs, "")
 	}
-	thread, err := h.lark.ReplyCard(ctx, root, card)
+	thread, err := h.lark.ReplyCard(ctx, root, cardJSON(c))
 	if err != nil {
 		h.logger.Warn("lark: post permission", "session", p.SessionID, "err", err)
 		h.takeAsk(p.ID) // don't strand a typed reply on a card that never posted
-		return
+		return false
 	}
 	h.recordThread(p.SessionID, thread)
+	return true
 }
 
 // registerAsk renders the card for an AskUserQuestion and registers it for
 // tap / typed-reply answering. Multi-question prompts can't be mapped to one
 // typed reply, so those fall back to the web UI (Ignore-only card).
-func (h *Hub) registerAsk(p hook.Pending) string {
-	qs := parseQuestions(p.ToolInput)
+func (h *Hub) registerAsk(p hook.Pending) obj {
+	qs := imutil.ParseQuestions(p.ToolInput)
 	if len(qs) != 1 {
-		return multiStepCard(p.ID, h.mentions(), "")
+		return multiStepCard(p.ID, h.mentionIDs, "")
 	}
 	q := qs[0]
 	labels := make([]string, len(q.Options))
@@ -404,7 +421,7 @@ func (h *Hub) registerAsk(p hook.Pending) string {
 		labels[i] = o.Label
 	}
 	h.putAsk(p.ID, askEntry{question: q.Question, labels: labels, session: p.SessionID})
-	return askCard(q, p.ID, h.mentions(), "")
+	return askCard(q, p.ID, h.mentionIDs, "")
 }
 
 // rootFor returns the thread-root message bound to sessionID, lazily posting
@@ -469,15 +486,14 @@ func (h *Hub) HandleMessage(ctx context.Context, event *larkim.P2MessageReceiveV
 	if text == "" {
 		return
 	}
-	sessionID, ok := h.store.session(deref(msg.ThreadId), firstNonEmpty(deref(msg.RootId), deref(msg.ParentId)))
+	sessionID, ok := h.store.session(deref(msg.ThreadId), cmp.Or(deref(msg.RootId), deref(msg.ParentId)))
 	if !ok {
 		return // not (yet) bound to a session
 	}
 	h.recordThread(sessionID, deref(msg.ThreadId))
 	// A pending AskUserQuestion for this session claims the reply as its
 	// answer (the session is blocked waiting), rather than a new prompt.
-	if h.answerByText(sessionID, text) {
-		h.ack(ctx, deref(msg.MessageId))
+	if h.answerByText(ctx, sessionID, deref(msg.MessageId), text) {
 		return
 	}
 	// Record before sending so the prompt-echo skips this message's own
@@ -556,8 +572,6 @@ func (h *Hub) HandleCardAction(ctx context.Context, event *callback.CardActionTr
 	if !ok {
 		return &callback.CardActionTriggerResponse{}
 	}
-	h.takeAsk(v.ID) // an Ignore on a question also clears its typed-reply entry
-	resp := hook.Response{Behavior: behavior, Scope: scope, Reason: "via lark"}
 	msg := "✅ allowed"
 	switch {
 	case v.Kind == "i":
@@ -567,31 +581,64 @@ func (h *Hub) HandleCardAction(ctx context.Context, event *callback.CardActionTr
 	case scope == "session":
 		msg = "✅ allowed for session"
 	}
-	if err := h.router.RespondInteraction(v.ID, resp); err != nil {
+	err := h.router.RespondInteraction(v.ID, hook.Response{Behavior: behavior, Scope: scope, Reason: "via lark"})
+	if err != nil && !isServerReject(err) {
+		// Transport failure: usher may never have seen it. Keep the card and
+		// the ask entry live so the tap can be retried.
+		h.logger.Warn("lark: respond interaction", "id", v.ID, "err", err)
+		return toast("usher unreachable — try again")
+	}
+	if err != nil {
 		msg = "already resolved"
 	}
-	return toast(msg)
+	h.takeAsk(v.ID) // an Ignore on a question also clears its typed-reply entry
+	return h.resolved(v.ID, msg)
+}
+
+// resolved builds the card-callback response for a decided prompt: the
+// outcome toast plus the buttonless re-render (when this process posted the
+// card and still knows its body).
+func (h *Hub) resolved(pendingID, outcome string) *callback.CardActionTriggerResponse {
+	resp := toast(outcome)
+	if p, ok := h.takePosted(pendingID); ok {
+		resp.Card = &callback.Card{Type: "raw", Data: resolvedCard(p, outcome)}
+	}
+	return resp
+}
+
+// isServerReject reports whether err is usher refusing the call (already
+// resolved / unknown id) rather than the socket failing.
+func isServerReject(err error) bool {
+	var apiErr *pluginapi.APIError
+	return errors.As(err, &apiErr)
 }
 
 // handleAskAction resolves an AskUserQuestion option tap into an allow +
 // answer response.
 func (h *Hub) handleAskAction(v decisionValue) *callback.CardActionTriggerResponse {
 	idx, err := strconv.Atoi(v.Opt)
-	entry, ok := h.takeAsk(v.ID)
+	entry, ok := h.peekAsk(v.ID)
 	if err != nil || !ok || idx < 0 || idx >= len(entry.labels) {
+		// Don't consume the entry on a malformed tap: a valid tap or a typed
+		// reply must still be able to answer the question.
 		return toast("expired")
 	}
 	label := entry.labels[idx]
-	resp := hook.Response{
+	respErr := h.router.RespondInteraction(v.ID, hook.Response{
 		Behavior: "allow",
 		Reason:   "via lark",
 		Answers:  map[string]string{entry.question: label},
+	})
+	if respErr != nil && !isServerReject(respErr) {
+		h.logger.Warn("lark: answer ask", "id", v.ID, "err", respErr)
+		return toast("usher unreachable — try again")
 	}
 	msg := "✅ " + imutil.Truncate(label, 100)
-	if err := h.router.RespondInteraction(v.ID, resp); err != nil {
+	if respErr != nil {
 		msg = "already resolved"
 	}
-	return toast(msg)
+	h.takeAsk(v.ID)
+	return h.resolved(v.ID, msg)
 }
 
 // authorizedOperator gates a card tap: right chat and an allowed operator.
@@ -612,21 +659,36 @@ func toast(msg string) *callback.CardActionTriggerResponse {
 }
 
 // answerByText resolves a pending AskUserQuestion for a session from a typed
-// reply, returning true if it consumed the message.
-func (h *Hub) answerByText(sessionID, text string) bool {
+// reply, returning true if it consumed the message (acking on success). A
+// stale entry — the question was answered in the web UI meanwhile — returns
+// false so the text is routed to the session as a normal prompt instead of
+// being swallowed; a transport failure keeps the entry so retyping retries.
+func (h *Hub) answerByText(ctx context.Context, sessionID, messageID, text string) bool {
 	id, entry, ok := h.takeAskBySession(sessionID)
 	if !ok {
 		return false
 	}
-	resp := hook.Response{
+	err := h.router.RespondInteraction(id, hook.Response{
 		Behavior: "allow",
 		Reason:   "via lark",
 		Answers:  map[string]string{entry.question: strings.TrimSpace(text)},
+	})
+	switch {
+	case err == nil:
+		h.unclaimPending(id)
+		h.ack(ctx, messageID)
+		return true
+	case isServerReject(err):
+		h.logger.Debug("lark: stale ask entry, routing reply as prompt", "id", id, "err", err)
+		return false
+	default:
+		h.putAsk(id, entry) // transport failure: keep the question answerable
+		h.logger.Warn("lark: answer ask by text", "id", id, "err", err)
+		if root, ok := h.store.root(sessionID); ok {
+			h.replyText(ctx, sessionID, root, "⚠️ couldn't deliver the answer (usher unreachable) — please retype it")
+		}
+		return true
 	}
-	if err := h.router.RespondInteraction(id, resp); err != nil {
-		h.logger.Debug("lark: answer ask by text", "id", id, "err", err)
-	}
-	return true
 }
 
 func (h *Hub) putAsk(id string, e askEntry) {
@@ -634,6 +696,14 @@ func (h *Hub) putAsk(id string, e askEntry) {
 	defer h.askMu.Unlock()
 	h.asks[id] = e
 	h.asksBySession[e.session] = id
+}
+
+// peekAsk reads a pending question without consuming it.
+func (h *Hub) peekAsk(id string) (askEntry, bool) {
+	h.askMu.Lock()
+	defer h.askMu.Unlock()
+	e, ok := h.asks[id]
+	return e, ok
 }
 
 func (h *Hub) takeAsk(id string) (askEntry, bool) {
@@ -674,11 +744,4 @@ func (h *Hub) consumeRecentSent(sessionID, text string) bool {
 		return true
 	}
 	return false
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
