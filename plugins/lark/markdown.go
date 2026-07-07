@@ -19,6 +19,17 @@ func postMD(md string) string {
 	return string(content)
 }
 
+// quoteMD renders text as a markdown blockquote; the blank-line separation
+// from what follows is the caller's job (a bare next line would be lazily
+// continued into the quote).
+func quoteMD(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		lines[i] = "> " + l
+	}
+	return strings.Join(lines, "\n")
+}
+
 // sanitizeMarkdown prepares assistant markdown for Feishu's markdown
 // renderers (the post md paragraph; same dialect family as the card
 // markdown component). The dialect is close enough to standard markdown

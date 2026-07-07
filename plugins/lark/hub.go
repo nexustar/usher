@@ -299,6 +299,7 @@ func (h *Hub) handleEvent(ctx context.Context, ev broker.Event) {
 		h.mirrorAssistant(ctx, ev)
 	case "subprocess.exit":
 		h.notifyTurnComplete(ctx, ev)
+		h.refreshTitle(ctx, ev.SessionID)
 	}
 }
 
@@ -314,8 +315,13 @@ func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 		h.logger.Warn("lark: prompt thread", "session", ev.SessionID, "err", err)
 		return
 	}
-	for _, chunk := range imutil.SplitMessage(text+"\n"+promptCaption, larkMaxMessage) {
-		if !h.replyText(ctx, ev.SessionID, root, chunk) {
+	// Quote block + italic caption, so the echo reads as a citation rather
+	// than more plain text in the stream.
+	for _, chunk := range imutil.SplitMessage(text, larkCardMax) {
+		if chunk == "" {
+			continue
+		}
+		if !h.replyMarkdown(ctx, ev.SessionID, root, quoteMD(chunk)+"\n\n"+promptCaption) {
 			return
 		}
 	}
@@ -501,32 +507,58 @@ func (h *Hub) rootFor(ctx context.Context, sessionID string) (string, error) {
 	if id, ok := h.store.root(sessionID); ok {
 		return id, nil // another goroutine created it while we waited
 	}
-	root, err := h.lark.SendText(ctx, h.chat, h.threadTitle(sessionID))
+	title, cwd, meta := h.sessionCardInfo(sessionID)
+	root, err := h.lark.SendCard(ctx, h.chat, cardJSON(rootCard(title, cwd, meta)))
 	if err != nil {
 		return "", err
 	}
 	if err := h.store.put(sessionID, root); err != nil {
 		h.logger.Warn("lark: persist thread map", "session", sessionID, "err", err)
 	}
+	if err := h.store.setTitle(sessionID, title); err != nil {
+		h.logger.Warn("lark: persist thread title", "session", sessionID, "err", err)
+	}
 	h.logger.Info("lark: created thread", "session", sessionID, "root", root)
 	return root, nil
 }
 
-// threadTitle renders the root message anchoring a session's thread.
-func (h *Hub) threadTitle(sessionID string) string {
-	name := imutil.ShortID(sessionID)
-	cwd := ""
+// refreshTitle re-renders the root card when the session's title changed —
+// renames and AI titles usually land after the thread already exists. Runs
+// at turn end, so it costs one GetSession per turn, not per event. A legacy
+// text root (pre-card threads) can't be patched; the title is recorded
+// anyway so the failure isn't retried every turn.
+func (h *Hub) refreshTitle(ctx context.Context, sessionID string) {
+	root, ok := h.store.root(sessionID)
+	if !ok {
+		return
+	}
+	title, cwd, meta := h.sessionCardInfo(sessionID)
+	if last, _ := h.store.title(sessionID); last == title {
+		return
+	}
+	if err := h.lark.UpdateCard(ctx, root, cardJSON(rootCard(title, cwd, meta))); err != nil {
+		h.logger.Warn("lark: retitle thread", "session", sessionID, "err", err)
+	}
+	if err := h.store.setTitle(sessionID, title); err != nil {
+		h.logger.Warn("lark: persist thread title", "session", sessionID, "err", err)
+	}
+}
+
+// sessionCardInfo resolves the root card's fields: the session's display
+// title (short id fallback), its cwd, and a backend/short-id metadata line.
+func (h *Hub) sessionCardInfo(sessionID string) (title, cwd, meta string) {
+	title = imutil.ShortID(sessionID)
+	meta = imutil.ShortID(sessionID)
 	if sess, ok := h.router.GetSession(sessionID); ok {
 		if strings.TrimSpace(sess.Title) != "" {
-			name = sess.Title
+			title = sess.Title
 		}
 		cwd = sess.Cwd
+		if sess.Backend != "" {
+			meta = sess.Backend + " · " + meta
+		}
 	}
-	title := "🧵 " + imutil.Truncate(name, 120)
-	if cwd != "" {
-		title += "\n📁 " + cwd
-	}
-	return title
+	return title, cwd, meta
 }
 
 // --- inbound (wired to the websocket event dispatcher) ---------------------

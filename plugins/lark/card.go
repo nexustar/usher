@@ -109,8 +109,29 @@ func buttonRow(buttons ...obj) obj {
 func card(header, template string, elements arr) obj {
 	return obj{
 		"schema": "2.0",
-		"config": obj{"width_mode": "fill"},
 		"header": obj{"title": plainText(header), "template": template},
+		"body":   obj{"elements": elements},
+	}
+}
+
+// rootCard renders a session's thread anchor: the title in the header so a
+// rename can be patched in place (a text root would be stale forever — most
+// sessions get their AI title only after the thread already exists), with the
+// cwd and the backend/short-id line as the body.
+func rootCard(title, cwd, meta string) obj {
+	header := obj{
+		"title":    plainText(imutil.Truncate(title, 120)),
+		"template": "turquoise",
+		"icon":     obj{"tag": "standard_icon", "token": "robot_outlined"},
+	}
+	var elements arr
+	if cwd != "" {
+		elements = append(elements, textDiv("CWD: "+imutil.Truncate(cwd, 300)))
+	}
+	elements = append(elements, textDiv(meta))
+	return obj{
+		"schema": "2.0",
+		"header": header,
 		"body":   obj{"elements": elements},
 	}
 }

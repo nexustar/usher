@@ -13,6 +13,9 @@ import (
 type binding struct {
 	Root   string `json:"root"`             // root message id (om_...)
 	Thread string `json:"thread,omitempty"` // thread id (omt_...), learned from the first reply
+	// Title is the session title the root card was last rendered with, so
+	// the hub only patches the card when the title actually changed.
+	Title string `json:"title,omitempty"`
 }
 
 // threadStore persists the session↔thread map so threads are re-adopted
@@ -89,6 +92,27 @@ func (s *threadStore) setThread(sessionID, threadID string) error {
 	b.Thread = threadID
 	s.m[sessionID] = b
 	s.byThread[threadID] = sessionID
+	return s.persistLocked()
+}
+
+// title returns the title the session's root card was last rendered with.
+func (s *threadStore) title(sessionID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.m[sessionID]
+	return b.Title, ok
+}
+
+// setTitle records the title the root card now shows.
+func (s *threadStore) setTitle(sessionID, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.m[sessionID]
+	if !ok || b.Title == title {
+		return nil
+	}
+	b.Title = title
+	s.m[sessionID] = b
 	return s.persistLocked()
 }
 

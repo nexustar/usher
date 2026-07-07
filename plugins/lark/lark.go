@@ -13,9 +13,11 @@ import (
 // larkAPI is the slice of the Lark Open API the hub uses; a fake stands in
 // for it in tests.
 type larkAPI interface {
-	// SendText posts a plain chat message (a thread root) and returns its
-	// message id.
-	SendText(ctx context.Context, chatID, text string) (string, error)
+	// SendCard posts a card as a chat message (the thread root) and returns
+	// its message id.
+	SendCard(ctx context.Context, chatID, cardJSON string) (string, error)
+	// UpdateCard replaces a sent card's content in place.
+	UpdateCard(ctx context.Context, messageID, cardJSON string) error
 	// ReplyText replies to rootID inside its thread and returns the thread id
 	// (may be "" when the server omits it).
 	ReplyText(ctx context.Context, rootID, text string) (string, error)
@@ -46,22 +48,38 @@ func textContent(text string) string {
 	return string(data)
 }
 
-func (l *larkClient) SendText(ctx context.Context, chatID, text string) (string, error) {
+func (l *larkClient) SendCard(ctx context.Context, chatID, cardJSON string) (string, error) {
 	resp, err := l.c.Im.V1.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
 		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
-			MsgType(larkim.MsgTypeText).
-			Content(textContent(text)).
+			MsgType(larkim.MsgTypeInteractive).
+			Content(cardJSON).
 			Build()).
 		Build())
 	if err != nil {
 		return "", err
 	}
 	if !resp.Success() {
-		return "", apiErr("send message", resp.Code, resp.Msg)
+		return "", apiErr("send card", resp.Code, resp.Msg)
 	}
 	return deref(resp.Data.MessageId), nil
+}
+
+func (l *larkClient) UpdateCard(ctx context.Context, messageID, cardJSON string) error {
+	resp, err := l.c.Im.V1.Message.Patch(ctx, larkim.NewPatchMessageReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewPatchMessageReqBodyBuilder().
+			Content(cardJSON).
+			Build()).
+		Build())
+	if err != nil {
+		return err
+	}
+	if !resp.Success() {
+		return apiErr("update card", resp.Code, resp.Msg)
+	}
+	return nil
 }
 
 // reply sends one threaded reply of any msg type and returns the thread id.

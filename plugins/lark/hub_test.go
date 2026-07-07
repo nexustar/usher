@@ -39,15 +39,22 @@ type fakeLark struct {
 	failPosts bool
 }
 
-func (f *fakeLark) SendText(_ context.Context, chatID, text string) (string, error) {
+func (f *fakeLark) SendCard(_ context.Context, chatID, cardJSON string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failSend {
 		return "", errors.New("boom")
 	}
 	f.nextRoot++
-	f.sent = append(f.sent, sentMsg{kind: "root", to: chatID, body: text})
+	f.sent = append(f.sent, sentMsg{kind: "root", to: chatID, body: cardJSON})
 	return "om_root_" + itoa(f.nextRoot), nil
+}
+
+func (f *fakeLark) UpdateCard(_ context.Context, messageID, cardJSON string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, sentMsg{kind: "update", to: messageID, body: cardJSON})
+	return nil
 }
 
 func (f *fakeLark) ReplyText(_ context.Context, rootID, text string) (string, error) {
@@ -692,6 +699,7 @@ func TestCardBodyElementTags(t *testing.T) {
 	}{{Label: "a"}}}
 	p := hook.Pending{ID: "p1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)}
 	cards := map[string]obj{
+		"root":                rootCard("fix the bug", "/w", "claude · 3f2a1b9c"),
 		"permission":          permissionCard(p, []string{"ou_x"}, ""),
 		"permission-resolved": permissionCard(p, nil, "allowed"),
 		"ask":                 askCard(ask, "q1", []string{"ou_x"}, ""),
@@ -764,4 +772,58 @@ func TestMarkdownCardFallsBackToText(t *testing.T) {
 		last := msgs[len(msgs)-1]
 		return last.kind == "text" && last.body == "**still here**"
 	})
+}
+
+// TestRootCardRetitledOnTurnEnd: the AI title usually lands after the thread
+// exists; the root card is patched once at turn end, and only on change.
+func TestRootCardRetitledOnTurnEnd(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1", Cwd: "/w"} // no title yet
+	h := newTestHub(t, f, r)
+	runHub(t, h)
+
+	raw := json.RawMessage(`{"message":{"content":[{"type":"text","text":"working"}]}}`)
+	waitFor(t, "thread created", func() bool {
+		r.broker.Publish(broker.Event{SessionID: "s1", Type: "assistant", Raw: raw})
+		return len(f.messages()) >= 2
+	})
+
+	// Turn ends with an unchanged title: no patch.
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	waitFor(t, "turn ping", func() bool {
+		msgs := f.messages()
+		return msgs[len(msgs)-1].kind == "text"
+	})
+	for _, m := range f.messages() {
+		if m.kind == "update" {
+			t.Fatalf("unchanged title must not patch the root card: %+v", m)
+		}
+	}
+
+	// The AI title lands; the next turn end patches the root card once.
+	r.mu.Lock()
+	r.sessions["s1"] = core.Session{ID: "s1", Title: "fix the flaky test", Cwd: "/w"}
+	r.mu.Unlock()
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	waitFor(t, "root card patched", func() bool {
+		for _, m := range f.messages() {
+			if m.kind == "update" && m.to == "om_root_1" && strings.Contains(m.body, "fix the flaky test") {
+				return true
+			}
+		}
+		return false
+	})
+
+	// A further turn end with the same title patches nothing new.
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	time.Sleep(50 * time.Millisecond)
+	updates := 0
+	for _, m := range f.messages() {
+		if m.kind == "update" {
+			updates++
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("want exactly one root-card patch, got %d", updates)
+	}
 }

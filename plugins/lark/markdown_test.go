@@ -23,3 +23,9 @@ func TestSanitizeMarkdown(t *testing.T) {
 		}
 	}
 }
+
+func TestQuoteMD(t *testing.T) {
+	if got := quoteMD("a\nb\n\nc"); got != "> a\n> b\n> \n> c" {
+		t.Fatalf("quoteMD = %q", got)
+	}
+}
