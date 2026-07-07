@@ -53,8 +53,9 @@ const larkMaxMessage = 4000
 const promptCaption = "↑ mirrored user input"
 
 // ackEmoji is the reaction usher adds to an inbound message once it has been
-// handed to the session — a no-extra-message "received, working" marker.
-const ackEmoji = "THUMBSUP"
+// handed to the session — a no-extra-message "received, working" marker
+// (Feishu's "Get" sticker).
+const ackEmoji = "Get"
 
 // maxImageBytes is Lark's image upload cap (10 MB).
 const maxImageBytes = 10 << 20
