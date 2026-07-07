@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -192,10 +194,12 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+var inboundSeq atomic.Int64
+
 func inboundMessage(chat, sender, thread, root, text string) *larkim.P2MessageReceiveV1 {
 	content, _ := json.Marshal(map[string]string{"text": text})
 	contentStr := string(content)
-	msgID := "om_inbound"
+	msgID := "om_inbound_" + strconv.FormatInt(inboundSeq.Add(1), 10)
 	msgType := "text"
 	senderType := "user"
 	ev := &larkim.P2MessageReceiveV1{Event: &larkim.P2MessageReceiveV1Data{
@@ -687,5 +691,29 @@ func TestCardBodyElementTags(t *testing.T) {
 				t.Errorf("%s: elements[%d] tag %q is not a standalone 2.0 component", name, i, el.Tag)
 			}
 		}
+	}
+}
+
+// TestDuplicateInboundPushIgnored: Feishu delivers events at least once; a
+// redelivered push (same message id) must not reach the session twice.
+func TestDuplicateInboundPushIgnored(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1"}
+	h := newTestHub(t, f, r, testUser)
+	if err := h.store.put("s1", "om_root_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.setThread("s1", "omt_1"); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := inboundMessage(testChat, testUser, "omt_1", "", "run the tests")
+	h.HandleMessage(context.Background(), ev)
+	h.HandleMessage(context.Background(), ev) // redelivery of the same push
+	if got := r.sent["s1"]; len(got) != 1 || got[0] != "run the tests" {
+		t.Fatalf("redelivered push must route once, got %v", got)
+	}
+	if len(f.reacted) != 1 {
+		t.Fatalf("want a single ack, got %v", f.reacted)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
@@ -101,6 +102,13 @@ type Hub struct {
 	// prompt-echo skips it (else the user's own message mirrors back twice).
 	recentMu   sync.Mutex
 	recentSent map[string]string
+
+	// seen dedupes inbound pushes by message id: Feishu delivers events at
+	// least once and the ws SDK does no event dedup of its own, so a slow
+	// ack or a reconnect redelivers — without this, one typed message
+	// reaches the session twice.
+	seenMu sync.Mutex
+	seen   map[string]time.Time
 }
 
 // NewHub builds a Hub. The thread-mapping store is loaded from cfg.StatePath
@@ -131,7 +139,33 @@ func NewHub(client larkAPI, router RouterAPI, cfg Config, logger *slog.Logger) (
 		asksBySession: map[string]string{},
 		posted:        map[string]hook.Pending{},
 		recentSent:    map[string]string{},
+		seen:          map[string]time.Time{},
 	}, nil
+}
+
+// seenTTL bounds how long a handled message id is remembered; Feishu retries
+// span seconds-to-minutes, so ten minutes is generous.
+const seenTTL = 10 * time.Minute
+
+// alreadyHandled records a message id, reporting whether it was seen before.
+// Expired entries are pruned on insert, keeping the map bounded by the
+// message rate of the last ten minutes.
+func (h *Hub) alreadyHandled(id string) bool {
+	h.seenMu.Lock()
+	defer h.seenMu.Unlock()
+	now := time.Now()
+	if len(h.seen) > 256 {
+		for k, t := range h.seen {
+			if now.Sub(t) > seenTTL {
+				delete(h.seen, k)
+			}
+		}
+	}
+	if _, ok := h.seen[id]; ok {
+		return true
+	}
+	h.seen[id] = now
+	return false
 }
 
 // Run runs the hub's loops until ctx is cancelled. Inbound Lark traffic
@@ -481,6 +515,10 @@ func (h *Hub) HandleMessage(ctx context.Context, event *larkim.P2MessageReceiveV
 	}
 	msg := event.Event.Message
 	if deref(msg.ChatId) != h.chat || !h.authorizedSender(event.Event.Sender) {
+		return
+	}
+	if id := deref(msg.MessageId); id != "" && h.alreadyHandled(id) {
+		h.logger.Info("lark: duplicate inbound push ignored", "message", id)
 		return
 	}
 	text := inboundText(msg)
