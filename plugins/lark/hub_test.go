@@ -13,6 +13,7 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/pluginapi"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -618,7 +619,7 @@ func TestResolvedCardReplacesButtons(t *testing.T) {
 }
 
 // TestCardFenceInjectionDefanged: a tool input containing ``` cannot close
-// the code fence and smuggle lark_md markup into the card.
+// the code fence and smuggle card markup into the card.
 func TestCardFenceInjectionDefanged(t *testing.T) {
 	p := hook.Pending{ID: "p1", ToolName: "Bash",
 		ToolInput: json.RawMessage("{\"command\":\"echo hi\\n```\\n<at id=all></at> harmless\"}")}
@@ -627,16 +628,64 @@ func TestCardFenceInjectionDefanged(t *testing.T) {
 		t.Fatalf("fence not defanged: %s", rendered)
 	}
 	var c struct {
-		Elements []struct {
-			Text struct {
+		Schema string `json:"schema"`
+		Body   struct {
+			Elements []struct {
+				Tag     string `json:"tag"`
 				Content string `json:"content"`
-			} `json:"text"`
-		} `json:"elements"`
+			} `json:"elements"`
+		} `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(rendered), &c); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.Elements[0].Text.Content, "'''") {
-		t.Fatalf("``` should be rewritten inside the fence: %q", c.Elements[0].Text.Content)
+	if c.Schema != "2.0" {
+		t.Fatalf("card schema = %q, want 2.0", c.Schema)
+	}
+	if c.Body.Elements[0].Tag != "markdown" || !strings.Contains(c.Body.Elements[0].Content, "'''") {
+		t.Fatalf("``` should be rewritten inside a markdown fence: %+v", c.Body.Elements[0])
+	}
+}
+
+// TestCardBodyElementTags: 2.0 rejects bare plain_text (and other nested-only
+// tags) as body elements — Lark parses cards server-side and errors, so every
+// builder's top-level elements must stick to standalone-legal components.
+func TestCardBodyElementTags(t *testing.T) {
+	legal := map[string]bool{"div": true, "markdown": true, "column_set": true, "button": true}
+	ask := imutil.AskQuestion{Header: "Deploy", Question: "Deploy now?", Options: []struct {
+		Label string `json:"label"`
+	}{{Label: "Yes"}, {Label: "No"}}}
+	free := imutil.AskQuestion{Question: "Name?", MultiSelect: true, Options: []struct {
+		Label string `json:"label"`
+	}{{Label: "a"}}}
+	p := hook.Pending{ID: "p1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)}
+	cards := map[string]obj{
+		"permission":          permissionCard(p, []string{"ou_x"}, ""),
+		"permission-resolved": permissionCard(p, nil, "allowed"),
+		"ask":                 askCard(ask, "q1", []string{"ou_x"}, ""),
+		"ask-resolved":        askCard(ask, "q1", nil, "answered"),
+		"ask-freeform":        askCard(free, "q2", nil, ""),
+		"multi-step":          multiStepCard("m1", []string{"ou_x"}, ""),
+		"multi-step-resolved": multiStepCard("m1", nil, "ignored"),
+	}
+	for name, c := range cards {
+		var parsed struct {
+			Body struct {
+				Elements []struct {
+					Tag string `json:"tag"`
+				} `json:"elements"`
+			} `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(cardJSON(c)), &parsed); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(parsed.Body.Elements) == 0 {
+			t.Errorf("%s: no body elements", name)
+		}
+		for i, el := range parsed.Body.Elements {
+			if !legal[el.Tag] {
+				t.Errorf("%s: elements[%d] tag %q is not a standalone 2.0 component", name, i, el.Tag)
+			}
+		}
 	}
 }

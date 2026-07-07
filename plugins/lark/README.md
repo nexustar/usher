@@ -48,6 +48,10 @@ restarts.
 
 ## Behavior notes
 
+- Permission / question prompts are card JSON 2.0 (real code fences via the
+  markdown component). Requires Feishu client 7.20+ (2024); older clients
+  show the card title plus an upgrade hint.
+
 - Threads are created lazily: a session gets a thread the first time it
   produces output while the plugin runs; historical sessions are ignored.
 - The session↔thread map persists in `<data-dir>/lark-threads.json`, so

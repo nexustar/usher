@@ -9,7 +9,13 @@ import (
 	"github.com/nexustar/usher/internal/imutil"
 )
 
-// Decision kinds carried in a card button's value payload, mirroring the
+// Cards use the JSON 2.0 schema (Feishu client 7.20+; older clients see the
+// title plus an upgrade hint). 2.0 buys the full markdown dialect — code
+// blocks in permission prompts render as real fences, and a future rich-text
+// mirror gets headings/quotes/tables — at the cost of the retired 1.0
+// "action" container: buttons carry behaviors and are laid out directly.
+
+// Decision kinds carried in a card button's callback value, mirroring the
 // telegram callback_data codec: a=allow once, s=allow for session, d=deny,
 // i=ignore (an AskUserQuestion deny), q=ask option (with an "opt" index).
 type decisionValue struct {
@@ -55,41 +61,57 @@ func parseActionValue(m map[string]any) (decisionValue, bool) {
 type obj = map[string]any
 type arr = []any
 
+// plainText renders untrusted (model-controlled) text: as a header title,
+// button label, or inside a div, plain_text is inert — prompt text can't
+// inject markup like <at id=all>.
 func plainText(s string) obj { return obj{"tag": "plain_text", "content": s} }
 
-// textDiv renders untrusted (model-controlled) text: plain_text is inert, so
-// prompt text can't inject lark_md markup like <at id=all>.
+// textDiv wraps plain text as a body element: 2.0 accepts plain_text only
+// nested inside a div (or as header/button text), never as a bare element.
 func textDiv(s string) obj {
 	return obj{"tag": "div", "text": plainText(s)}
 }
 
-// mdDiv renders usher's own trusted markup (hints, mentions).
-func mdDiv(md string) obj {
-	return obj{"tag": "div", "text": obj{"tag": "lark_md", "content": md}}
+// markdownEl renders usher's own trusted markup (hints, mentions, fences).
+func markdownEl(md string) obj {
+	return obj{"tag": "markdown", "content": md}
 }
 
-// fencedDiv renders untrusted text as a lark_md code block. A ``` inside the
+// fencedEl renders untrusted text as a markdown code block. A ``` inside the
 // text would close the fence and let the rest run as markup, so it is
 // defanged first.
-func fencedDiv(s string) obj {
+func fencedEl(s string) obj {
 	s = strings.ReplaceAll(s, "```", "'''")
-	return mdDiv("```\n" + s + "\n```")
+	return markdownEl("```\n" + s + "\n```")
 }
 
 func button(label, style string, v decisionValue) obj {
 	return obj{
-		"tag":   "button",
-		"text":  plainText(label),
-		"type":  style,
-		"value": v,
+		"tag":  "button",
+		"text": plainText(label),
+		"type": style,
+		"behaviors": arr{
+			obj{"type": "callback", "value": v},
+		},
 	}
+}
+
+// buttonRow lays buttons out side by side (2.0 retired the "action"
+// container; a column_set with auto-width columns replaces it).
+func buttonRow(buttons ...obj) obj {
+	cols := make(arr, 0, len(buttons))
+	for _, b := range buttons {
+		cols = append(cols, obj{"tag": "column", "width": "auto", "elements": arr{b}})
+	}
+	return obj{"tag": "column_set", "columns": cols}
 }
 
 func card(header, template string, elements arr) obj {
 	return obj{
-		"config":   obj{"wide_screen_mode": true},
-		"header":   obj{"title": plainText(header), "template": template},
-		"elements": elements,
+		"schema": "2.0",
+		"config": obj{"width_mode": "fill"},
+		"header": obj{"title": plainText(header), "template": template},
+		"body":   obj{"elements": elements},
 	}
 }
 
@@ -97,14 +119,14 @@ func card(header, template string, elements arr) obj {
 func cardJSON(c obj) string {
 	data, err := json.Marshal(c)
 	if err != nil {
-		return `{"elements":[]}`
+		return `{"schema":"2.0","body":{"elements":[]}}`
 	}
 	return string(data)
 }
 
-// mentionMD renders inline @-mentions of the whitelisted users for lark_md
-// content, so blocking prompts (permission / question) notify them. Empty when
-// no whitelist is configured.
+// mentionMD renders inline @-mentions of the whitelisted users, so blocking
+// prompts (permission / question) notify them. Empty when no whitelist is
+// configured.
 func mentionMD(openIDs []string) string {
 	var md string
 	for _, id := range openIDs {
@@ -124,20 +146,24 @@ func permissionCard(p hook.Pending, mentions []string, resolved string) obj {
 	}
 	var elements arr
 	if summary := imutil.CompactInput(p.ToolInput); summary != "" {
-		elements = append(elements, fencedDiv(imutil.Truncate(summary, 600)))
+		elements = append(elements, fencedEl(imutil.Truncate(summary, 600)))
 	}
 	if resolved != "" {
 		elements = append(elements, textDiv(resolved))
 		return card(header, "grey", elements)
 	}
 	if md := mentionMD(mentions); md != "" {
-		elements = append(elements, mdDiv(md))
+		elements = append(elements, markdownEl(md))
 	}
-	elements = append(elements, obj{"tag": "action", "actions": arr{
-		button("✅ Allow", "primary", decisionValue{Kind: "a", ID: p.ID}),
-		button("⛔ Deny", "danger", decisionValue{Kind: "d", ID: p.ID}),
-		button("✅ Allow for session", "default", decisionValue{Kind: "s", ID: p.ID}),
-	}})
+	elements = append(elements,
+		buttonRow(
+			button("✅ Allow", "primary", decisionValue{Kind: "a", ID: p.ID}),
+			button("⛔ Deny", "danger", decisionValue{Kind: "d", ID: p.ID}),
+		),
+		buttonRow(
+			button("✅ Allow for session", "default", decisionValue{Kind: "s", ID: p.ID}),
+		),
+	)
 	return card(header, "orange", elements)
 }
 
@@ -159,18 +185,16 @@ func askCard(q imutil.AskQuestion, pendingID string, mentions []string, resolved
 		return card(header, "grey", elements)
 	}
 	if md := mentionMD(mentions); md != "" {
-		elements = append(elements, mdDiv(md))
+		elements = append(elements, markdownEl(md))
 	}
 	if !q.MultiSelect && len(q.Options) > 0 {
-		var buttons arr
+		elements = append(elements, markdownEl("*tap an option, or type your answer in this thread*"))
+		// One option per row, telegram-style: labels can be long.
 		for i, o := range q.Options {
-			buttons = append(buttons, button(imutil.Truncate(o.Label, 60), "default",
+			elements = append(elements, button(imutil.Truncate(o.Label, 60), "default",
 				decisionValue{Kind: "q", ID: pendingID, Opt: strconv.Itoa(i)}))
 		}
-		buttons = append(buttons, button("🚫 Ignore", "danger", decisionValue{Kind: "i", ID: pendingID}))
-		elements = append(elements,
-			mdDiv("*tap an option, or type your answer in this thread*"),
-			obj{"tag": "action", "actions": buttons})
+		elements = append(elements, button("🚫 Ignore", "danger", decisionValue{Kind: "i", ID: pendingID}))
 		return card(header, "blue", elements)
 	}
 	hint := "*reply in this thread with your answer*"
@@ -185,10 +209,9 @@ func askCard(q imutil.AskQuestion, pendingID string, mentions []string, resolved
 		elements = append(elements, textDiv("options: "+imutil.Truncate(strings.Join(opts, ", "), 600)))
 	}
 	elements = append(elements,
-		mdDiv(hint),
-		obj{"tag": "action", "actions": arr{
-			button("🚫 Ignore", "danger", decisionValue{Kind: "i", ID: pendingID}),
-		}})
+		markdownEl(hint),
+		button("🚫 Ignore", "danger", decisionValue{Kind: "i", ID: pendingID}),
+	)
 	return card(header, "blue", elements)
 }
 
@@ -202,11 +225,9 @@ func multiStepCard(pendingID string, mentions []string, resolved string) obj {
 		return card(header, "grey", elements)
 	}
 	if md := mentionMD(mentions); md != "" {
-		elements = append(elements, mdDiv(md))
+		elements = append(elements, markdownEl(md))
 	}
-	elements = append(elements, obj{"tag": "action", "actions": arr{
-		button("🚫 Ignore", "danger", decisionValue{Kind: "i", ID: pendingID}),
-	}})
+	elements = append(elements, button("🚫 Ignore", "danger", decisionValue{Kind: "i", ID: pendingID}))
 	return card(header, "blue", elements)
 }
 
