@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nexustar/usher/internal/broker"
@@ -274,9 +276,20 @@ func SocketPath(dataDir string) string {
 	return filepath.Join(dataDir, "plugin.sock")
 }
 
+// listenMu serializes the umask window in ListenUnixSocket: umask is
+// process-wide, so two concurrent listeners (hook + plugin socket) must not
+// interleave their set/restore.
+var listenMu sync.Mutex
+
 // ListenUnixSocket binds a Unix domain socket at path with mode 0600. A
 // stale socket file from a previous unclean shutdown is removed first.
 // Shared with the web package's hook listener.
+//
+// The socket is born 0600, not chmod'd down after bind: a chmod-after-listen
+// leaves a window where another local user could connect under the umask
+// default and keep the connection across the chmod. The umask flip is
+// process-wide for the bind's duration; any file created concurrently only
+// gets stricter permissions, never looser.
 func ListenUnixSocket(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -284,13 +297,13 @@ func ListenUnixSocket(path string) (net.Listener, error) {
 	if info, err := os.Stat(path); err == nil && info.Mode()&os.ModeSocket != 0 {
 		_ = os.Remove(path)
 	}
+	listenMu.Lock()
+	old := syscall.Umask(0o177)
 	ln, err := net.Listen("unix", path)
+	syscall.Umask(old)
+	listenMu.Unlock()
 	if err != nil {
 		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("chmod %s: %w", path, err)
 	}
 	return ln, nil
 }
