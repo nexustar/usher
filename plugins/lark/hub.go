@@ -50,6 +50,11 @@ type Config struct {
 // content JSON; chunking well below that keeps messages readable.
 const larkMaxMessage = 4000
 
+// larkCardMax caps one markdown-card chunk. Cards hold ~30K characters, so
+// splitting is rare; a fence unlucky enough to straddle a split renders
+// broken in both halves, and the high threshold keeps that theoretical.
+const larkCardMax = 20000
+
 // promptCaption labels an echoed prompt mirrored from another frontend.
 const promptCaption = "↑ mirrored user input"
 
@@ -329,11 +334,11 @@ func (h *Hub) mirrorAssistant(ctx context.Context, ev broker.Event) {
 		h.logger.Warn("lark: ensure thread", "session", ev.SessionID, "err", err)
 		return
 	}
-	for _, chunk := range imutil.SplitMessage(text, larkMaxMessage) {
+	for _, chunk := range imutil.SplitMessage(text, larkCardMax) {
 		if chunk == "" {
 			continue
 		}
-		if !h.replyText(ctx, ev.SessionID, root, chunk) {
+		if !h.replyMarkdown(ctx, ev.SessionID, root, chunk) {
 			// Give up on the remaining text, but still mirror any images —
 			// they're independent of a text-send failure.
 			break
@@ -342,6 +347,26 @@ func (h *Hub) mirrorAssistant(ctx context.Context, ev broker.Event) {
 	for _, ref := range images {
 		h.mirrorImage(ctx, ev.SessionID, root, ref)
 	}
+}
+
+// replyMarkdown posts one assistant-text chunk as a post-message md
+// paragraph, so bold / lists / fences render in a plain bubble (a "text"
+// message shows markdown literally; a card adds a frame). If Lark rejects
+// the post, the chunk degrades to plain text messages rather than dropping
+// — a render edge case must not lose content.
+func (h *Hub) replyMarkdown(ctx context.Context, sessionID, root, md string) bool {
+	thread, err := h.lark.ReplyPost(ctx, root, postMD(sanitizeMarkdown(md)))
+	if err == nil {
+		h.recordThread(sessionID, thread)
+		return true
+	}
+	h.logger.Warn("lark: markdown post rejected, sending plain", "session", sessionID, "err", err)
+	for _, chunk := range imutil.SplitMessage(md, larkMaxMessage) {
+		if !h.replyText(ctx, sessionID, root, chunk) {
+			return false
+		}
+	}
+	return true
 }
 
 // replyText posts one threaded text reply, recording the thread id the reply

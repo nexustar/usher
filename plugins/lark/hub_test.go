@@ -36,6 +36,7 @@ type fakeLark struct {
 	nextRoot  int
 	failSend  bool
 	failCards bool
+	failPosts bool
 }
 
 func (f *fakeLark) SendText(_ context.Context, chatID, text string) (string, error) {
@@ -63,6 +64,16 @@ func (f *fakeLark) ReplyCard(_ context.Context, rootID, cardJSON string) (string
 		return "", errors.New("boom")
 	}
 	f.sent = append(f.sent, sentMsg{kind: "card", to: rootID, body: cardJSON})
+	return "omt_" + rootID, nil
+}
+
+func (f *fakeLark) ReplyPost(_ context.Context, rootID, postJSON string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failPosts {
+		return "", errors.New("boom")
+	}
+	f.sent = append(f.sent, sentMsg{kind: "post", to: rootID, body: postJSON})
 	return "omt_" + rootID, nil
 }
 
@@ -230,11 +241,11 @@ func TestMirrorsAssistantAndLazilyCreatesThread(t *testing.T) {
 	h := newTestHub(t, f, r)
 	runHub(t, h)
 
-	raw := json.RawMessage(`{"message":{"content":[{"type":"text","text":"hello from claude"}]}}`)
+	raw := json.RawMessage(`{"message":{"content":[{"type":"text","text":"**hello** from <claude>"}]}}`)
 	waitFor(t, "assistant mirror", func() bool {
 		r.broker.Publish(broker.Event{SessionID: "s1", Type: "assistant", Raw: raw})
 		msgs := f.messages()
-		return len(msgs) >= 2 && msgs[0].kind == "root" && msgs[1].kind == "text"
+		return len(msgs) >= 2 && msgs[0].kind == "root" && msgs[1].kind == "post"
 	})
 
 	msgs := f.messages()
@@ -244,8 +255,24 @@ func TestMirrorsAssistantAndLazilyCreatesThread(t *testing.T) {
 	if !strings.Contains(msgs[0].body, "/w") {
 		t.Errorf("root message should carry the cwd: %q", msgs[0].body)
 	}
-	if msgs[1].to != "om_root_1" || msgs[1].body != "hello from claude" {
-		t.Fatalf("mirrored text = %+v", msgs[1])
+	// Assistant text rides a post md paragraph: formatting passes through,
+	// tag markup is escaped, and the bubble form means no card frame.
+	var mirrored struct {
+		ZhCN struct {
+			Content [][]struct {
+				Tag  string `json:"tag"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"zh_cn"`
+	}
+	if err := json.Unmarshal([]byte(msgs[1].body), &mirrored); err != nil {
+		t.Fatal(err)
+	}
+	if msgs[1].to != "om_root_1" || mirrored.ZhCN.Content[0][0].Tag != "md" {
+		t.Fatalf("mirrored post = %+v", msgs[1])
+	}
+	if got := mirrored.ZhCN.Content[0][0].Text; got != "**hello** from &#60;claude>" {
+		t.Fatalf("post md content = %q", got)
 	}
 	// The reply's thread id is recorded for inbound routing.
 	if id, ok := h.store.session("omt_om_root_1", ""); !ok || id != "s1" {
@@ -717,4 +744,24 @@ func TestDuplicateInboundPushIgnored(t *testing.T) {
 	if len(f.reacted) != 1 {
 		t.Fatalf("want a single ack, got %v", f.reacted)
 	}
+}
+
+// TestMarkdownCardFallsBackToText: a rejected markdown card degrades to
+// plain text messages instead of dropping the content.
+func TestMarkdownCardFallsBackToText(t *testing.T) {
+	f, r := &fakeLark{failPosts: true}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1"}
+	h := newTestHub(t, f, r)
+	runHub(t, h)
+
+	raw := json.RawMessage(`{"message":{"content":[{"type":"text","text":"**still here**"}]}}`)
+	waitFor(t, "plain fallback", func() bool {
+		r.broker.Publish(broker.Event{SessionID: "s1", Type: "assistant", Raw: raw})
+		msgs := f.messages()
+		if len(msgs) == 0 {
+			return false
+		}
+		last := msgs[len(msgs)-1]
+		return last.kind == "text" && last.body == "**still here**"
+	})
 }

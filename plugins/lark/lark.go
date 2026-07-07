@@ -21,6 +21,8 @@ type larkAPI interface {
 	ReplyText(ctx context.Context, rootID, text string) (string, error)
 	// ReplyCard replies with an interactive card inside rootID's thread.
 	ReplyCard(ctx context.Context, rootID, cardJSON string) (string, error)
+	// ReplyPost replies with a rich-text (post) message inside rootID's thread.
+	ReplyPost(ctx context.Context, rootID, postJSON string) (string, error)
 	// UploadImage uploads a message image and returns its image_key.
 	UploadImage(ctx context.Context, data []byte) (string, error)
 	// ReplyImage replies with an uploaded image inside rootID's thread.
@@ -87,6 +89,10 @@ func (l *larkClient) ReplyText(ctx context.Context, rootID, text string) (string
 
 func (l *larkClient) ReplyCard(ctx context.Context, rootID, cardJSON string) (string, error) {
 	return l.reply(ctx, rootID, larkim.MsgTypeInteractive, cardJSON)
+}
+
+func (l *larkClient) ReplyPost(ctx context.Context, rootID, postJSON string) (string, error) {
+	return l.reply(ctx, rootID, larkim.MsgTypePost, postJSON)
 }
 
 func (l *larkClient) UploadImage(ctx context.Context, data []byte) (string, error) {

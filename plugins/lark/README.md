@@ -48,9 +48,11 @@ restarts.
 
 ## Behavior notes
 
-- Permission / question prompts are card JSON 2.0 (real code fences via the
-  markdown component). Requires Feishu client 7.20+ (2024); older clients
-  show the card title plus an upgrade hint.
+- Assistant text renders as rich-text (post) md paragraphs — markdown in a
+  plain bubble, no card frame. Permission / question prompts are card JSON
+  2.0 (buttons need cards; requires Feishu client 7.20+, older clients show
+  an upgrade hint). A rejected post falls back to plain text so content is
+  never dropped.
 
 - Threads are created lazily: a session gets a thread the first time it
   produces output while the plugin runs; historical sessions are ignored.
