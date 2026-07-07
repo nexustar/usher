@@ -171,6 +171,7 @@ func newTestHub(t *testing.T, f *fakeLark, r *fakeRouter, allowed ...string) *Hu
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.spawn = func(f func()) { f() } // synchronous routing keeps tests deterministic
 	return h
 }
 

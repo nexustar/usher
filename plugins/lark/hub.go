@@ -109,6 +109,10 @@ type Hub struct {
 	// reaches the session twice.
 	seenMu sync.Mutex
 	seen   map[string]time.Time
+
+	// spawn runs accepted-inbound routing off the websocket handler
+	// goroutine (see HandleMessage). Tests override it to run synchronously.
+	spawn func(func())
 }
 
 // NewHub builds a Hub. The thread-mapping store is loaded from cfg.StatePath
@@ -140,6 +144,7 @@ func NewHub(client larkAPI, router RouterAPI, cfg Config, logger *slog.Logger) (
 		posted:        map[string]hook.Pending{},
 		recentSent:    map[string]string{},
 		seen:          map[string]time.Time{},
+		spawn:         func(f func()) { go f() },
 	}, nil
 }
 
@@ -509,7 +514,7 @@ var mentionPlaceholder = regexp.MustCompile(`@_user_\d+\s*`)
 // that session (Mode A passthrough). Messages outside the configured chat,
 // from unauthorized users, outside any bound thread, or without text are
 // ignored — session lifecycle control stays in the web UI.
-func (h *Hub) HandleMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) {
+func (h *Hub) HandleMessage(_ context.Context, event *larkim.P2MessageReceiveV1) {
 	if event == nil || event.Event == nil || event.Event.Message == nil {
 		return
 	}
@@ -530,9 +535,22 @@ func (h *Hub) HandleMessage(ctx context.Context, event *larkim.P2MessageReceiveV
 		return // not (yet) bound to a session
 	}
 	h.recordThread(sessionID, deref(msg.ThreadId))
-	// A pending AskUserQuestion for this session claims the reply as its
-	// answer (the session is blocked waiting), rather than a new prompt.
-	if h.answerByText(ctx, sessionID, deref(msg.MessageId), text) {
+	// Route off the websocket handler goroutine: the push's ack frame is only
+	// sent once this returns, and a late ack makes Feishu redeliver. The
+	// detached context outlives the connection the push arrived on — an
+	// accepted message must not die to a socket flap mid-delivery.
+	messageID := deref(msg.MessageId)
+	h.spawn(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		h.routeInbound(ctx, sessionID, messageID, text)
+	})
+}
+
+// routeInbound delivers one accepted inbound message: as the answer to a
+// pending AskUserQuestion if one is waiting, otherwise as a prompt.
+func (h *Hub) routeInbound(ctx context.Context, sessionID, messageID, text string) {
+	if h.answerByText(ctx, sessionID, messageID, text) {
 		return
 	}
 	// Record before sending so the prompt-echo skips this message's own
@@ -545,7 +563,7 @@ func (h *Hub) HandleMessage(ctx context.Context, event *larkim.P2MessageReceiveV
 		}
 		return
 	}
-	h.ack(ctx, deref(msg.MessageId))
+	h.ack(ctx, messageID)
 }
 
 // ack reacts to an inbound message to confirm it reached the session.
