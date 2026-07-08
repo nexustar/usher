@@ -1,195 +1,137 @@
 # usher
 
-*Ultra-Simple Harness for Everything Routing.*
+*Unified Session Hub for Extended Reach.*
 
-Drive multiple Claude Code, Codex, and pi sessions from any browser — including your
-phone over Tailscale.
+Drive Claude Code, Codex, and pi sessions from any browser — including your
+phone.
 
 <p align="center">
   <img src="docs/screenshot.png" alt="usher dashboard" width="830">
 </p>
 
-usher is a web dashboard over the sessions on your machine: list them, send a
-message and watch the reply stream in (markdown or raw, for easy copying), and
-approve or deny tool-permission prompts — without being at the keyboard.
-
-## What you can do
-
-- Kick off a long refactor or test run and step away — from your phone, watch it
-  stream, send a follow-up, and approve a permission prompt if one comes up.
-- Manage sessions across several projects — and both CLIs, Claude Code and
-  Codex, side by side — from one dashboard, instead of hunting through
-  `claude --resume` or `codex resume`.
-- Route work from one main chat instead of switching tabs — quick slash commands
-  by default, or plain language ("run the tests in the auth session and tell me
-  what fails") once you enable the optional LLM agent ([Main chat](#main-chat)).
-- Open a lightweight tmux shell in a session's working directory.
-
-## Install
-
-Needs at least one of the `claude` or `codex` CLIs you've already signed in
-to. The optional terminal requires `tmux`. On Windows, run usher inside
-[WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
-
-### One-line install (recommended)
-
-```
-curl -fsSL https://raw.githubusercontent.com/nexustar/usher/main/install.sh | bash
-```
-
-Installs the binary and starts a user-level service (launchd / systemd). Hooks
-for managed Claude sessions are supplied inline. No `sudo` required.
-
-### Build from source
-
-```
-go install github.com/nexustar/usher/cmd/usher@latest
-usher serve         # http://127.0.0.1:7777
-```
-
-To run as a service, see the example files in
-[`docs/`](docs/) ([macOS plist](docs/io.github.nexustar.usher.plist),
-[Linux systemd](docs/usher.service)).
-
-To reach usher from another device, see [Remote access](#remote-access).
+usher brings the Claude Code, Codex, and pi sessions on your machine into one
+hub, accessible from a browser or supported messaging app. There is nothing to
+import or migrate: sessions started in a terminal or IDE appear automatically
+and remain available through their native agents. Native transcripts remain the
+source of truth; usher keeps only its own lightweight metadata.
 
 ## Why usher
 
-- **A thin wrapper over the native claude/codex CLIs.** usher drives the official
-  Claude Code and Codex CLIs exactly as they ship — not another agent or a layer
-  on top, no reimplemented agent loop. The CLIs do the work; usher adds a GUI,
-  remote access, and session management over both.
-- **The same actions from any device.** List, resume, send, approve a permission,
-  start a session — identical on phone and desktop, where it installs as a PWA.
-  (The official GUI skips Linux; usher runs anywhere there's a browser.)
-- **Local-first, your own tunnel.** Sessions, transcripts, and CLI processes never
-  leave your machine. No account, cloud, or relay — reach it from elsewhere via
-  [Tailscale](https://tailscale.com/) or a
-  [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
-- **Tiny and auditable.** A single static Go binary, almost all standard library
-  (just `fsnotify` and `golang.org/x/crypto`), with a plain-JS frontend — no npm,
-  no build step, no framework.
+- **No session migration.** usher discovers native sessions in place, including
+  work started from a terminal or IDE. It does not copy conversations into its
+  own session store, and every session remains usable through its original
+  agent without usher.
+- **Keep the native agents.** usher drives the official Claude Code and Codex
+  CLIs, plus pi, instead of reimplementing their agent loops.
+- **Work from any device.** Start a task at your desk, follow it from your phone,
+  send a follow-up, or handle a permission request. The web UI installs as a
+  PWA on desktop and mobile.
+- **See every project together.** Discover, search, pin, archive, fork, and
+  resume sessions across projects and backends from one dashboard.
+- **Stay local-first.** Sessions and agent processes remain on your machine.
+  Remote access is through infrastructure you control, such as Tailscale or
+  Cloudflare Tunnel.
+- **Simple by design, composable by default.** usher stays focused on session
+  routing and works with the tools you already use — native agent CLIs,
+  tunnels, editors, and messaging apps. Its implementation follows the same
+  KISS principle: a static, stdlib-first Go binary with a plain-JavaScript
+  frontend, no npm, and no build step.
 
-## Remote access
+## Quick start
 
-usher has no relay or cloud component. To use it from another device, run a
-tunnel on the same machine and point it at usher's loopback port — usher stays on
-`127.0.0.1:7777` and the tunnel reaches it locally.
-[Tailscale](https://tailscale.com/) and
-[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-both work. Set a usher password too: with a tunnel fronting loopback, usher's
-bind gate doesn't trip, so nothing else forces one.
+You need at least one supported agent installed, signed in, and run once:
+Claude Code, Codex, or pi. The optional session terminal also needs `tmux`.
+On Windows, run usher inside
+[WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
 
-Step-by-step for both tunnels, plus the auth internals and threat model, is in
-**[docs/remote-access.md](docs/remote-access.md)**.
+Install and start a user-level service:
 
-## Configuration
-
-`usher serve --help` lists every flag. Each backend turns on only if its session
-dir exists, so usher runs with any installed CLI (it needs at least one). The
-most common:
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `--addr` | `127.0.0.1:7777` | Listen address. Non-loopback requires a password. |
-| `--data-dir` | `$XDG_DATA_HOME/usher` | usher's state (auth, hook socket, chat history). |
-| `--projects-dir` | `~/.claude/projects` | Claude Code session dir; enables the Claude backend when present. |
-| `--codex-sessions-dir` | `~/.codex/sessions` | Codex session dir; enables the Codex backend when present. |
-| `--pi-sessions-dir` | `~/.pi/agent/sessions` | pi coding-agent session dir; enables the pi backend when present. |
-| `--pi` | `pi` | pi executable used for RPC workers. |
-| `--pi-args` | empty | Extra flags passed to spawned pi RPC workers. |
-| `--permission-mode` | `default` | Claude only. `default` uses the hook UI; `bypassPermissions` skips prompting. |
-| `--tmux-socket` | `usher` | Socket prefix for optional session terminals (`<name>-terminal`). |
-| `--terminal-shell` | `$SHELL` or `bash` | Shell executable used by session terminals. |
-| `--max-live-sessions` | `8` | Cap on live CLI processes; least-recently-used are evicted and re-spawned on the next send. |
-| `--agent-mode` | `rule` | Main-chat agent: `rule` or `llm` (see below). |
-
-## Main chat
-
-The **main chat** link opens a conversation with usher's routing agent.
-Sending never blocks the chat: a routed message returns immediately, and when
-the target session finishes its turn the reply is posted back into the chat
-verbatim — whether that takes seconds or hours. The default **rule agent** is
-a few slash commands:
-
-```
-/list                          list sessions (shows auto-approve / archived flags)
-/focus <prefix>                switch focus without sending or reading
-/send <prefix> <text>          send to the matching session (by id prefix or title)
-/read <prefix> [n] [offset]    show n turns of a session (default 20), from offset (default: most recent)
-/search <query>                find sessions whose transcripts contain query
-/search --session <prefix> <query>
-                               find matching turns inside one session
-/new <cwd> <text>              start a new session in <cwd> with an initial message
-/pending                       list pending permission requests
-/approve | /deny <id>          resolve a pending request
-/archive | /unarchive <prefix> hide / restore a session
-/auto-approve <prefix> on|off  toggle auto-approving the session's prompts
+```sh
+curl -fsSL https://raw.githubusercontent.com/nexustar/usher/main/install.sh | bash
 ```
 
-The optional **LLM agent** (`--agent-mode llm`) takes natural language instead.
-It speaks the OpenAI Chat Completions format, so any OpenAI-compatible backend
-works (OpenAI, Anthropic's OAI-compatible endpoint, Ollama, DeepSeek, Groq, …):
+Or install and run it directly:
 
-```
-./usher serve --agent-mode llm \
-  --llm-base-url https://api.openai.com/v1 \
-  --llm-model gpt-4o-mini \
-  --llm-api-key-env OPENAI_API_KEY
+```sh
+go install github.com/nexustar/usher/cmd/usher@latest
+usher serve
 ```
 
-For a keyless local backend point `--llm-base-url` at it (e.g. Ollama's
-`http://localhost:11434/v1`) and pass `--llm-api-key-env ""`. The agent can read
-transcripts, send, create sessions, and resolve permissions, and tracks which
-session you're working with so you can keep talking as if there's just one.
+Open <http://127.0.0.1:7777>. Each backend is enabled automatically when its
+session directory exists, and existing sessions appear without an import step.
+Run `usher serve -h` for the complete option list.
 
-## How it works
+To run usher in the background, use the example
+[launchd property list](docs/io.github.nexustar.usher.plist) on macOS or
+[systemd user unit](docs/usher.service) on Linux; each file includes setup and
+log-viewing instructions.
+
+To use usher away from the host machine, follow
+[Remote access](docs/solutions/remote-access.md). Do not expose it without
+first understanding the authentication guidance there.
+
+## Main features
+
+- **Sessions:** discover existing sessions, create new ones, resume, fork,
+  rename, pin, archive, search, and switch backend or model.
+- **Live work:** stream assistant output and tool activity, interrupt turns,
+  answer questions, and approve or deny native backend permission requests.
+- **Context:** render markdown, images, uploads, subagents, context usage, and
+  compaction events from the transcript.
+- **Remote control:** responsive PWA, Web Push notifications, and optional
+  Telegram or Lark/Feishu integration.
+- **Per-session tools:** one tmux shell per conversation and an optional deep
+  link into an editor such as code-server.
+- **Router:** a main chat can list, search, create, and route work to sessions.
+  It uses deterministic commands by default and can optionally accept natural
+  language through an OpenAI-compatible model.
+
+## Architecture
 
 ```mermaid
 flowchart LR
-  phone["browser / phone"]
+  clients["browser · PWA · IM"]
   subgraph host["your machine"]
-    usher["usher<br/>web · API · hook listener"]
-    drivers["protocol drivers<br/>claude stream-json · codex app-server"]
-    files[("~/.claude/projects · ~/.codex/sessions<br/>session logs")]
+    usher["usher<br/>web UI · router · permissions"]
+    drivers["backend protocols<br/>Claude · Codex · pi"]
+    logs[("native session transcripts")]
+    shells["per-session tmux shells"]
   end
-  phone <-->|"HTTP · SSE"| usher
-  usher -->|"send · resume · interrupt"| drivers
-  drivers -->|"writes turns"| files
-  usher -.->|"watch + tail (read-only)"| files
-  drivers -->|"PreToolUse / approval request"| usher
-  usher -->|"allow / deny"| drivers
+  clients <-->|"HTTP · SSE"| usher
+  usher <-->|"send · stream · interrupt · approve"| drivers
+  drivers -->|"write turns"| logs
+  usher -.->|"discover + tail"| logs
+  usher <-->|"whole-text input + fixed controls"| shells
 ```
 
-- **Discovery** is read-only: usher watches `~/.claude/projects/` and
-  `~/.codex/sessions/`, listing every session — including ones you started in a
-  terminal or IDE — tagged with the CLI that produced it. It never takes ownership.
-- **Sending** uses a long-running `claude -p` stream-json process per active
-  Claude session and one shared `codex app-server`. Session logs remain the
-  content source; protocols provide lifecycle, interrupts, and approvals. New
-  sessions route by the model
-  you pick: `claude-*` → Claude Code, `gpt-*` → Codex.
-- **Permissions** flow through Claude's streaming `can_use_tool` callback and
-  Codex app-server approval requests. Claude keeps a narrow `PreToolUse` hook
-  for `AskUserQuestion` answers. A request blocks until you decide in the UI;
-  "allow always" uses each backend's native session approval when available,
-  and usher's blanket auto-approve works for both backends.
-- **Session terminals** provide one tmux shell per conversation, starting in its
-  cwd. Hiding the panel leaves the shell running; `exit` or session deletion
-  closes it.
+- Sessions are discovered from native transcript files. usher stores lightweight
+  metadata such as pins, archive state, and display titles, but does not copy
+  conversations into its own session store or take ownership of them.
+- Backend protocols run turns and report lifecycle, streaming, model, and
+  permission events. usher normalizes those events for the UI.
+- The main-chat agent manages sessions and routes messages. It does not answer
+  substantive questions itself; the full-context coding-agent session does.
+- usher does not browse the machine. File uploads, transcript image references,
+  editor links, and the deliberately limited tmux shell are explicit paths, not
+  a general filesystem API.
 
-## Roadmap
+## Documentation
 
-- **Richer main chat** — manage sessions and reach it from IM apps (Telegram,
-  Slack); still early today.
-- **File viewing** — open images, HTML, and markdown a session produced.
-- *Exploring:* scheduled (cron) jobs.
+Solutions are task-oriented guides for combining usher with the rest of your
+setup:
 
-## Non-goals
+- [Access usher remotely](docs/solutions/remote-access.md)
+- [Use usher with code-server or another editor](docs/solutions/code-server.md)
+- [Connect Telegram, Lark, or Feishu](docs/solutions/im.md)
 
-- **A generic multi-harness platform.** usher wraps exactly two CLIs — Claude
-  Code and Codex — each integrated deliberately (discovery, hooks, fork, model
-  routing). It is not a plugin host for arbitrary CLIs, and there's no plan for a
-  third.
-- **Owning your sessions.** Discovery stays read-only and observational; usher
-  drives the official CLIs rather than replacing them with its own agent loop.
+Reference material explains stable behavior that is not useful to repeat in
+command-line help:
+
+- [Security and trust model](docs/reference/security.md)
+- Complete CLI options: `usher serve -h`
+
+## Project boundaries
+
+usher renders and drives coding-agent conversations; it is not a filesystem
+browser, IDE, or replacement agent runtime. Sessions stay compatible with their
+native CLIs and remain usable without usher.
