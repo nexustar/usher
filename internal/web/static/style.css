@@ -737,11 +737,55 @@ td.cwd { font-size: 0.82rem; }
  * right). Shared by every send-area variant; align-items:center keeps all
  * controls on one baseline so their heights read as consistent. */
 .composer {
+  position: relative;
   margin-top: 0.5rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-chrome);
 }
+.command-preview {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 0.35rem);
+  max-height: 15rem;
+  overflow-y: auto;
+  padding: 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-chrome);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+}
+.command-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem;
+  text-align: left;
+}
+.command-option:hover,
+.command-option.selected { background: var(--bg-subtle); }
+.command-option-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.command-option-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-option small { color: var(--text-faint); }
 .composer:focus-within { border-color: var(--accent); }
 .composer textarea {
   display: block;

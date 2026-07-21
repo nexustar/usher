@@ -706,7 +706,7 @@ func (h *Hub) recordSent(sessionID, text string) {
 func (h *Hub) consumeRecentSent(sessionID, text string) bool {
 	h.recentMu.Lock()
 	defer h.recentMu.Unlock()
-	if h.recentSent[sessionID] == text {
+	if imutil.SamePromptEcho(h.recentSent[sessionID], text) {
 		delete(h.recentSent, sessionID)
 		return true
 	}

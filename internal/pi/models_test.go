@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/nexustar/usher/internal/backend"
@@ -66,5 +67,45 @@ func TestModelsFromRPC(t *testing.T) {
 	}
 	if got[1].ID != "google/gemini-flash" || got[1].DisplayName != "gemini-flash" {
 		t.Fatalf("fallback name model = %#v", got[1])
+	}
+}
+
+func TestComposerItemsFromRPC(t *testing.T) {
+	raw := []byte(`{"commands":[
+		{"name":"deploy","description":"Deploy the app","source":"extension"},
+		{"name":"fix-tests","description":"Fix failing tests","source":"prompt"},
+		{"name":"skill:brave-search","description":"Search the web","source":"skill"},
+		{"name":"","description":"invalid","source":"skill"}
+	]}`)
+	got, err := composerItemsFromRPC(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []backend.ComposerItem{
+		{Name: "deploy", Kind: "extension", Description: "Deploy the app"},
+		{Name: "fix-tests", Kind: "prompt", Description: "Fix failing tests"},
+		{Name: "skill:brave-search", Kind: "skill", Description: "Search the web"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("composer items = %#v, want %#v", got, want)
+	}
+}
+
+func TestComposerItemsDoesNotStartColdWorker(t *testing.T) {
+	r := &Runtime{workers: map[string]*worker{}}
+	got, err := r.ComposerItems(context.Background(), "cold-session", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Items != nil || got.Available || len(r.workers) != 0 {
+		t.Fatalf("cold composer lookup = %#v, workers = %d", got, len(r.workers))
+	}
+}
+
+func TestValidatePiCommandAllowsDoubleSlashPrompt(t *testing.T) {
+	// Pi's harness treats // as ordinary prompt text. A nil client proves the
+	// validator returns before attempting command discovery.
+	if err := validatePiCommand(context.Background(), nil, "//not-a-command"); err != nil {
+		t.Fatalf("double-slash prompt rejected: %v", err)
 	}
 }

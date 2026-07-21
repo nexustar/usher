@@ -164,6 +164,7 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	webMux.HandleFunc("GET /api/models", s.handleModels)
 	webMux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
+	webMux.HandleFunc("GET /api/sessions/{id}/commands", s.handleSessionCommands)
 	webMux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	webMux.HandleFunc("GET /api/sessions/{id}/transcript", s.handleTranscript)
 	webMux.HandleFunc("POST /api/sessions/{id}/fork", s.handleFork)
@@ -529,6 +530,28 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		TerminalOpen:      s.router.HasTerminal(id),
 		TerminalAvailable: s.router.TerminalAvailable(),
 	})
+}
+
+func (s *Server) handleSessionCommands(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess, ok := s.router.GetSession(id)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	catalog, err := s.router.ComposerItems(r.Context(), id, sess.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if catalog.Items == nil {
+		catalog.Items = []backend.ComposerItem{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Source    string                 `json:"source"`
+		Available bool                   `json:"available"`
+		Commands  []backend.ComposerItem `json:"commands"`
+	}{Source: sess.Backend, Available: catalog.Available, Commands: catalog.Items})
 }
 
 // handleDeleteSession permanently deletes a session and its jsonl. Destructive

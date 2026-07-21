@@ -69,6 +69,118 @@ const TRANSCRIPT_PAGE = 100;
 let transcriptLimit = TRANSCRIPT_PAGE;
 let transcriptTotal = 0;
 
+// Attach a small command palette to a session composer. Command discovery is
+// lazy because Claude only advertises its catalog after the live stream-json
+// worker has emitted system/init; an empty response is retried on later `/`
+// input rather than cached forever.
+function wireCommandPreview(promptEl, sessionID) {
+  const popup = promptEl.parentElement.querySelector('.command-preview');
+  if (!popup) return;
+  let commands = [];
+  let source = '';
+  let selected = 0;
+  let loading = null;
+  let lastAvailableLoad = 0;
+
+  // Anchored with no leading slack: backends only honour a sigil in column 0,
+  // so offering completion for " /compact" would promise a command the send
+  // path then delivers as prose.
+  const commandToken = () => {
+    const match = promptEl.value.match(/^([/$][^\s]*)$/);
+    return match ? match[1] : null;
+  };
+  // Matched case-sensitively for the same reason: both backends resolve names
+  // exactly, so listing /Compact under "/C" would advertise a command that is
+  // then sent as prose.
+  const matches = () => {
+    const token = commandToken();
+    if (token == null) return [];
+    if (token.startsWith('$')) {
+      return commands.filter(command => source === 'codex' && command.kind === 'skill' &&
+        ('$' + command.name).startsWith(token));
+    }
+    return commands.filter(command => ('/' + command.name).startsWith(token));
+  };
+  const displayName = (command) => commandToken()?.startsWith('$')
+    ? '$' + command.name : '/' + command.name;
+  const hide = () => {
+    popup.hidden = true;
+    popup.innerHTML = '';
+    promptEl.removeAttribute('aria-activedescendant');
+  };
+  const render = () => {
+    const found = matches();
+    if (!found.length) { hide(); return; }
+    selected = Math.min(selected, found.length - 1);
+    popup.innerHTML = found.map((command, i) =>
+      `<button type="button" role="option" id="command-option-${i}" class="command-option${i === selected ? ' selected' : ''}" aria-selected="${i === selected}">` +
+        `<span class="command-option-main"><span>${esc(displayName(command))}</span>${command.description ? `<small>${esc(command.description)}</small>` : ''}</span>` +
+        `<small>${esc(command.kind || '')}</small>` +
+      `</button>`
+    ).join('');
+    popup.hidden = false;
+    promptEl.setAttribute('aria-activedescendant', `command-option-${selected}`);
+    popup.querySelector(`#command-option-${selected}`)?.scrollIntoView({ block: 'nearest' });
+  };
+  const load = async () => {
+    if (loading || Date.now() - lastAvailableLoad < 30000) return loading;
+    loading = fetch('/api/sessions/' + encodeURIComponent(sessionID) + '/commands')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        source = data && data.source || '';
+        const available = !!(data && data.available);
+        commands = available && Array.isArray(data.commands) ? data.commands : [];
+        if (available) lastAvailableLoad = Date.now();
+      })
+      .catch(() => { commands = []; })
+      .finally(() => { loading = null; render(); });
+    return loading;
+  };
+  const complete = () => {
+    const found = matches();
+    const command = found[selected];
+    if (!command) return false;
+    const sigil = source === 'codex' && command.kind === 'skill' ? '$' : '/';
+    // commandToken() matched the whole field, so the token is the whole value.
+    promptEl.value = sigil + command.name + ' ';
+    promptEl.dispatchEvent(new Event('input', { bubbles: true }));
+    growPrompt(promptEl);
+    hide();
+    return true;
+  };
+
+  promptEl.setAttribute('aria-autocomplete', 'list');
+  promptEl.setAttribute('aria-controls', 'command-preview');
+  promptEl.addEventListener('input', () => {
+    selected = 0;
+    if (commandToken() == null) { hide(); return; }
+    render();
+    load();
+  });
+  promptEl.addEventListener('keydown', (e) => {
+    if (popup.hidden || e.isComposing) return;
+    const found = matches();
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && found.length) {
+      e.preventDefault();
+      selected = (selected + (e.key === 'ArrowDown' ? 1 : found.length - 1)) % found.length;
+      render();
+    } else if (e.key === 'Tab' || e.key === 'Enter') {
+      if (complete()) e.preventDefault();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      hide();
+    }
+  });
+  popup.addEventListener('mousedown', (e) => {
+    const option = e.target.closest('.command-option');
+    if (!option) return;
+    e.preventDefault(); // keep textarea focus
+    selected = [...popup.children].indexOf(option);
+    complete();
+  });
+  promptEl.addEventListener('blur', () => setTimeout(hide, 0));
+}
+
 // ---------- New session view ----------
 //
 // Mirrors the regular session detail layout so the page transition after
@@ -315,6 +427,7 @@ export async function showDetail(id) {
           </div>
         </div>
         <div class="composer">
+          <div id="command-preview" class="command-preview" role="listbox" hidden></div>
           <textarea id="prompt" rows="1" placeholder="message…"></textarea>
           <div class="composer-bar">
             <div class="composer-tools">
@@ -367,6 +480,7 @@ export async function showDetail(id) {
   }
   renderSessionRuntime(sess.runtime);
   restoreDraft(promptEl);
+  wireCommandPreview(promptEl, id);
 
   const autoBtn = document.getElementById('auto-approve-toggle');
   if (autoBtn) {
@@ -583,12 +697,14 @@ export async function showDetail(id) {
     sendBtn.disabled = actionPending !== null;
   };
 
-  const confirmRunningAction = () => {
-    sendLifecycleObserved = true;
-    if (sendAccepted) actionPending = null;
+  const observeSendLifecycle = () => {
+    if (actionPending === 'send') {
+      sendLifecycleObserved = true;
+      if (sendAccepted) actionPending = null;
+    }
     renderAction();
   };
-  openEventStream(id, chatEl, renderAction, confirmRunningAction);
+  openEventStream(id, chatEl, renderAction, observeSendLifecycle);
 
   const submit = async () => {
     const text = promptEl.value;
@@ -608,6 +724,12 @@ export async function showDetail(id) {
     if (el) el.querySelectorAll(':scope > .chat-loading').forEach(n => n.remove());
     const userNode = appendChatMessage({ role: 'user', content: text });
     if (userNode) userNode.classList.add('optimistic');
+    // Codex slash input may become an RPC operation or normalize /skill to
+    // $skill. Reconcile at turn end so the original optimistic echo cannot
+    // linger beside app-server's canonical transcript form.
+    if (sess.backend === 'codex' && text.startsWith('/')) {
+      liveTurnDirty = true;
+    }
     try {
       const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/send', {
         method: 'POST',
@@ -651,6 +773,7 @@ export async function showDetail(id) {
 
   sendBtn.addEventListener('click', () => detailStreaming ? cancel() : submit());
   promptEl.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       submit();
@@ -681,7 +804,7 @@ function openSubagentEventStream(id) {
 // adopts our optimistic echo as the canonical user turn; subprocess.exit
 // promotes the live bubble in place (full fetch only when the turn is
 // dirty — see finalizeTurn). Turn errors surface via the 'error' event.
-function openEventStream(id, chatEl, renderAction, confirmRunningAction) {
+function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   const es = new EventSource('/api/sessions/' + encodeURIComponent(id) + '/events');
   setCurrentES(es);
 
@@ -704,13 +827,13 @@ function openEventStream(id, chatEl, renderAction, confirmRunningAction) {
   };
   const onIdle = () => {
     detailStreaming = false;
-    renderAction();
+    observeSendLifecycle();
     setLoadEarlierDisabled(false);
   };
   const onRunning = () => {
     detailStreaming = true;
     // Confirm a successful send through the turn lifecycle.
-    confirmRunningAction();
+    observeSendLifecycle();
     setLoadEarlierDisabled(true);
   };
   // beginTurn stands up the live bubble + running-state UI for

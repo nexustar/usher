@@ -21,6 +21,29 @@ func TestTurnUserText(t *testing.T) {
 	}
 }
 
+func TestSamePromptEchoAllowsCodexSlashSkillNormalization(t *testing.T) {
+	tests := []struct {
+		sent, observed string
+		want           bool
+	}{
+		{"hello", "hello", true},
+		{"/imagegen draw", "$imagegen draw", true},
+		{"/imagegen draw", "$imagegen paint", false},
+		{"$imagegen draw", "/imagegen draw", false},
+		{"/", "$", false},
+		{"/imagegen", "$imagegen", true},
+		{"/imagegen", "$imagegen draw", false},
+		// The rewrite matches names exactly, so a cased echo is a real
+		// mismatch, not the rewrite — do not swallow it.
+		{"/ImageGen draw", "$imagegen draw", false},
+	}
+	for _, tt := range tests {
+		if got := SamePromptEcho(tt.sent, tt.observed); got != tt.want {
+			t.Errorf("SamePromptEcho(%q, %q) = %v, want %v", tt.sent, tt.observed, got, tt.want)
+		}
+	}
+}
+
 func TestPartText(t *testing.T) {
 	cases := []struct{ raw, want string }{
 		{`{"role":"assistant","part":{"type":"text","content":"hello"}}`, "hello"},

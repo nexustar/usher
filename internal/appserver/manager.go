@@ -11,10 +11,12 @@ import (
 )
 
 type worker struct {
-	client   *Client
-	ready    chan struct{}
-	err      error
-	busy     bool
+	client *Client
+	ready  chan struct{}
+	err    error
+	busy   bool
+	// leases protect short RPCs without making the session appear mid-turn.
+	leases   int
 	lastUsed time.Time
 }
 
@@ -59,7 +61,7 @@ func (m *Manager) reserve() (*Client, error) {
 	var victimID string
 	var victim *worker
 	for id, w := range m.workers {
-		if w.ready != nil || w.busy || w.client.Busy(id) {
+		if w.ready != nil || w.busy || w.leases > 0 || w.client.Busy(id) {
 			continue
 		}
 		if victim != nil {
@@ -104,6 +106,37 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model string) (string, e
 	m.workers[id] = &worker{client: c, lastUsed: time.Now()}
 	m.mu.Unlock()
 	return id, nil
+}
+
+// leaseWorker resumes a session and leases its worker against eviction. The
+// lease is taken under the same lock that confirms the worker is still owned.
+// Unlike pi's leaseWorkerIfLive it will start a cold worker, so it belongs only
+// on paths that are about to drive a turn.
+func (m *Manager) leaseWorker(ctx context.Context, id, cwd string) (*worker, error) {
+	for {
+		w, err := m.getOrResume(ctx, id, cwd)
+		if err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if m.workers[id] != w {
+			// Evicted in the gap. Its client is already shutting down, so
+			// resume again rather than talking to a dead process.
+			m.mu.Unlock()
+			continue
+		}
+		w.leases++
+		w.lastUsed = time.Now()
+		m.mu.Unlock()
+		return w, nil
+	}
+}
+
+func (m *Manager) releaseWorker(w *worker) {
+	m.mu.Lock()
+	w.leases--
+	w.lastUsed = time.Now()
+	m.mu.Unlock()
 }
 
 func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, error) {
@@ -167,10 +200,30 @@ func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, err
 }
 
 func (m *Manager) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan TurnResult, <-chan Delta, error) {
-	w, err := m.getOrResume(ctx, id, cwd)
+	return m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
+		return c.StartTurn(ctx, id, prompt, cwd)
+	})
+}
+
+func (m *Manager) Compact(ctx context.Context, id, cwd string) (<-chan TurnResult, <-chan Delta, error) {
+	return m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
+		return c.Compact(ctx, id)
+	})
+}
+
+func (m *Manager) Review(ctx context.Context, id, cwd, instructions string) (<-chan TurnResult, <-chan Delta, error) {
+	return m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
+		return c.Review(ctx, id, instructions)
+	})
+}
+
+func (m *Manager) startOperation(ctx context.Context, id, cwd string, start func(*Client) (<-chan TurnResult, <-chan Delta, error)) (<-chan TurnResult, <-chan Delta, error) {
+	// Keep the worker leased until start() has registered the operation.
+	w, err := m.leaseWorker(ctx, id, cwd)
 	if err != nil {
 		return nil, nil, err
 	}
+	defer m.releaseWorker(w)
 	m.mu.Lock()
 	if w.busy || w.client.Busy(id) {
 		m.mu.Unlock()
@@ -178,7 +231,7 @@ func (m *Manager) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan
 	}
 	w.busy, w.lastUsed = true, time.Now()
 	m.mu.Unlock()
-	inner, deltas, err := w.client.StartTurn(ctx, id, prompt, cwd)
+	inner, deltas, err := start(w.client)
 	if err != nil {
 		m.mu.Lock()
 		w.busy = false
@@ -206,6 +259,36 @@ func (m *Manager) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan
 func (m *Manager) Resume(ctx context.Context, id, cwd string) error {
 	_, err := m.getOrResume(ctx, id, cwd)
 	return err
+}
+
+// Skills resumes the session if needed, so it belongs on paths that are about
+// to drive a turn anyway.
+func (m *Manager) Skills(ctx context.Context, id, cwd string) ([]Skill, error) {
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return nil, err
+	}
+	defer m.releaseWorker(w)
+	return w.client.Skills(ctx, cwd)
+}
+
+// SkillsIfLive answers only from a worker that is already up, reporting no
+// skills otherwise. Composer completion is speculative — the user may never
+// finish the token — so it must not pay for a cold start or evict another
+// session's warm worker to satisfy a popup.
+func (m *Manager) SkillsIfLive(ctx context.Context, id, cwd string) ([]Skill, bool, error) {
+	m.mu.Lock()
+	w := m.workers[id]
+	if w == nil || w.ready != nil {
+		m.mu.Unlock()
+		return nil, false, nil
+	}
+	w.leases++
+	w.lastUsed = time.Now()
+	m.mu.Unlock()
+	defer m.releaseWorker(w)
+	skills, err := w.client.Skills(ctx, cwd)
+	return skills, err == nil, err
 }
 
 func (m *Manager) Interrupt(ctx context.Context, id string) error {

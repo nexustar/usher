@@ -98,6 +98,29 @@ type Runtime interface {
 	Shutdown()
 }
 
+// ComposerItem is one completion advertised by a backend. Name is the bare
+// command or skill identity; the frontend derives its / or $ sigil from the
+// response source and Kind.
+type ComposerItem struct {
+	Name        string `json:"name"`
+	Kind        string `json:"kind,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// ComposerCatalog reports whether a backend could provide its authoritative
+// catalog. Items must only be consumed when Available is true.
+type ComposerCatalog struct {
+	Items     []ComposerItem
+	Available bool
+}
+
+// ComposerProvider is an optional runtime capability for cwd-dependent
+// completions. Available is false when discovery deliberately avoids starting
+// a cold backend.
+type ComposerProvider interface {
+	ComposerItems(context.Context, string, string) (ComposerCatalog, error)
+}
+
 // Forker is an optional capability because backends use materially different
 // branching mechanisms and some may not support it at all.
 type Forker interface {

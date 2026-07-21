@@ -233,12 +233,61 @@ func codexConfigValue(raw string) any {
 // closes when the turn ends or ctx is cancelled.
 func (s *Sender) Send(ctx context.Context, sessionID, prompt, cwd string) (<-chan StreamEvent, error) {
 	if s.app != nil {
-		return s.appTurn(ctx, sessionID, prompt, cwd, false)
+		return s.codexPrompt(ctx, sessionID, prompt, cwd, false)
 	}
 	if s.claude != nil {
 		return s.claudeTurn(ctx, sessionID, prompt, cwd, "", true)
 	}
 	return nil, errors.New("sender has no headless backend")
+}
+
+func (s *Sender) codexPrompt(ctx context.Context, sessionID, prompt, cwd string, fresh bool) (<-chan StreamEvent, error) {
+	command, args, isCommand := backend.ParseSlashCommand(prompt)
+	if !isCommand {
+		return s.appTurn(ctx, sessionID, prompt, cwd, fresh)
+	}
+	switch command {
+	case "/compact":
+		if args != "" {
+			return nil, errors.New("usage: /compact")
+		}
+		return s.appOperation(ctx, sessionID, cwd, func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error) {
+			return s.app.Compact(ctx, sessionID, cwd)
+		})
+	case "/review":
+		return s.appOperation(ctx, sessionID, cwd, func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error) {
+			return s.app.Review(ctx, sessionID, cwd, args)
+		})
+	default:
+		skills, err := s.app.Skills(ctx, sessionID, cwd)
+		if err != nil {
+			return nil, fmt.Errorf("resolve command %s: %w", command, err)
+		}
+		if skillPrompt, ok := codexSlashSkillPrompt(command, args, skills); ok {
+			return s.appTurn(ctx, sessionID, skillPrompt, cwd, fresh)
+		}
+		return nil, fmt.Errorf("unknown command: %s", command)
+	}
+}
+
+// codexSlashSkillPrompt rewrites the /skill compatibility form into Codex's
+// native $skill mention. Names match exactly because Codex resolves them
+// exactly (core-skills injection matches the mention against skill.name as a
+// plain string), and its slash commands are case-sensitive too — accepting
+// /ImageGen here would invent a spelling that works in usher and nowhere else.
+func codexSlashSkillPrompt(command, args string, skills []appserver.Skill) (string, bool) {
+	name := strings.TrimPrefix(command, "/")
+	for _, skill := range skills {
+		if !skill.Enabled || skill.Name != name {
+			continue
+		}
+		prompt := "$" + skill.Name
+		if args != "" {
+			prompt += " " + args
+		}
+		return prompt, true
+	}
+	return "", false
 }
 
 // Start creates a new backend session and starts its first turn. The concrete
@@ -255,7 +304,7 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 		if err != nil {
 			return "", nil, err
 		}
-		ch, err := s.appTurn(ctx, id, req.Prompt, req.Cwd, true)
+		ch, err := s.codexPrompt(ctx, id, req.Prompt, req.Cwd, true)
 		return id, ch, err
 	}
 	return "", nil, errors.New("sender has no headless backend")
@@ -305,6 +354,47 @@ func (s *Sender) LiveSessions() []string {
 		return s.claude.LiveSessions()
 	}
 	return nil
+}
+
+// ComposerItems exposes backend-native composer completions through one web
+// shape. Claude advertises slash commands at init; Codex supplies a small
+// supported command set plus cwd-scoped skills from app-server. Both sides
+// answer only from a live backend, so a cold session lists no skills until it
+// has run a turn — completion is never worth starting a process for.
+func (s *Sender) ComposerItems(ctx context.Context, sessionID, cwd string) (backend.ComposerCatalog, error) {
+	if s.claude != nil {
+		commands, available := s.claude.CommandsIfLive(sessionID)
+		out := make([]backend.ComposerItem, 0, len(commands))
+		for _, command := range commands {
+			out = append(out, backend.ComposerItem{
+				Name: command.Name, Kind: command.Kind,
+			})
+		}
+		return backend.ComposerCatalog{Items: out, Available: available}, nil
+	}
+	if s.app == nil {
+		return backend.ComposerCatalog{}, nil
+	}
+	out := []backend.ComposerItem{
+		{Name: "compact", Kind: "command", Description: "Compact conversation context"},
+		{Name: "review", Kind: "command", Description: "Review current changes"},
+	}
+	skills, available, err := s.app.SkillsIfLive(ctx, sessionID, cwd)
+	if err != nil {
+		s.logger.Warn("codex skill discovery failed", "session", sessionID, "err", err)
+		return backend.ComposerCatalog{}, err
+	}
+	for _, skill := range skills {
+		if !skill.Enabled {
+			continue
+		}
+		out = append(out, backend.ComposerItem{
+			Name:        skill.Name,
+			Kind:        "skill",
+			Description: skill.Description,
+		})
+	}
+	return backend.ComposerCatalog{Items: out, Available: available}, nil
 }
 
 // Interrupt stops the in-flight turn for sessionID without killing its worker.
@@ -387,6 +477,16 @@ func emitClaudeRuntime(ctx context.Context, out chan<- StreamEvent, result claud
 // appTurn keeps rollout jsonl as the content plane while app-server supplies
 // the driving and terminal lifecycle signal.
 func (s *Sender) appTurn(ctx context.Context, id, prompt, cwd string, fresh bool) (<-chan StreamEvent, error) {
+	return s.appLoggedTurn(ctx, id, cwd, fresh, func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error) {
+		return s.app.StartTurn(ctx, id, prompt, cwd)
+	})
+}
+
+func (s *Sender) appOperation(ctx context.Context, id, cwd string, start func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error)) (<-chan StreamEvent, error) {
+	return s.appLoggedTurn(ctx, id, cwd, false, start)
+}
+
+func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, start func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error)) (<-chan StreamEvent, error) {
 	path := s.locate(id)
 	var offset int64
 	if path != "" {
@@ -394,7 +494,7 @@ func (s *Sender) appTurn(ctx context.Context, id, prompt, cwd string, fresh bool
 			offset = fi.Size()
 		}
 	}
-	done, deltas, err := s.app.StartTurn(ctx, id, prompt, cwd)
+	done, deltas, err := start()
 	if err != nil {
 		return nil, err
 	}

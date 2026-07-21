@@ -311,11 +311,12 @@ func (c *client) stop() {
 }
 
 type worker struct {
-	c    *client
-	busy bool
-	last time.Time
-	cwd  string
-	path string
+	c      *client
+	busy   bool
+	leases int
+	last   time.Time
+	cwd    string
+	path   string
 }
 
 // Runtime owns warm pi RPC processes. Persisted JSONL remains the content
@@ -442,10 +443,12 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	}
 	r.refreshModels(ctx, c)
 	w := &worker{c: c, cwd: req.Cwd, path: state.SessionFile, last: time.Now()}
+	w.leases = 1
 	if err := r.add(state.SessionID, w); err != nil {
 		c.stop()
 		return "", nil, err
 	}
+	defer r.releaseWorker(w)
 	ch, err := r.prompt(ctx, state.SessionID, w, req.Prompt, true)
 	if err != nil {
 		r.mu.Lock()
@@ -460,9 +463,7 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 }
 
 func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan backend.Event, error) {
-	r.mu.Lock()
-	w := r.workers[id]
-	r.mu.Unlock()
+	w := r.leaseWorkerIfLive(id)
 	if w == nil {
 		path := r.locate(id)
 		if path == "" {
@@ -473,12 +474,13 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 			return nil, err
 		}
 		r.refreshModels(ctx, c)
-		w = &worker{c: c, cwd: cwd, path: path, last: time.Now()}
+		w = &worker{c: c, cwd: cwd, path: path, last: time.Now(), leases: 1}
 		if err = r.add(id, w); err != nil {
 			c.stop()
 			return nil, err
 		}
 	}
+	defer r.releaseWorker(w)
 	return r.prompt(ctx, id, w, prompt, false)
 }
 
@@ -509,6 +511,9 @@ func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
 }
 
 func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string, fresh bool) (<-chan backend.Event, error) {
+	if err := validatePiCommand(ctx, w.c, text); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	if w.busy {
 		r.mu.Unlock()
@@ -655,6 +660,100 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 	return out, nil
 }
 
+func validatePiCommand(ctx context.Context, c *client, text string) error {
+	command, _, ok := backend.ParseSlashCommand(text)
+	if !ok {
+		return nil
+	}
+	data, err := c.request(ctx, "get_commands", nil)
+	if err != nil {
+		return fmt.Errorf("resolve command %s: %w", command, err)
+	}
+	items, err := composerItemsFromRPC(data)
+	if err != nil {
+		return fmt.Errorf("resolve command %s: %w", command, err)
+	}
+	name := strings.TrimPrefix(command, "/")
+	for _, item := range items {
+		if item.Name == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown command: %s", command)
+}
+
+func composerItemsFromRPC(data json.RawMessage) ([]backend.ComposerItem, error) {
+	var payload struct {
+		Commands []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Source      string `json:"source"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	out := make([]backend.ComposerItem, 0, len(payload.Commands))
+	for _, command := range payload.Commands {
+		if command.Name == "" {
+			continue
+		}
+		kind := command.Source
+		if kind != "extension" && kind != "prompt" && kind != "skill" {
+			kind = "command"
+		}
+		out = append(out, backend.ComposerItem{
+			Name:        command.Name,
+			Kind:        kind,
+			Description: command.Description,
+		})
+	}
+	return out, nil
+}
+
+// ComposerItems returns pi's extension commands, prompt templates, and skills
+// without starting a cold worker merely to populate speculative UI. Pi already
+// returns skill names in their invocable form (skill:name), so no rewrite is
+// needed before the frontend adds the leading slash.
+func (r *Runtime) ComposerItems(ctx context.Context, id, _ string) (backend.ComposerCatalog, error) {
+	w := r.leaseWorkerIfLive(id)
+	if w == nil {
+		return backend.ComposerCatalog{}, nil
+	}
+	defer r.releaseWorker(w)
+	data, err := w.c.request(ctx, "get_commands", nil)
+	if err != nil {
+		return backend.ComposerCatalog{}, err
+	}
+	items, err := composerItemsFromRPC(data)
+	return backend.ComposerCatalog{Items: items, Available: err == nil}, err
+}
+
+// leaseWorkerIfLive pins an already-live worker against LRU eviction while a
+// short RPC or send preflight runs, and reports nil rather than starting one:
+// composer completion is speculative and must never pay for a cold start. Send
+// covers the nil case by building its own worker. A successful send becomes
+// eviction-safe through busy before releasing this lease.
+func (r *Runtime) leaseWorkerIfLive(id string) *worker {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w := r.workers[id]
+	if w != nil {
+		w.leases++
+		w.last = time.Now()
+	}
+	return w
+}
+
+func (r *Runtime) releaseWorker(w *worker) {
+	r.mu.Lock()
+	w.leases--
+	// Refresh on release too: a worker that just finished a long lease is the
+	// most recently used one, not the stalest LRU eviction candidate.
+	w.last = time.Now()
+	r.mu.Unlock()
+}
+
 // tailPiJSONL emits complete records appended since offset. A partial trailing
 // record is left for the next poll, although pi normally writes each JSONL
 // entry atomically with its newline.
@@ -722,7 +821,7 @@ func (r *Runtime) add(id string, w *worker) error {
 		var victimID string
 		var victim *worker
 		for k, x := range r.workers {
-			if x.busy {
+			if x.busy || x.leases > 0 {
 				continue
 			}
 			if victim == nil || x.last.Before(victim.last) {

@@ -48,6 +48,14 @@ type Delta struct {
 	Text string
 }
 
+// Skill is the safe composer-facing subset of app-server skill metadata.
+type Skill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	Enabled     bool   `json:"enabled"`
+}
+
 type turnStream struct {
 	done   chan TurnResult
 	deltas chan Delta
@@ -606,6 +614,30 @@ func (c *Client) StartThread(ctx context.Context, cwd, model string) (string, er
 	c.mu.Unlock()
 	return out.Thread.ID, nil
 }
+
+func (c *Client) Skills(ctx context.Context, cwd string) ([]Skill, error) {
+	if err := c.ensure(ctx); err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data []struct {
+			Cwd    string  `json:"cwd"`
+			Skills []Skill `json:"skills"`
+		} `json:"data"`
+	}
+	if err := c.call(ctx, "skills/list", map[string]any{"cwds": []string{cwd}, "forceReload": false}, &out); err != nil {
+		return nil, err
+	}
+	var skills []Skill
+	for _, entry := range out.Data {
+		if entry.Cwd != "" && entry.Cwd != cwd {
+			continue
+		}
+		skills = append(skills, entry.Skills...)
+	}
+	return skills, nil
+}
+
 func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan TurnResult, <-chan Delta, error) {
 	if err := c.ensure(ctx); err != nil {
 		return nil, nil, err
@@ -623,17 +655,37 @@ func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan 
 		c.threads[id] = cwd
 		c.mu.Unlock()
 	}
+	return c.startOperation(ctx, id, "turn/start", map[string]any{
+		"threadId": id, "input": []map[string]string{{"type": "text", "text": prompt}},
+	})
+}
+
+func (c *Client) startOperation(ctx context.Context, id, method string, params any) (<-chan TurnResult, <-chan Delta, error) {
 	stream := &turnStream{done: make(chan TurnResult, 1), deltas: make(chan Delta, 256)}
 	c.mu.Lock()
 	c.turns[id] = stream
 	c.mu.Unlock()
-	if err := c.call(ctx, "turn/start", map[string]any{"threadId": id, "input": []map[string]string{{"type": "text", "text": prompt}}}, nil); err != nil {
+	if err := c.call(ctx, method, params, nil); err != nil {
 		c.mu.Lock()
 		delete(c.turns, id)
 		c.mu.Unlock()
 		return nil, nil, err
 	}
 	return stream.done, stream.deltas, nil
+}
+
+func (c *Client) Compact(ctx context.Context, id string) (<-chan TurnResult, <-chan Delta, error) {
+	return c.startOperation(ctx, id, "thread/compact/start", map[string]any{"threadId": id})
+}
+
+func (c *Client) Review(ctx context.Context, id, instructions string) (<-chan TurnResult, <-chan Delta, error) {
+	target := map[string]any{"type": "uncommittedChanges"}
+	if instructions != "" {
+		target = map[string]any{"type": "custom", "instructions": instructions}
+	}
+	return c.startOperation(ctx, id, "review/start", map[string]any{
+		"threadId": id, "delivery": "inline", "target": target,
+	})
 }
 
 func (c *Client) ResumeThread(ctx context.Context, id, cwd string) error {

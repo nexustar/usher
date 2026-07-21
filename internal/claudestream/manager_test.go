@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/hook"
 )
 
@@ -324,6 +326,75 @@ func TestMessageStartMarksSpontaneousTurnButDeltasDoNot(t *testing.T) {
 	<-done
 }
 
+func TestInitAdvertisesSlashCommands(t *testing.T) {
+	m := New("", "", "", nil, 2, nil, nil)
+	p := &process{id: "s", lastUsed: time.Now()}
+	m.processes["s"] = p
+	r, w := io.Pipe()
+	done := make(chan struct{})
+	go func() { m.readLoop(p, r); close(done) }()
+	if commands, complete := m.CommandsIfLive("s"); commands != nil || complete {
+		t.Fatalf("catalog before init = (%#v, %v), want (nil, false)", commands, complete)
+	}
+
+	_, _ = io.WriteString(w, `{"type":"system","subtype":"init","slash_commands":["compact","/review","simplify","compact",""],"skills":["simplify"]}`+"\n")
+	deadline := time.Now().Add(time.Second)
+	for len(m.Commands("s")) != 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	commands := m.Commands("s")
+	want := []Command{
+		{Name: "compact", Kind: "command"},
+		{Name: "review", Kind: "command"},
+		{Name: "simplify", Kind: "skill"},
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("Commands = %#v, want %#v", commands, want)
+	}
+	if _, complete := m.CommandsIfLive("s"); !complete {
+		t.Fatal("catalog remained incomplete after system/init")
+	}
+
+	// Callers receive a copy and cannot corrupt the live catalog.
+	commands[0].Name = "changed"
+	if got := m.Commands("s")[0].Name; got != "compact" {
+		t.Fatalf("Commands returned shared storage: %q", got)
+	}
+	_ = w.Close()
+	<-done
+}
+
+func TestLeadingSlashCommandValidation(t *testing.T) {
+	commands := []Command{{Name: "compact"}, {Name: "my-skill"}}
+	tests := []struct {
+		prompt  string
+		command string
+		known   bool
+		parsed  bool
+	}{
+		{prompt: "/compact", command: "/compact", known: true, parsed: true},
+		{prompt: "/my-skill args", command: "/my-skill", known: true, parsed: true},
+		{prompt: "/wtf", command: "/wtf", parsed: true},
+		// Not parsed as a command, so Send forwards it instead of failing the
+		// turn with "unknown command: /home/dev/x.go".
+		{prompt: "/home/dev/x.go is broken"},
+		{prompt: "//not-a-command"},
+		{prompt: "normal prompt"},
+		{prompt: " /compact"},
+	}
+	for _, tt := range tests {
+		command, _, parsed := backend.ParseSlashCommand(tt.prompt)
+		if command != tt.command || parsed != tt.parsed {
+			t.Errorf("ParseSlashCommand(%q) = (%q, %v), want (%q, %v)", tt.prompt, command, parsed, tt.command, tt.parsed)
+			continue
+		}
+		gotKnown := hasCommand(commands, strings.TrimPrefix(command, "/"))
+		if parsed && gotKnown != tt.known {
+			t.Errorf("known command %q = %v, want %v", command, gotKnown, tt.known)
+		}
+	}
+}
+
 func TestPartialTextDeltaRoutesToCurrentTurn(t *testing.T) {
 	m := New("", "", "", nil, 2, nil, nil)
 	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 2)}
@@ -387,5 +458,28 @@ func TestMaxLiveDoesNotGrowWhenAllProcessesBusy(t *testing.T) {
 	}
 	if len(m.processes) != 1 {
 		t.Fatalf("process count=%d, want hard cap 1", len(m.processes))
+	}
+}
+
+func TestMaxLiveDoesNotEvictLeasedProcess(t *testing.T) {
+	m := New("missing", "", "", nil, 1, nil, nil)
+	p := &process{id: "leased"}
+	m.processes[p.id] = p
+	got, fresh, err := m.leaseProcess(context.Background(), p.id, "/tmp", "", true)
+	if err != nil || got != p || fresh || p.leases != 1 {
+		t.Fatalf("leased ensure = (%p, %v, %v), leases=%d; want existing process with one lease", got, fresh, err, p.leases)
+	}
+	// Assert the reason: spawning the missing binary would also error, which
+	// would let this pass even if the lease guard had failed.
+	_, _, err = m.ensure(context.Background(), "new", "/tmp", "", true)
+	if err == nil || !strings.Contains(err.Error(), "all busy") {
+		t.Fatalf("ensure alongside a leased process = %v, want all busy", err)
+	}
+	if m.processes[p.id] != p {
+		t.Fatal("leased process was evicted")
+	}
+	releaseProcess(p)
+	if p.leases != 0 {
+		t.Fatalf("leases after release = %d, want 0", p.leases)
 	}
 }

@@ -11,9 +11,11 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/procutil"
 )
@@ -43,17 +45,30 @@ func (r *turnRequest) finish(res Result) {
 	close(r.done)
 }
 
+// process is both the stream client and the manager's bookkeeping record, so
+// mu — not Manager.mu — guards every mutable field below it, including the
+// leases and lastUsed the eviction scan consults. Manager.mu only guards the
+// process map. Read those fields inside mu even while holding Manager.mu.
 type process struct {
-	id       string
-	cmd      *exec.Cmd
-	in       io.WriteCloser
-	cwd      string
-	mu       sync.Mutex
-	turns    []*turnRequest // nil entry represents a spontaneous turn
-	controls map[string]context.CancelFunc
-	lastUsed time.Time
-	stopping bool
-	done     chan struct{}
+	id            string
+	cmd           *exec.Cmd
+	in            io.WriteCloser
+	cwd           string
+	mu            sync.Mutex
+	turns         []*turnRequest // nil entry represents a spontaneous turn
+	controls      map[string]context.CancelFunc
+	commands      []Command
+	commandsReady bool
+	leases        int
+	lastUsed      time.Time
+	stopping      bool
+	done          chan struct{}
+}
+
+// Command is one slash command reported by Claude Code's system/init event.
+type Command struct {
+	Name string
+	Kind string
 }
 
 type Manager struct {
@@ -79,20 +94,43 @@ func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, hooks *h
 }
 
 func (m *Manager) ensure(ctx context.Context, id, cwd, model string, resume bool) (*process, bool, error) {
+	return m.ensureProcess(ctx, id, cwd, model, resume, false)
+}
+
+// leaseProcess is ensure plus a lease pinning the process against eviction
+// while a send preflight runs. It spawns a cold process like ensure does; the
+// lease is taken under the same lock that resolves it, so there is no window
+// where a caller holds a process that another spawn may already have evicted.
+// A successful send becomes eviction-safe through its queued turn before the
+// lease is released.
+func (m *Manager) leaseProcess(ctx context.Context, id, cwd, model string, resume bool) (*process, bool, error) {
+	return m.ensureProcess(ctx, id, cwd, model, resume, true)
+}
+
+func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model string, resume, lease bool) (*process, bool, error) {
 	m.mu.Lock()
 	if p := m.processes[id]; p != nil {
+		p.mu.Lock()
+		if lease {
+			p.leases++
+		}
 		p.lastUsed = time.Now()
+		p.mu.Unlock()
 		m.mu.Unlock()
 		return p, false, nil
 	}
 	if len(m.processes) >= m.maxLive {
 		var victim *process
+		var victimLastUsed time.Time
 		for _, p := range m.processes {
+			// Sample both fields in one critical section: m.mu does not cover
+			// process state, and readLoop writes lastUsed on every result line.
 			p.mu.Lock()
-			busy := len(p.turns) > 0
+			busy := len(p.turns) > 0 || p.leases > 0
+			lastUsed := p.lastUsed
 			p.mu.Unlock()
-			if !busy && (victim == nil || p.lastUsed.Before(victim.lastUsed)) {
-				victim = p
+			if !busy && (victim == nil || lastUsed.Before(victimLastUsed)) {
+				victim, victimLastUsed = p, lastUsed
 			}
 		}
 		if victim != nil {
@@ -139,6 +177,9 @@ func (m *Manager) ensure(ctx context.Context, id, cwd, model string, resume bool
 		return nil, false, err
 	}
 	p := &process{id: id, cmd: cmd, in: in, cwd: cwd, controls: map[string]context.CancelFunc{}, lastUsed: time.Now(), done: make(chan struct{})}
+	if lease {
+		p.leases = 1
+	}
 	m.processes[id] = p
 	m.mu.Unlock()
 	go m.readLoop(p, out)
@@ -168,9 +209,19 @@ func scrubEnv(hookSock string) []string {
 }
 
 func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model string, resume bool) (<-chan Result, <-chan Delta, bool, int, error) {
-	p, fresh, err := m.ensure(ctx, id, cwd, model, resume)
+	p, fresh, err := m.leaseProcess(ctx, id, cwd, model, resume)
 	if err != nil {
 		return nil, nil, false, 0, err
+	}
+	defer releaseProcess(p)
+	if command, _, ok := backend.ParseSlashCommand(prompt); ok {
+		commands, err := waitForCommands(ctx, p)
+		if err != nil {
+			return nil, nil, fresh, 0, err
+		}
+		if !hasCommand(commands, strings.TrimPrefix(command, "/")) {
+			return nil, nil, fresh, 0, fmt.Errorf("unknown command: %s", command)
+		}
 	}
 	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 256)}
 	p.mu.Lock()
@@ -188,11 +239,76 @@ func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model string, resum
 	return req.done, req.deltas, fresh, queuedAhead, nil
 }
 
+func releaseProcess(p *process) {
+	p.mu.Lock()
+	p.leases--
+	// A send that failed its preflight never reached the turn queue, so this is
+	// the only thing marking the process as just-used before it becomes an
+	// eviction candidate again — the user is likely retyping the command.
+	p.lastUsed = time.Now()
+	p.mu.Unlock()
+}
+
+func hasCommand(commands []Command, name string) bool {
+	for _, command := range commands {
+		if command.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForCommands(ctx context.Context, p *process) ([]Command, error) {
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		p.mu.Lock()
+		commands := append([]Command(nil), p.commands...)
+		ready := p.commandsReady
+		p.mu.Unlock()
+		if ready {
+			return commands, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-p.done:
+			return nil, errors.New("claude process exited before advertising commands")
+		case <-deadline.C:
+			return nil, errors.New("timed out waiting for Claude command list")
+		case <-ticker.C:
+		}
+	}
+}
+
 // Resume starts an idle process for an existing session without submitting a
 // user turn. It is idempotent when the process is already live.
 func (m *Manager) Resume(ctx context.Context, id, cwd string) error {
 	_, _, err := m.ensure(ctx, id, cwd, "", true)
 	return err
+}
+
+// Commands returns the command catalog most recently advertised by a live
+// Claude process. Claude sends it in system/init; a cold process has none yet.
+func (m *Manager) Commands(id string) []Command {
+	commands, _ := m.CommandsIfLive(id)
+	return commands
+}
+
+// CommandsIfLive also reports whether system/init has supplied the complete
+// catalog. A process can exist briefly before that event arrives.
+func (m *Manager) CommandsIfLive(id string) ([]Command, bool) {
+	m.mu.Lock()
+	p := m.processes[id]
+	m.mu.Unlock()
+	if p == nil {
+		return nil, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Command(nil), p.commands...), p.commandsReady
 }
 func write(p *process, v any) error {
 	b, err := json.Marshal(v)
@@ -222,7 +338,9 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			ModelUsage map[string]struct {
 				ContextWindow int64 `json:"contextWindow"`
 			} `json:"modelUsage"`
-			Event struct {
+			SlashCommands []string `json:"slash_commands"`
+			Skills        []string `json:"skills"`
+			Event         struct {
 				Type  string `json:"type"`
 				Delta struct {
 					Type string `json:"type"`
@@ -232,6 +350,36 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		}
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
+		}
+		if e.Type == "system" && e.Subtype == "init" {
+			skills := make(map[string]struct{}, len(e.Skills))
+			for _, name := range e.Skills {
+				skills[name] = struct{}{}
+			}
+			commands := make([]Command, 0, len(e.SlashCommands))
+			seen := make(map[string]struct{}, len(e.SlashCommands))
+			for _, name := range e.SlashCommands {
+				name = strings.TrimPrefix(strings.TrimSpace(name), "/")
+				if name == "" {
+					continue
+				}
+				if _, ok := seen[name]; ok {
+					continue
+				}
+				seen[name] = struct{}{}
+				// Claude only identifies skills explicitly. slash_commands does
+				// not distinguish built-ins from plugin or custom commands, so do
+				// not claim a more specific origin for the remaining entries.
+				kind := "command"
+				if _, ok := skills[name]; ok {
+					kind = "skill"
+				}
+				commands = append(commands, Command{Name: name, Kind: kind})
+			}
+			p.mu.Lock()
+			p.commands = commands
+			p.commandsReady = true
+			p.mu.Unlock()
 		}
 		if e.Type == "control_request" {
 			m.handleControlRequest(p, append([]byte(nil), s.Bytes()...))

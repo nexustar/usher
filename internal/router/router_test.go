@@ -60,6 +60,35 @@ func TestPublishStreamDerivesCodexTurns(t *testing.T) {
 	}
 }
 
+func TestFailSendPublishesTerminalExit(t *testing.T) {
+	b := broker.New()
+	tok := &sendToken{}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Router{
+		discovery:   d,
+		broker:      b,
+		activeSend:  map[string]*sendToken{"s1": tok},
+		foreignBase: map[string]int64{},
+	}
+	sub, unsub := b.Subscribe("s1")
+	defer unsub()
+
+	r.failSend("s1", tok, errors.New("unknown command: /wtf"))
+	first, second := <-sub, <-sub
+	if first.Type != backend.EventError || !strings.Contains(string(first.Raw), "unknown command: /wtf") {
+		t.Fatalf("first event = %s %s, want command error", first.Type, first.Raw)
+	}
+	if second.Type != backend.EventProcessExit || !strings.Contains(string(second.Raw), `"reason":"error"`) {
+		t.Fatalf("second event = %s %s, want terminal error exit", second.Type, second.Raw)
+	}
+	if _, active := r.activeSend["s1"]; active {
+		t.Fatal("send remained active after startup error")
+	}
+}
+
 const codexLog = `{"timestamp":"2026-06-14T00:00:00Z","type":"session_meta","payload":{"id":"id1","cwd":"/c","timestamp":"2026-06-14T00:00:00Z"}}
 {"timestamp":"2026-06-14T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"hello codex"}}
 {"timestamp":"2026-06-14T00:00:02Z","type":"event_msg","payload":{"type":"agent_message","message":"hi"}}
@@ -157,6 +186,54 @@ func TestSenderForBackendFallsBackToDefault(t *testing.T) {
 
 type staticModels struct {
 	models []backend.Model
+}
+
+type scriptedComposer struct {
+	backend.Runtime
+	catalogs []backend.ComposerCatalog
+	errs     []error
+	calls    int
+}
+
+func (s *scriptedComposer) ComposerItems(context.Context, string, string) (backend.ComposerCatalog, error) {
+	i := s.calls
+	s.calls++
+	if i < len(s.errs) && s.errs[i] != nil {
+		return backend.ComposerCatalog{}, s.errs[i]
+	}
+	if i < len(s.catalogs) {
+		return s.catalogs[i], nil
+	}
+	return backend.ComposerCatalog{}, nil
+}
+
+func TestComposerItemsFallsBackToLastAvailableCatalog(t *testing.T) {
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedComposer{catalogs: []backend.ComposerCatalog{
+		{Items: []backend.ComposerItem{{Name: "my-skill", Kind: "skill"}, {Name: "review", Kind: "command"}, {Name: "compact", Kind: "command"}}, Available: true},
+		{Items: []backend.ComposerItem{{Name: "partial"}}, Available: false},
+	}}
+	r := New(d, map[string]backend.Backend{"codex": {Runtime: provider}}, "codex", nil, nil, nil, nil)
+
+	first, err := r.ComposerItems(context.Background(), "session", "/work")
+	if err != nil || !first.Available || len(first.Items) != 3 || first.Items[0].Name != "compact" || first.Items[2].Name != "my-skill" {
+		t.Fatalf("first catalog = (%+v, %v), want commands sorted before skills", first, err)
+	}
+	second, err := r.ComposerItems(context.Background(), "session", "/work")
+	if err != nil || !second.Available || len(second.Items) != 3 || second.Items[0].Name != "compact" {
+		t.Fatalf("cold fallback = (%+v, %v), want cached complete catalog", second, err)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2 (cache must not bypass live query)", provider.calls)
+	}
+
+	missing, err := r.ComposerItems(context.Background(), "session", "/other")
+	if err != nil || missing.Available || missing.Items != nil {
+		t.Fatalf("uncached cwd = (%+v, %v), want unavailable empty catalog", missing, err)
+	}
 }
 
 func (s staticModels) Models(context.Context) ([]backend.Model, error) {

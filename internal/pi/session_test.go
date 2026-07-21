@@ -85,6 +85,27 @@ func TestCleanupForkFailureDoesNotRestoreRemovedWorker(t *testing.T) {
 	}
 }
 
+func TestLeasedWorkerIsNotEvicted(t *testing.T) {
+	source := &worker{last: time.Now()}
+	r := &Runtime{max: 1, workers: map[string]*worker{"source": source}}
+	leased := r.leaseWorkerIfLive("source")
+	if leased != source || source.leases != 1 {
+		t.Fatalf("leaseWorkerIfLive = %p, leases = %d; want source, 1", leased, source.leases)
+	}
+
+	err := r.add("other", &worker{last: time.Now()})
+	if err == nil || !strings.Contains(err.Error(), "all busy") {
+		t.Fatalf("add with leased worker error = %v, want all busy", err)
+	}
+	if r.workers["source"] != source {
+		t.Fatal("leased source worker was evicted")
+	}
+	r.releaseWorker(source)
+	if source.leases != 0 {
+		t.Fatalf("leases after release = %d, want 0", source.leases)
+	}
+}
+
 func TestTailPiJSONLLeavesPartialRecord(t *testing.T) {
 	path := writeFixture(t, "{\"type\":\"message\",\"id\":\"one\"}\n{\"type\":\"message\"")
 	offset := int64(0)

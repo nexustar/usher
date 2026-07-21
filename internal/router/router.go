@@ -47,6 +47,8 @@ type Router struct {
 	hooks          *hook.Manager
 	meta           *sessionmeta.Store
 	terminal       *terminal.Manager
+	composerMu     sync.Mutex
+	composerCache  map[composerCacheKey][]backendpkg.ComposerItem
 
 	sendMu     sync.Mutex
 	activeSend map[string]*sendToken    // sessionID -> in-flight turn's cancel handle
@@ -109,7 +111,13 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 		activeSend:     map[string]*sendToken{},
 		sendQueue:      map[string][]pendingSend{},
 		creating:       map[string]core.Session{},
+		composerCache:  map[composerCacheKey][]backendpkg.ComposerItem{},
 	}
+}
+
+type composerCacheKey struct {
+	backend string
+	cwd     string
 }
 
 // Backends returns the enabled backend names, sorted ("claude" before "codex").
@@ -121,6 +129,69 @@ func (r *Router) Backends() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ComposerItems returns an authoritative cwd-aware catalog. A cold backend
+// falls back to the last catalog observed for the same backend and cwd.
+func (r *Router) ComposerItems(ctx context.Context, id, cwd string) (backendpkg.ComposerCatalog, error) {
+	key := composerCacheKey{backend: r.backendOf(id), cwd: cwd}
+	provider, ok := r.senderFor(id).(backendpkg.ComposerProvider)
+	if !ok {
+		cached, _ := r.cachedComposerItems(key)
+		return cached, nil
+	}
+	catalog, err := provider.ComposerItems(ctx, id, cwd)
+	if err != nil {
+		cached, ok := r.cachedComposerItems(key)
+		if ok {
+			return cached, nil
+		}
+		return backendpkg.ComposerCatalog{}, err
+	}
+	if !catalog.Available {
+		cached, _ := r.cachedComposerItems(key)
+		return cached, nil
+	}
+
+	items := append([]backendpkg.ComposerItem(nil), catalog.Items...)
+	sort.SliceStable(items, func(i, j int) bool {
+		if a, b := composerKindRank(items[i].Kind), composerKindRank(items[j].Kind); a != b {
+			return a < b
+		}
+		ai, aj := strings.ToLower(items[i].Name), strings.ToLower(items[j].Name)
+		if ai != aj {
+			return ai < aj
+		}
+		return items[i].Name < items[j].Name
+	})
+	r.composerMu.Lock()
+	r.composerCache[key] = items
+	r.composerMu.Unlock()
+	catalog.Items = append([]backendpkg.ComposerItem(nil), items...)
+	return catalog, nil
+}
+
+func composerKindRank(kind string) int {
+	switch kind {
+	case "command":
+		return 0
+	case "extension":
+		return 1
+	case "prompt":
+		return 2
+	case "skill":
+		return 3
+	default:
+		return 4
+	}
+}
+
+func (r *Router) cachedComposerItems(key composerCacheKey) (backendpkg.ComposerCatalog, bool) {
+	r.composerMu.Lock()
+	items, ok := r.composerCache[key]
+	items = append([]backendpkg.ComposerItem(nil), items...)
+	r.composerMu.Unlock()
+	return backendpkg.ComposerCatalog{Items: items, Available: ok}, ok
 }
 
 // Models returns the selectable model catalog owned by backendName.
@@ -576,17 +647,13 @@ func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok
 
 	format, err := r.transcriptForBackend(r.backendOf(sessionID))
 	if err != nil {
-		r.markSendIdle(sessionID, tok)
-		errMsg, _ := json.Marshal(backendpkg.ErrorPayload{Message: err.Error()})
-		r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventError, Raw: errMsg})
+		r.failSend(sessionID, tok, err)
 		return
 	}
 	started := time.Now()
 	ch, err := r.senderFor(sessionID).Send(ctx, sessionID, prompt, cwd)
 	if err != nil {
-		r.markSendIdle(sessionID, tok)
-		errMsg, _ := json.Marshal(map[string]string{"message": err.Error()})
-		r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventError, Raw: errMsg})
+		r.failSend(sessionID, tok, err)
 		return
 	}
 	asm := format.NewAssembler()
@@ -599,6 +666,17 @@ func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok
 			r.markSendIdle(sessionID, tok)
 		}
 	}
+}
+
+// failSend terminates a turn that failed before the backend returned an event
+// stream. Consumers use process exit as the lifecycle boundary, so an error
+// without its matching exit would leave relays and queued sends waiting.
+func (r *Router) failSend(sessionID string, tok *sendToken, err error) {
+	r.markSendIdle(sessionID, tok)
+	errRaw, _ := json.Marshal(backendpkg.ErrorPayload{Message: err.Error()})
+	r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventError, Raw: errRaw})
+	exitRaw, _ := json.Marshal(map[string]string{"reason": "error"})
+	r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventProcessExit, Raw: exitRaw})
 }
 
 // publishStream forwards one tail event to broker subscribers, deriving the
