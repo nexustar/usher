@@ -90,6 +90,7 @@ type StartRequest struct {
 type Runtime interface {
 	Start(context.Context, StartRequest) (string, <-chan Event, error)
 	Send(context.Context, string, string, string) (<-chan Event, error)
+	Resume(context.Context, string, string) error
 	Has(string) bool
 	LiveSessions() []string
 	Interrupt(string) error

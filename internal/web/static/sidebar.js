@@ -274,12 +274,11 @@ function openKebabPopover(btn) {
   const pinned = btn.dataset.pinned === '1';
   const pinAction = pinned ? 'unpin' : 'pin';
   const pinLabel = pinned ? 'Unpin' : 'Pin';
-  // Pause only applies to a session with a live window; an idle one has
-  // nothing to tear down, so we hide it rather than offer a no-op.
+  // Offer the lifecycle action that matches the current worker state.
   const status = btn.dataset.status;
-  const pauseItem = (status === 'live' || status === 'running' || status === 'awaiting_permission')
+  const lifecycleItem = (status === 'live' || status === 'running' || status === 'awaiting_permission')
     ? `<button type="button" class="kebab-item" data-action="pause" data-id="${esc(id)}">Pause</button>`
-    : '';
+    : `<button type="button" class="kebab-item" data-action="resume" data-id="${esc(id)}">Resume</button>`;
   // Editor deep link — only when --editor-url is configured AND the button
   // carries a cwd (the title menu does; sidebar rows don't need it). A real
   // <a> so target="usher-editor" reuses one named tab across clicks — which
@@ -310,7 +309,7 @@ function openKebabPopover(btn) {
     `<button type="button" class="kebab-item" data-action="rename" data-id="${esc(id)}">Rename</button>` +
     `<button type="button" class="kebab-item" data-action="${pinAction}" data-id="${esc(id)}">${pinLabel}</button>` +
     `<button type="button" class="kebab-item" data-action="${action}" data-id="${esc(id)}">${label}</button>` +
-    pauseItem +
+    lifecycleItem +
     `<button type="button" class="kebab-item kebab-danger" data-action="delete" data-id="${esc(id)}">Delete</button>`;
   kebabPopover.hidden = false;
   // Position below the button — right-aligned for the edge-hugging kebabs,
@@ -507,6 +506,10 @@ async function handleKebabAction(action, id) {
     pauseSession(id);
     return;
   }
+  if (action === 'resume') {
+    resumeSession(id);
+    return;
+  }
   if (action === 'pin' || action === 'unpin') {
     const method = action === 'pin' ? 'POST' : 'DELETE';
     try {
@@ -566,6 +569,20 @@ async function pauseSession(id) {
   } catch (e) {
     console.warn('pause failed', e);
     alert('Failed to pause session.');
+  }
+}
+
+// resumeSession brings the backend worker online without sending a message.
+async function resumeSession(id) {
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    loadSidebar();
+    loadList();
+    if (id === currentDetailId) refreshSubtitle(id);
+  } catch (e) {
+    console.warn('resume failed', e);
+    alert('Failed to resume session.');
   }
 }
 

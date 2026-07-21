@@ -170,6 +170,7 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("POST /api/sessions/{id}/send", s.handleSend)
 	webMux.HandleFunc("DELETE /api/sessions/{id}/send", s.handleCancelSend)
 	webMux.HandleFunc("POST /api/sessions/{id}/pause", s.handlePauseSession)
+	webMux.HandleFunc("POST /api/sessions/{id}/resume", s.handleResumeSession)
 	webMux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 	webMux.HandleFunc("POST /api/sessions/{id}/terminal", s.handleOpenTerminal)
 	webMux.HandleFunc("DELETE /api/sessions/{id}/terminal", s.handleCloseTerminal)
@@ -553,6 +554,20 @@ func (s *Server) handlePauseSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"paused": true})
+}
+
+// handleResumeSession starts an idle backend worker without adding a user turn.
+func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.router.ResumeSession(r.Context(), id); err != nil {
+		if errors.Is(err, router.ErrSessionNotFound) {
+			writeErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"resumed": true})
 }
 
 func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {

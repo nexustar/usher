@@ -482,6 +482,32 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 	return r.prompt(ctx, id, w, prompt, false)
 }
 
+// Resume starts an idle RPC worker for an existing session without prompting
+// it. Send will reuse the worker on the next turn.
+func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
+	r.mu.Lock()
+	w := r.workers[id]
+	r.mu.Unlock()
+	if w != nil {
+		return nil
+	}
+	path := r.locate(id)
+	if path == "" {
+		return fmt.Errorf("pi session %s not found", id)
+	}
+	c, err := startClient(r.bin, cwd, path, r.sessionsDir, "", r.extra)
+	if err != nil {
+		return err
+	}
+	r.refreshModels(ctx, c)
+	w = &worker{c: c, cwd: cwd, path: path, last: time.Now()}
+	if err := r.add(id, w); err != nil {
+		c.stop()
+		return err
+	}
+	return nil
+}
+
 func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string, fresh bool) (<-chan backend.Event, error) {
 	r.mu.Lock()
 	if w.busy {

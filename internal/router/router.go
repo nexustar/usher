@@ -486,6 +486,19 @@ func (r *Router) PauseSession(id string) error {
 	return nil
 }
 
+// ResumeSession brings an idle backend worker online without adding a turn to
+// the transcript. It is idempotent for sessions that are already live.
+func (r *Router) ResumeSession(ctx context.Context, id string) error {
+	sess, ok := r.discovery.Get(id)
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if sess.IsSubagent {
+		return errors.New("subagent transcripts are read-only")
+	}
+	return r.senderFor(id).Resume(ctx, id, sess.Cwd)
+}
+
 // stopLive drops a session to idle: cancels any in-flight turn, drops queued
 // sends, and stops its live worker. Best-effort; idempotent. Shared by
 // PauseSession/DeleteSession.

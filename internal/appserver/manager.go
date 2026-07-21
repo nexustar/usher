@@ -201,6 +201,13 @@ func (m *Manager) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan
 	return out, deltas, nil
 }
 
+// Resume starts an idle app-server worker and attaches it to an existing
+// thread without starting a turn.
+func (m *Manager) Resume(ctx context.Context, id, cwd string) error {
+	_, err := m.getOrResume(ctx, id, cwd)
+	return err
+}
+
 func (m *Manager) Interrupt(ctx context.Context, id string) error {
 	m.mu.Lock()
 	w := m.workers[id]

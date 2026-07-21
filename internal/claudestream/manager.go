@@ -187,6 +187,13 @@ func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model string, resum
 	}
 	return req.done, req.deltas, fresh, queuedAhead, nil
 }
+
+// Resume starts an idle process for an existing session without submitting a
+// user turn. It is idempotent when the process is already live.
+func (m *Manager) Resume(ctx context.Context, id, cwd string) error {
+	_, _, err := m.ensure(ctx, id, cwd, "", true)
+	return err
+}
 func write(p *process, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {

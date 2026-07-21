@@ -284,6 +284,18 @@ func (s *Sender) Has(sessionID string) bool {
 	return false
 }
 
+// Resume brings an existing session's backend worker online without sending a
+// prompt. It is the inverse of Kill for UI lifecycle controls.
+func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
+	if s.app != nil {
+		return s.app.Resume(ctx, sessionID, cwd)
+	}
+	if s.claude != nil {
+		return s.claude.Resume(ctx, sessionID, cwd)
+	}
+	return errors.New("sender has no headless backend")
+}
+
 // LiveSessions returns the ids of sessions with a live backend worker.
 func (s *Sender) LiveSessions() []string {
 	if s.app != nil {
