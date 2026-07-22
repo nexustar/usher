@@ -966,7 +966,12 @@ pre.raw-markdown {
   .session-cwd, .session-id { display: none; }
 }
 
-.chat-message { padding: 0.5rem 0.25rem; min-width: 0; }
+.chat-message { padding: 0.5rem 0.25rem; border-bottom: 1px dashed var(--border-muted); min-width: 0; }
+.chat-message:last-child { border-bottom: 0; }
+/* :last-child above never fires in composer views (.send-anchor is always
+ * the true last child) — .optimistic covers those: no divider until settled. */
+.chat-message.optimistic { border-bottom: 0; }
+.chat-message.awaiting-output .role { display: none; }
 .chat-message .role {
   font-size: 0.72rem;
   text-transform: uppercase;
@@ -1081,6 +1086,12 @@ pre.raw-markdown {
   font-size: inherit;
 }
 .chat-message.placeholder .content { color: var(--text-disabled); font-style: italic; }
+.live-working {
+  color: var(--text-disabled);
+  font-size: 0.85rem;
+  font-style: italic;
+  padding: 0.4rem 0.25rem;
+}
 .chat-message .content { margin: 0; }
 /* "Load earlier" sits at the top of the transcript when older turns exist
    beyond the current window; clicking grows the window by a page. */

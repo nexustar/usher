@@ -406,7 +406,7 @@ export async function showDetail(id) {
             <button id="term-send" type="button">run</button>
           </div>
           <div class="term-keys" id="term-keys">
-            <button type="button" id="term-ctrl-toggle" aria-expanded="false" title="show ctrl-key row">ctrl</button>
+            <button type="button" id="term-ctrl-toggle" aria-expanded="false" title="show ctrl-key row">ctl</button>
             <button type="button" data-control="escape">esc</button>
             <button type="button" data-control="tab">tab</button>
             <button type="button" data-control="up" aria-label="up">↑</button>
@@ -845,7 +845,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   const beginTurn = () => {
     if (liveTurn) return; // already tracking a turn
     const lt = ensureLiveTurn();
-    if (lt) setRoleText(lt.node, 'thinking…');
+    if (lt) showLiveWorking(lt);
     onRunning();
   };
 
@@ -860,11 +860,14 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     // real subprocess.started also lands (connect raced the turn starting) it
     // won't double the bubble. Parts that flowed before this subscribe are
     // gone (no broker replay) — mark the turn dirty so its end reconciles via
-    // a full fetch. The mount-time loadTranscript already shows the turn's
-    // earlier parts as a committed partial turn; only the live bubble starts
-    // from now.
+    // a full fetch. adoptLastTurnAsLive continues that same bubble instead of
+    // starting a second one.
     'turn.active': () => {
-      beginTurn();
+      if (!liveTurn && adoptLastTurnAsLive()) {
+        showLiveWorking(liveTurn);
+        onRunning();
+      }
+      else beginTurn();
       liveTurnDirty = true;
     },
     // Counterpart to turn.active: the server says no turn is running. If we still
@@ -874,6 +877,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     // (detailStreaming already false).
     'turn.idle': () => {
       if (!detailStreaming) return;
+      clearLiveWorking(liveTurn);
       liveTurn = null;
       liveTurnDirty = false; // the full fetch below reconciles everything
       onIdle();
@@ -893,9 +897,8 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       if (!liveTurn) beginTurn();
       appendLiveDelta(d);
     },
-    'turn.status': (d) => {
+    'turn.status': () => {
       if (!liveTurn) beginTurn();
-      if (liveTurn && d && d.status === 'thinking') setRoleText(liveTurn.node, 'thinking…');
     },
     // The canonical user prompt hit the jsonl. Adopt our optimistic echo
     // (stamp the persisted ts, commit it). No echo means the prompt came
@@ -952,6 +955,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     'error': (d) => {
       const msg = d.message || JSON.stringify(d);
       if (liveTurn) {
+        clearLiveWorking(liveTurn);
         updateMessageTs(liveTurn.node, new Date().toISOString());
         // Keep .optimistic: an error isn't a canonical transcript turn, so a
         // full fetch should clear it. Streamed parts stay visible above the
@@ -1186,11 +1190,60 @@ registerRefreshSubtitle(refreshSubtitle);
 // so it matches the structure of a committed turn.
 function ensureLiveTurn() {
   if (liveTurn) return liveTurn;
+  // Also clear the empty-state placeholder: it only self-removes on this
+  // client's own send or a full reconcile, not when another frontend starts
+  // the turn.
+  const list = document.getElementById('chat-scroll');
+  if (list) list.querySelectorAll(':scope > .chat-loading').forEach(n => n.remove());
   const node = appendChatMessage({ role: 'assistant', parts: [] });
   if (!node) return null;
-  node.classList.add('optimistic');
-  liveTurn = { node, parts: [], partNodes: [], ts: '', preview: null, previewText: '', previewRAF: 0, acceptDeltas: true };
+  // Until the first visible part arrives, show only the turn-level Working row
+  // instead of an empty assistant header above it.
+  node.classList.add('optimistic', 'awaiting-output');
+  liveTurn = { node, parts: [], partNodes: [], ts: '', preview: null, previewText: '', previewRAF: 0, acceptDeltas: true, working: null };
   return liveTurn;
+}
+
+// adoptLastTurnAsLive continues the trailing bubble loadTranscript rendered
+// on a mid-turn reconnect, instead of beginTurn starting a second one below
+// it. Safe because ReadTurns always flushes the in-progress turn, so the
+// last rendered turn IS the one turn.active refers to.
+function adoptLastTurnAsLive() {
+  if (liveTurn || !renderedTurns.length) return false;
+  const last = renderedTurns[renderedTurns.length - 1];
+  if (!last.node.classList.contains('assistant')) return false;
+  const forkBtn = last.node.querySelector('.turn-fork');
+  if (forkBtn) forkBtn.remove(); // stale fork point; finalize re-adds a current one
+  const partNodes = [...last.node.children].filter(c => !c.classList.contains('role'));
+  renderedTurns.pop();
+  last.node.classList.add('optimistic');
+  liveTurn = {
+    node: last.node,
+    parts: last.parts ? last.parts.slice() : [],
+    partNodes,
+    ts: last.ts || '',
+    preview: null, previewText: '', previewRAF: 0, acceptDeltas: true, working: null,
+  };
+  return true;
+}
+
+// Working is one turn-level status row outside the canonical assistant node.
+// As a sibling it stays below every streamed part without joining transcript
+// content or requiring part handlers to move it.
+function showLiveWorking(lt) {
+  if (!lt) return;
+  if (!lt.working) {
+    lt.working = document.createElement('div');
+    lt.working.className = 'live-working';
+    lt.working.textContent = 'Working…';
+  }
+  lt.node.insertAdjacentElement('afterend', lt.working);
+}
+
+function clearLiveWorking(lt) {
+  if (!lt || !lt.working) return;
+  lt.working.remove();
+  lt.working = null;
 }
 
 // appendLiveDelta grows one ephemeral text block from protocol deltas. It is
@@ -1201,8 +1254,7 @@ function appendLiveDelta(d) {
   const lt = ensureLiveTurn();
   if (!lt) return;
   if (!lt.acceptDeltas) return;
-  const roleEl = lt.node.querySelector('.role');
-  if (roleEl && roleEl.firstChild) roleEl.firstChild.textContent = 'assistant';
+  lt.node.classList.remove('awaiting-output');
   if (!lt.preview) {
     lt.preview = document.createElement('div');
     lt.preview.className = 'content stream-preview';
@@ -1230,6 +1282,7 @@ function appendLivePart(d) {
   if (!p) return;
   const lt = ensureLiveTurn();
   if (!lt) return;
+  lt.node.classList.remove('awaiting-output');
   // Pi emits pending tool cards before results; enrich the matching card even
   // when parallel calls finish out of order instead of rendering a duplicate.
   let enrichIndex = -1;
@@ -1253,8 +1306,6 @@ function appendLivePart(d) {
     const roleEl = lt.node.querySelector('.role');
     if (roleEl) roleEl.title = d.model;
   }
-  const roleEl = lt.node.querySelector('.role');
-  if (roleEl && roleEl.firstChild) roleEl.firstChild.textContent = 'assistant';
   if (p.type !== 'tool' && lt.preview) {
     if (lt.previewRAF) cancelAnimationFrame(lt.previewRAF);
     lt.previewRAF = 0;
@@ -1302,6 +1353,7 @@ function appendLivePart(d) {
 // — promotion only has to be good enough to self-heal, not perfect.
 function finalizeTurn(id, d) {
   if (liveTurn && liveTurn.preview) liveTurnDirty = true;
+  clearLiveWorking(liveTurn);
   if (liveTurnDirty) {
     liveTurnDirty = false;
     liveTurn = null; // loadTranscript removes the optimistic node
@@ -1398,7 +1450,11 @@ async function loadTranscript(id, opts) {
     try {
       for (let i = lcp; i < turns.length; i++) {
         const node = appendChatMessage(turns[i]);
-        if (node) renderedTurns.push({ key: newKeys[i], node });
+        if (!node) continue;
+        // parts/ts ride along for adoptLastTurnAsLive on a later reconnect
+        const entry = { key: newKeys[i], node };
+        if (turns[i].role === 'assistant') { entry.parts = turns[i].parts; entry.ts = turns[i].ts; }
+        renderedTurns.push(entry);
       }
     } finally {
       setSuppressAppendScroll(false); // never leave it stuck, or future appends won't scroll

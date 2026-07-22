@@ -12,7 +12,7 @@
 //     cache, refreshed in the background. A code change therefore propagates
 //     after one extra reload. Bump CACHE to force-evict everything.
 
-const CACHE = 'usher-shell-v3';
+const CACHE = 'usher-shell-v4';
 const SHELL = [
   '/',
   '/index.html',
