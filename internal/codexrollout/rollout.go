@@ -272,6 +272,7 @@ type toolStash struct {
 	name   string
 	target string
 	skip   bool
+	mcp    bool
 }
 
 func NewAssembler() *Assembler {
@@ -640,6 +641,7 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 	var p struct {
 		Type      string          `json:"type"`
 		Name      string          `json:"name"`
+		Namespace string          `json:"namespace"`
 		Arguments string          `json:"arguments"`
 		Input     string          `json:"input"`
 		CallID    string          `json:"call_id"`
@@ -652,15 +654,21 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 	case "function_call":
 		// Stash until the output arrives; emit one combined tool part then, so a
 		// tool turn carries name + target + result like Claude's.
+		name := prettyToolName(p.Name)
+		isMCP := strings.HasPrefix(p.Namespace, "mcp__")
+		if p.Namespace != "" {
+			name = p.Namespace + "__" + p.Name
+		}
 		a.pending[p.CallID] = toolStash{
-			name:   prettyToolName(p.Name),
+			name:   name,
 			target: toolTarget(p.Arguments),
+			mcp:    isMCP,
 		}
 		return nil
 	case "function_call_output":
 		stash := a.pending[p.CallID]
 		delete(a.pending, p.CallID)
-		if strings.HasPrefix(stash.name, "mcp__") && !a.markMCP(p.CallID) {
+		if stash.mcp && !a.markMCP(p.CallID) {
 			return nil
 		}
 		a.ensureTurn(l.Timestamp)

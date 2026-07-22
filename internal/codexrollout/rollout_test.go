@@ -346,6 +346,41 @@ func TestAssemblerCanonicalMCPItemAndLegacyDedup(t *testing.T) {
 	}
 }
 
+func TestAssemblerNamespacedMCPResponseItemDedup(t *testing.T) {
+	call := `{"timestamp":"2026-07-22T16:53:40.966Z","type":"response_item","payload":{"type":"function_call","name":"show_image","namespace":"mcp__usher","arguments":"{\"file_path\":\"/tmp/a.png\"}","call_id":"mcp-1"}}`
+	legacy := `{"timestamp":"2026-07-22T16:53:40.983Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"mcp-1","invocation":{"server":"usher","tool":"show_image","arguments":{"file_path":"/tmp/a.png"}},"result":{"Ok":{"content":[{"type":"text","text":"{\"w\":10,\"h\":20}"}],"isError":false}}}}`
+	output := `{"timestamp":"2026-07-22T16:53:41.025Z","type":"response_item","payload":{"type":"function_call_output","call_id":"mcp-1","output":"[{\"type\":\"text\",\"text\":\"{\\\"w\\\":10,\\\"h\\\":20}\"}]"}}`
+
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{"legacy completion first", []string{call, legacy, output}},
+		{"response output first", []string{call, output, legacy}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewAssembler()
+			var parts []*core.TurnPart
+			for _, line := range tc.lines {
+				_, part := a.Feed([]byte(line))
+				if part != nil {
+					parts = append(parts, part)
+				}
+			}
+			if len(parts) != 1 {
+				t.Fatalf("emitted %d parts, want 1: %+v", len(parts), parts)
+			}
+			if parts[0].ToolName != "mcp__usher__show_image" || parts[0].ToolTarget != "/tmp/a.png" {
+				t.Fatalf("unexpected part: %+v", parts[0])
+			}
+			turn := a.Flush()
+			if turn == nil || len(turn.Parts) != 1 {
+				t.Fatalf("deduped turn: %+v", turn)
+			}
+		})
+	}
+}
+
 func TestAssemblerCurrentCodexToolEvents(t *testing.T) {
 	a := NewAssembler()
 	lines := []string{
