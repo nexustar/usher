@@ -1,7 +1,7 @@
-// usher SPA: permission modal + AskUserQuestion interactions.
+// usher SPA: in-session permission + AskUserQuestion interactions.
 
 import {
-  esc, currentDetailId, setPendingPermissionCounts,
+  esc, currentDetailId, setPendingInteractionCounts,
 } from './state.js';
 
 // --- interaction-private state ---
@@ -53,7 +53,7 @@ function renderAskQuestion(p, sid) {
         ${previewBlock(o.preview)}
       </button>`).join('');
     return `
-      <div class="question">
+      <div class="question" data-qi="${qi}"${qi ? ' hidden' : ''}>
         ${q.header ? `<div class="q-header">${esc(q.header)}</div>` : ''}
         <div class="q-text">${esc(q.question || '')}${q.multiSelect ? ' <span class="q-multi">(select all that apply)</span>' : ''}</div>
         <div class="q-options">${opts}</div>
@@ -62,11 +62,16 @@ function renderAskQuestion(p, sid) {
   }).join('');
   return `
     <div class="interaction ask" data-id="${esc(p.id)}">
-      <div class="meta"><strong>question</strong><span class="muted">session ${esc(sid)}</span></div>
+      <div class="meta">
+        <strong>question</strong>
+        <span class="muted">session ${esc(sid)}</span>
+        <span class="muted q-position">${p.tool_input.questions.length > 1 ? `1 of ${p.tool_input.questions.length}` : ''}</span>
+      </div>
       ${blocks}
       <div class="actions">
+        <button class="qback" hidden>back</button>
         <button class="qignore">ignore</button>
-        <button class="qsubmit" disabled>answer</button>
+        <button class="qsubmit" disabled>${p.tool_input.questions.length > 1 ? 'next' : 'answer'}</button>
       </div>
     </div>`;
 }
@@ -106,6 +111,9 @@ function wireAskQuestion(node, id) {
   if (!p) return;
   const qs = p.tool_input.questions;
   const submit = node.querySelector('.qsubmit');
+  const back = node.querySelector('.qback');
+  const position = node.querySelector('.q-position');
+  let current = 0;
   const otherOf = qi => node.querySelector(`.qother[data-qi="${qi}"]`);
   const answerOf = qi => {
     const typed = otherOf(qi).value.trim();
@@ -115,7 +123,15 @@ function wireAskQuestion(node, id) {
       .map(s => (qs[+qi].options[+s.dataset.oi] || {}).label || '').join(', ');
   };
   const recompute = () => {
-    submit.disabled = qs.some((_, qi) => !answerOf(qi));
+    submit.disabled = !answerOf(current);
+  };
+  const showQuestion = qi => {
+    current = qi;
+    node.querySelectorAll('.question').forEach((q, i) => { q.hidden = i !== current; });
+    position.textContent = `${current + 1} of ${qs.length}`;
+    back.hidden = current === 0;
+    submit.textContent = current === qs.length - 1 ? 'answer' : 'next';
+    recompute();
   };
   node.querySelectorAll('.qopt').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -140,7 +156,12 @@ function wireAskQuestion(node, id) {
   });
   node.querySelector('.qignore').addEventListener('click',
     () => respond(id, 'deny', 'once', 'The user declined to answer; continue in the conversation.'));
+  back.addEventListener('click', () => showQuestion(current - 1));
   submit.addEventListener('click', () => {
+    if (current < qs.length - 1) {
+      showQuestion(current + 1);
+      return;
+    }
     const answers = {};
     qs.forEach((q, qi) => { answers[q.question] = answerOf(qi); });
     respondAnswers(id, answers);
@@ -150,10 +171,10 @@ function wireAskQuestion(node, id) {
 function renderInteractions() {
   const permissions = pendingInteractions.filter(p => !isAskQuestion(p));
   const counts = new Map();
-  for (const p of permissions) {
+  for (const p of pendingInteractions) {
     if (p.session_id) counts.set(p.session_id, (counts.get(p.session_id) || 0) + 1);
   }
-  setPendingPermissionCounts(counts);
+  setPendingInteractionCounts(counts);
 
   // Preserve an unchanged node so polling does not reset its scroll position.
   const here = permissions.filter(p => p.session_id === currentDetailId);
@@ -172,33 +193,28 @@ function renderInteractions() {
     wirePermission(bar.querySelector('.interaction'));
   }
 
-  // Keep AskUserQuestion in its existing modal.
-  const asks = pendingInteractions.filter(isAskQuestion);
-  let modal = document.getElementById('modal');
-  if (!asks.length) {
-    if (modal) modal.remove();
+  // Questions belong to the session that raised them, just like permissions.
+  // Preserve an unchanged card so polling does not clear choices or typed text.
+  const asks = pendingInteractions.filter(p => isAskQuestion(p) && p.session_id === currentDetailId);
+  const existingQuestions = document.getElementById('session-questions');
+  // Show one queued question at a time. Key only by the visible interaction so
+  // a newly queued question does not reset an answer already in progress.
+  const askKey = asks[0]?.id || '';
+  if (!asks.length || !composer) {
+    existingQuestions?.remove();
     return;
   }
-  if (!modal) {
-    modal = document.createElement('div');
-    modal.id = 'modal';
-    document.body.appendChild(modal);
-  }
-  const askKey = asks.map(p => p.id).join(',');
-  if (modal.dataset.interactions === askKey) return;
-  modal.dataset.interactions = askKey;
-  const items = asks.map(p => {
-    const sid = (p.session_id || '').slice(0, 8) || '(unknown)';
-    return renderAskQuestion(p, sid);
-  }).join('');
-  modal.innerHTML = `
-    <div class="overlay"></div>
-    <div class="dialog">
-      <h3>pending questions (${asks.length})</h3>
-      ${items}
-    </div>
-  `;
-  modal.querySelectorAll('.interaction').forEach(node => {
+  if (existingQuestions?.dataset.interactions === askKey) return;
+  existingQuestions?.remove();
+  const questions = document.createElement('div');
+  questions.id = 'session-questions';
+  questions.className = 'session-interactions';
+  questions.dataset.interactions = askKey;
+  const current = asks[0];
+  const sid = (current.session_id || '').slice(0, 8) || '(unknown)';
+  questions.innerHTML = renderAskQuestion(current, sid);
+  composer.before(questions);
+  questions.querySelectorAll('.interaction').forEach(node => {
     const id = node.dataset.id;
     wireAskQuestion(node, id);
   });

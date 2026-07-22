@@ -67,10 +67,10 @@ let viewingId = null;          // session whose detail is open
 let lastSessions = [];         // latest /api/sessions payload — written by sidebar
 export function getLastSessions() { return lastSessions; }
 export function setLastSessions(v) { lastSessions = v; }
-let pendingPermissionCounts = new Map(); // session id -> unresolved permission count
-export function pendingPermissionCount(id) { return pendingPermissionCounts.get(id) || 0; }
-export function setPendingPermissionCounts(v) {
-  pendingPermissionCounts = v;
+let pendingInteractionCounts = new Map(); // session id -> unresolved permission/question count
+export function pendingInteractionCount(id) { return pendingInteractionCounts.get(id) || 0; }
+export function setPendingInteractionCounts(v) {
+  pendingInteractionCounts = v;
   if (lastSessions.length && _renderSidebarSessionsFn) _renderSidebarSessionsFn(lastSessions);
   updateTabBadge();
 }
@@ -116,10 +116,10 @@ export function clearViewing() {
   updateTabBadge();
 }
 
-// Count unique sessions that are unread or awaiting permission.
+// Count unique sessions that are unread or awaiting a permission/question.
 export function updateTabBadge() {
   const attention = new Set(lastSessions.filter(isUnread).map(s => s.id));
-  for (const id of pendingPermissionCounts.keys()) attention.add(id);
+  for (const id of pendingInteractionCounts.keys()) attention.add(id);
   const n = attention.size;
   document.title = n > 0 ? `(${n}) usher` : 'usher';
   if ('setAppBadge' in navigator) {

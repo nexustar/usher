@@ -7,7 +7,7 @@ import {
   updateTabBadge,
   registerRenderSidebarSessions,
   refreshSubtitle, currentDetailId,
-  editorUrl, pendingPermissionCount,
+  editorUrl, pendingInteractionCount,
 } from './state.js';
 import { statusDot, backendMark } from './render.js';
 import { loadList } from './list.js';
@@ -109,9 +109,9 @@ export function renderSidebarSessions(allSessions) {
   // when the session has any — the only way to reveal its children.
   const renderRow = (s, child = false) => {
     const href = '#/s/' + encodeURIComponent(s.id);
-    const permissions = pendingPermissionCount(s.id);
-    const dot = permissions
-      ? `<span class="running-dot permission" title="${permissions} permission request${permissions === 1 ? '' : 's'} pending">●</span>`
+    const interactions = pendingInteractionCount(s.id);
+    const dot = interactions
+      ? `<span class="running-dot permission" title="${interactions} interaction${interactions === 1 ? '' : 's'} pending">●</span>`
       : isUnread(s)
         ? '<span class="running-dot unread" title="new response">●</span>'
         : statusDot(s.status);

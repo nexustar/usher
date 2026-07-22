@@ -1397,6 +1397,15 @@ pre.raw-markdown {
   background: var(--bg-chrome);
 }
 .session-permission .interaction { padding: 0; border: 0; }
+.session-interactions {
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-chrome);
+}
+.session-interactions .interaction:first-child { padding-top: 0; }
+.session-interactions .interaction:last-child { padding-bottom: 0; }
 .interaction { padding: 0.75rem 0; border-top: 1px solid var(--border-muted); }
 .interaction:first-of-type { border-top: 0; }
 .interaction .meta { margin-bottom: 0.4rem; font-size: 0.9rem; }
@@ -1510,6 +1519,12 @@ pre.raw-markdown {
   background: var(--bg-canvas);
   border-color: var(--border-strong);
   color: var(--text-muted);
+}
+.interaction.ask .qback {
+  margin-right: auto;
+  background: var(--bg-canvas);
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 .interaction.ask .qsubmit {
   background: var(--accent);
