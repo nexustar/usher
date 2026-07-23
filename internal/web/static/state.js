@@ -172,6 +172,7 @@ document.addEventListener('input', (e) => {
 // collapses everything, matching the assumption that browsing archived
 // sessions is a rare action.
 export const cwdExpanded = new Set();
+export const cwdArchivedVisible = new Map();
 
 // --- utility functions ---
 

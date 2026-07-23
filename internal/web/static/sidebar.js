@@ -1,7 +1,7 @@
 // usher SPA: sidebar rendering, kebab popover, toggle, settings menu.
 
 import {
-  esc, cwdExpanded,
+  esc, cwdExpanded, cwdArchivedVisible,
   isUnread, reconcileUnread,
   setLastSessions,
   updateTabBadge,
@@ -19,6 +19,7 @@ import { loadList } from './list.js';
 let lastSidebarHtml = '';
 let lastPinnedHtml = '';
 const subagentExpanded = new Set();
+const archivedPageSize = 20;
 
 // ---------- Sidebar ----------
 //
@@ -163,14 +164,24 @@ export function renderSidebarSessions(allSessions) {
     const visibleItems = all.filter(s => !s.archived && !s.pinned).sort(byRecent);
     const archivedItems = all.filter(s => s.archived).sort(byRecent);
     const expanded = cwdExpanded.has(cwd);
+    const archivedLimit = cwdArchivedVisible.get(cwd) || archivedPageSize;
+    const archivedRemaining = Math.max(0, archivedItems.length - archivedLimit);
     if (!visibleItems.length && !archivedItems.length) return '';
     let lis = visibleItems.map(renderItem).join('');
-    if (expanded) lis += archivedItems.map(renderItem).join('');
+    if (expanded) lis += archivedItems.slice(0, archivedLimit).map(renderItem).join('');
     const toggleRow = archivedItems.length === 0
       ? ''
-      : `<button class="cwd-toggle-archived" type="button" data-cwd="${esc(cwd)}">${
-          expanded ? '└ [ collapse ]' : '└ [ ' + archivedItems.length + ' archived ]'
-        }</button>`;
+      : !expanded
+        ? `<button class="cwd-toggle-archived" type="button" data-cwd="${esc(cwd)}"
+            data-action="expand">└ [ ${archivedItems.length} archived ]</button>`
+        : `<div class="cwd-archived-actions">
+            ${archivedRemaining
+              ? `<button class="cwd-toggle-archived more" type="button" data-cwd="${esc(cwd)}"
+                   data-action="more">└ [ ${archivedRemaining} left ]</button>`
+              : ''}
+            <button class="cwd-toggle-archived" type="button" data-cwd="${esc(cwd)}"
+              data-action="collapse">${archivedRemaining ? '' : '└ '}[ collapse ]</button>
+          </div>`;
     const newHere = cwd === '(unknown)'
       ? ''
       : `<a class="sidebar-new cwd-new" href="${esc('#/new/' + encodeURIComponent(cwd))}"
@@ -341,8 +352,17 @@ document.addEventListener('click', (e) => {
   if (cwdToggle) {
     e.preventDefault();
     const cwd = cwdToggle.dataset.cwd;
-    if (cwdExpanded.has(cwd)) cwdExpanded.delete(cwd);
-    else cwdExpanded.add(cwd);
+    const action = cwdToggle.dataset.action;
+    if (action === 'expand') {
+      cwdExpanded.add(cwd);
+      cwdArchivedVisible.set(cwd, archivedPageSize);
+    } else if (action === 'more') {
+      const current = cwdArchivedVisible.get(cwd) || archivedPageSize;
+      cwdArchivedVisible.set(cwd, current + archivedPageSize);
+    } else if (action === 'collapse') {
+      cwdExpanded.delete(cwd);
+      cwdArchivedVisible.delete(cwd);
+    }
     loadSidebar();
     return;
   }

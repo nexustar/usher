@@ -200,16 +200,16 @@ body {
   margin-right: 0.25rem;
   font-size: 0.7rem;
 }
-/* Subagent (child) rows: minimalist — an indent, a leading "- " marker, a
- * fainter colour, and a slightly smaller type size signal nesting. */
+/* Subagent (child) rows: indentation, a leading "- " marker, and a slightly
+ * smaller type size signal nesting without making them look archived. */
 .sidebar-list li.subagent-row a {
   padding-left: 1.2rem;
-  color: var(--text-disabled);
+  color: var(--text);
   font-size: 0.82rem;
 }
 .sidebar-list li.subagent-row a::before {
   content: "- ";
-  color: var(--text-disabled);
+  color: var(--text);
 }
 .kebab-btn {
   position: absolute;
@@ -263,10 +263,9 @@ body {
 .sidebar-list li.archived-row a .running-dot { color: var(--text-disabled); }
 .sidebar-list li.archived-row .auto-dot { color: var(--text-disabled); }
 
-/* Per-cwd "show archived" disclosure — appears only when that cwd has
- * archived sessions, as the last row of the cwd's list. Click flips to
- * "└[ collapse ]" and reveals the archived rows inline (dimmed). State
- * is session-only. */
+/* Per-cwd archived disclosure. Expanded groups keep collapse available while
+ * a second control progressively reveals another batch of rows. */
+.cwd-archived-actions { display: flex; }
 .cwd-toggle-archived {
   display: block;
   width: 100%;
@@ -281,6 +280,7 @@ body {
   cursor: pointer;
   border-radius: 4px;
 }
+.cwd-archived-actions .cwd-toggle-archived { width: auto; }
 .cwd-toggle-archived:hover { color: var(--text-faint); background: var(--bg-hover); }
 
 #kebab-popover {
