@@ -87,7 +87,7 @@ type Client struct {
 	in       io.WriteCloser
 	pending  map[string]chan response
 	turns    map[string]*turnStream
-	active   map[string]struct{}
+	active   map[string]string // thread id -> id of the turn app-server is running
 	threads  map[string]string // thread id -> cwd
 	next     atomic.Uint64
 	init     *initState
@@ -101,7 +101,7 @@ func New(bin string, hooks *hook.Manager, sandbox, config map[string]any, env []
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{bin: bin, hooks: hooks, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, pending: map[string]chan response{}, turns: map[string]*turnStream{}, active: map[string]struct{}{}, threads: map[string]string{}}
+	return &Client{bin: bin, hooks: hooks, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, pending: map[string]chan response{}, turns: map[string]*turnStream{}, active: map[string]string{}, threads: map[string]string{}}
 }
 
 func scrubEnv() []string {
@@ -270,11 +270,15 @@ func (c *Client) dispatch(m rpcMessage) {
 	if m.Method == "turn/started" {
 		var p struct {
 			ThreadID string `json:"threadId"`
+			Turn     struct {
+				ID string `json:"id"`
+			} `json:"turn"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
 		if p.ThreadID != "" {
 			c.mu.Lock()
-			c.active[p.ThreadID] = struct{}{}
+			// Interrupts must name the running turn.
+			c.active[p.ThreadID] = p.Turn.ID
 			c.mu.Unlock()
 		}
 		return
@@ -528,7 +532,7 @@ func (c *Client) failProcess(cmd *exec.Cmd, err error) {
 	turns := c.turns
 	c.pending = map[string]chan response{}
 	c.turns = map[string]*turnStream{}
-	c.active = map[string]struct{}{}
+	c.active = map[string]string{}
 	c.threads = map[string]string{}
 	c.mu.Unlock()
 	for _, ch := range pending {
@@ -706,14 +710,16 @@ func (c *Client) Interrupt(ctx context.Context, id string) error {
 	c.mu.Lock()
 	running := c.cmd != nil
 	_, turning := c.turns[id]
-	if _, active := c.active[id]; active {
+	turnID, active := c.active[id]
+	if active {
 		turning = true
 	}
 	c.mu.Unlock()
 	if !running || !turning {
 		return nil
 	}
-	return c.call(ctx, "turn/interrupt", map[string]any{"threadId": id}, nil)
+	// An empty turn ID covers the window before turn/started arrives.
+	return c.call(ctx, "turn/interrupt", map[string]any{"threadId": id, "turnId": turnID}, nil)
 }
 func (c *Client) Has(id string) bool {
 	c.mu.Lock()

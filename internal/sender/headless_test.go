@@ -2,8 +2,6 @@ package sender
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -11,7 +9,7 @@ import (
 	"github.com/nexustar/usher/internal/backend"
 )
 
-func TestDrainTailKeepsFinalPartsAfterProtocolResult(t *testing.T) {
+func TestDrainTailCancelsAndKeepsFinalParts(t *testing.T) {
 	events := make(chan StreamEvent, 2)
 	out := make(chan StreamEvent, 2)
 	tailCtx, cancel := context.WithCancel(context.Background())
@@ -25,11 +23,10 @@ func TestDrainTailKeepsFinalPartsAfterProtocolResult(t *testing.T) {
 		close(events)
 	}()
 
-	drainTail(context.Background(), out, events, cancel, time.Second,
-		slog.New(slog.NewTextHandler(io.Discard, nil)), "timeout", "session_id", "s1")
+	drainTail(context.Background(), out, events, cancel)
 
-	if tailCtx.Err() != nil {
-		t.Fatal("tail was cancelled before its completion marker")
+	if tailCtx.Err() == nil {
+		t.Fatal("tail was not cancelled for its final EOF drain")
 	}
 	if first, second := (<-out).Type, (<-out).Type; first != "part" || second != "subprocess.exit" {
 		t.Fatalf("events = [%s %s], want [part subprocess.exit]", first, second)

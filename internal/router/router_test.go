@@ -656,6 +656,48 @@ func TestFlushSendQueueAborts(t *testing.T) {
 	}
 }
 
+type blockingInterruptRuntime struct {
+	backend.Runtime
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingInterruptRuntime) Interrupt(string) error {
+	close(b.entered)
+	<-b.release
+	return nil
+}
+
+func TestCancelSendCancelsCollectorBeforeBackendInterruptReturns(t *testing.T) {
+	r := newQueueTestRouter(t)
+	rt := &blockingInterruptRuntime{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	entry := r.backends["claude"]
+	entry.Runtime = rt
+	r.backends["claude"] = entry
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.sendMu.Lock()
+	r.activeSend["abc12345"] = &sendToken{cancel: cancel}
+	r.sendMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- r.CancelSend("abc12345") }()
+	<-rt.entered
+	select {
+	case <-ctx.Done():
+		// Local stream cancellation must not wait for the backend RPC.
+	default:
+		t.Fatal("collector still active while backend interrupt is blocked")
+	}
+	close(rt.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestValidateCreateInputsResolvesSymlinks: a cwd reached through a symlink
 // (macOS /tmp → /private/tmp) must come back resolved, or Codex id discovery
 // never matches the rollout's recorded cwd.

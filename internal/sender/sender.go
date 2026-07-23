@@ -103,7 +103,10 @@ func New(claudeCmd, permissionMode, projectsDir, socket, hookSock string, maxLiv
 		locateFn: func(id string) string { return locateClaude(projectsDir, id) },
 		logger:   logger,
 		t:        t,
-		tail:     tailConfig{poll: 150 * time.Millisecond, appearWait: 20 * time.Second, turnComplete: isTurnComplete},
+		tail: tailConfig{
+			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
+			contentOnly: true, turnComplete: isTurnComplete,
+		},
 	}
 }
 
@@ -190,7 +193,10 @@ func NewCodex(codexCmd, sessionsDir, socket, hookSock string, sandboxArgs []stri
 		locateFn: func(id string) string { return locateCodex(sessionsDir, id) },
 		logger:   logger,
 		t:        t,
-		tail:     tailConfig{poll: 150 * time.Millisecond, appearWait: 20 * time.Second, turnComplete: codexrollout.IsTurnComplete, turnAborted: codexrollout.IsTurnAborted},
+		tail: tailConfig{
+			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
+			contentOnly: true, turnComplete: codexrollout.IsTurnComplete, turnAborted: codexrollout.IsTurnAborted,
+		},
 	}
 }
 
@@ -452,10 +458,11 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model string, 
 	return mergeLoggedTurn(ctx, loggedTurnConfig[claudestream.Result, claudestream.Delta]{
 		backend: "claude", idKey: "session_id", id: id, cwd: cwd, fresh: fresh,
 		path: path, offset: offset, locate: func() string { return s.locateWait(ctx, id, s.t.confirm) },
-		drainWait: 3 * time.Second, tail: tail, done: done, deltas: deltas, logger: s.logger,
+		tail: tail, done: done, deltas: deltas, logger: s.logger,
 		delta: func(d claudestream.Delta) (string, string, bool) { return "text", d.Text, true },
 		result: func(ctx context.Context, out chan<- StreamEvent, result claudestream.Result) {
-			if result.IsError && result.Subtype != "error_during_execution" {
+			// User-requested cancellation is not a turn failure.
+			if result.IsError && result.Subtype != "error_during_execution" && result.Subtype != "cancelled" {
 				emitError(ctx, out, "claude turn failed: "+result.Subtype)
 			}
 			emitClaudeRuntime(ctx, out, result)
@@ -502,7 +509,7 @@ func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, 
 	return mergeLoggedTurn(ctx, loggedTurnConfig[appserver.TurnResult, appserver.Delta]{
 		backend: "codex", idKey: "thread_id", id: id, cwd: cwd, fresh: fresh,
 		path: path, offset: offset, locate: func() string { return s.locateWait(ctx, id, s.t.confirm) },
-		drainWait: 5 * time.Second, tail: s.tail, done: done, deltas: deltas, logger: s.logger,
+		tail: s.tail, done: done, deltas: deltas, logger: s.logger,
 		delta: func(d appserver.Delta) (string, string, bool) {
 			if d.Kind == "reasoning" && lastKind == "reasoning" {
 				return "", "", false
@@ -537,31 +544,10 @@ func emitLiveDelta(ctx context.Context, out chan<- StreamEvent, kind, delta stri
 // the live event stream. Protocol completion and file visibility are separate
 // clocks; cancelling the tail immediately can strand already-written parts
 // until the browser next reloads the transcript.
-func drainTail(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent,
-	cancel context.CancelFunc, timeout time.Duration, logger *slog.Logger, msg, key, id string) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for {
-		select {
-		case ev, ok := <-events:
-			if !ok {
-				return
-			}
-			if !sendEvent(ctx, out, ev) {
-				cancel()
-				return
-			}
-		case <-timer.C:
-			logger.Warn(msg, key, id)
-			cancel()
-			for ev := range events {
-				if !sendEvent(ctx, out, ev) {
-					return
-				}
-			}
-			return
-		case <-ctx.Done():
-			cancel()
+func drainTail(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, cancel context.CancelFunc) {
+	cancel()
+	for ev := range events {
+		if !sendEvent(ctx, out, ev) {
 			return
 		}
 	}

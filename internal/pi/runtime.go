@@ -22,6 +22,9 @@ import (
 	"github.com/nexustar/usher/internal/hook"
 )
 
+// cancelGrace bounds the wait for agent_settled after cancellation.
+var cancelGrace = 3 * time.Second
+
 type rpcResponse struct {
 	Type    string          `json:"type"`
 	ID      string          `json:"id"`
@@ -547,8 +550,10 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 		out <- backend.Event{Type: backend.EventProcessStarted, Raw: started}
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
+		// Detach after cancellation to collect final transcript records.
+		tailCtx := ctx
 		emitTail := func() bool {
-			grew, err := tailPiJSONL(ctx, w.path, &offset, out)
+			grew, err := tailPiJSONL(tailCtx, w.path, &offset, out)
 			if err != nil {
 				r.logger.Warn("pi session tail", "session", id, "err", err)
 				raw, _ := json.Marshal(backend.ErrorPayload{Message: "pi session tail: " + err.Error()})
@@ -564,32 +569,20 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 			raw, _ := json.Marshal(payload)
 			out <- backend.Event{Type: backend.EventProcessExit, Raw: raw}
 		}
-		settle := func() {
-			// RPC completion and JSONL visibility are separate clocks. Require a
-			// short quiet period so the final assistant/tool records reach the
-			// canonical part stream before subprocess.exit promotes the turn.
-			quiet := 0
-			deadline := time.NewTimer(2 * time.Second)
-			defer deadline.Stop()
-			for quiet < 3 {
-				if emitTail() {
-					quiet = 0
-				} else {
-					quiet++
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-deadline.C:
-					return
-				case <-time.After(50 * time.Millisecond):
-				}
-			}
-		}
+		// Drain through agent_settled so its final records and shared event do
+		// not leak into the next turn.
+		done := ctx.Done()
+		var grace <-chan time.Time
 		for {
 			select {
-			case <-ctx.Done():
-				emitExit("cancelled")
+			case <-done:
+				timer := time.NewTimer(cancelGrace)
+				defer timer.Stop()
+				done, grace, tailCtx = nil, timer.C, context.WithoutCancel(ctx)
+			case <-grace:
+				r.logger.Warn("pi cancelled turn finalized without agent_settled", "session", id)
+				emitTail()
+				emitExit("")
 				return
 			case <-ticker.C:
 				emitTail()
@@ -627,7 +620,8 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 						out <- backend.Event{Type: backend.EventTurnStatus, Raw: b}
 					}
 				case "agent_settled":
-					settle()
+					// Read through EOF before finalizing.
+					emitTail()
 					emitExit("")
 					return
 				case "extension_error":

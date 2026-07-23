@@ -4,6 +4,7 @@ package claudestream
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,9 +33,12 @@ type Result struct {
 type Delta struct{ Text string }
 
 type turnRequest struct {
-	done   chan Result
-	deltas chan Delta
-	model  string
+	done    chan Result
+	deltas  chan Delta
+	model   string
+	uuid    string
+	started bool
+	runtime *Result // metadata from result; lifecycle still owns completion
 }
 
 // finish closes deltas before done, so a receiver of done may safely abandon
@@ -223,13 +227,16 @@ func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model string, resum
 			return nil, nil, fresh, 0, fmt.Errorf("unknown command: %s", command)
 		}
 	}
-	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 256)}
+	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 256), uuid: messageUUID()}
 	p.mu.Lock()
 	queuedAhead := len(p.turns)
 	p.turns = append(p.turns, req)
 	p.lastUsed = time.Now()
 	p.mu.Unlock()
-	msg := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []map[string]string{{"type": "text", "text": prompt}}}}
+	msg := map[string]any{
+		"type": "user", "uuid": req.uuid,
+		"message": map[string]any{"role": "user", "content": []map[string]string{{"type": "text", "text": prompt}}},
+	}
 	if err := write(p, msg); err != nil {
 		p.mu.Lock()
 		p.turns = p.turns[:len(p.turns)-1]
@@ -237,6 +244,17 @@ func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model string, resum
 		return nil, nil, fresh, 0, err
 	}
 	return req.done, req.deltas, fresh, queuedAhead, nil
+}
+
+func messageUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		b[6] = (b[6] & 0x0f) | 0x40
+		b[8] = (b[8] & 0x3f) | 0x80
+		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+			b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	}
+	return fmt.Sprintf("usher-%d", time.Now().UnixNano())
 }
 
 func releaseProcess(p *process) {
@@ -331,10 +349,10 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		var e struct {
 			Type    string `json:"type"`
 			Subtype string `json:"subtype"`
-			IsError bool   `json:"is_error"`
 			Message struct {
 				Model string `json:"model"`
 			} `json:"message"`
+			IsError    bool `json:"is_error"`
 			ModelUsage map[string]struct {
 				ContextWindow int64 `json:"contextWindow"`
 			} `json:"modelUsage"`
@@ -347,6 +365,8 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 					Text string `json:"text"`
 				} `json:"delta"`
 			} `json:"event"`
+			CommandUUID string `json:"command_uuid"`
+			State       string `json:"state"`
 		}
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
@@ -389,48 +409,98 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			m.cancelControlRequest(p, s.Bytes())
 			continue
 		}
-		if e.Type != "result" {
+		if e.Type == "command_lifecycle" {
+			m.finishLifecycle(p, e.CommandUUID, e.State)
+			continue
+		}
+		if e.Type == "result" {
+			// Result carries metadata; lifecycle owns completion.
 			p.mu.Lock()
-			if len(p.turns) == 0 && marksSpontaneousTurn(e.Type, e.Subtype, e.Event.Type) {
-				p.turns = append(p.turns, nil)
-			}
-			if len(p.turns) > 0 && p.turns[0] != nil && e.Type == "stream_event" &&
-				e.Event.Type == "content_block_delta" && e.Event.Delta.Type == "text_delta" && e.Event.Delta.Text != "" {
-				select {
-				case p.turns[0].deltas <- Delta{Text: e.Event.Delta.Text}:
-				default: // preview may drop under backpressure; JSONL truth-up repairs it
+			if len(p.turns) > 0 && p.turns[0] != nil && p.turns[0].started {
+				req := p.turns[0]
+				model := req.model
+				usage, ok := e.ModelUsage[model]
+				if !ok && len(e.ModelUsage) == 1 {
+					for fallbackModel, fallbackUsage := range e.ModelUsage {
+						model, usage = fallbackModel, fallbackUsage
+					}
 				}
-			}
-			if len(p.turns) > 0 && p.turns[0] != nil && e.Message.Model != "" {
-				p.turns[0].model = e.Message.Model
+				req.runtime = &Result{
+					IsError: e.IsError, Subtype: e.Subtype,
+					Model: model, ContextWindow: usage.ContextWindow,
+				}
 			}
 			p.mu.Unlock()
 			continue
 		}
 		p.mu.Lock()
-		var req *turnRequest
-		if len(p.turns) > 0 {
-			req = p.turns[0]
-			p.turns = p.turns[1:]
+		if len(p.turns) == 0 && marksSpontaneousTurn(e.Type, e.Subtype, e.Event.Type) {
+			p.turns = append(p.turns, nil)
 		}
-		p.lastUsed = time.Now()
-		p.mu.Unlock()
-		if req != nil {
-			model := req.model
-			usage, ok := e.ModelUsage[model]
-			if !ok && len(e.ModelUsage) == 1 {
-				for fallbackModel, fallbackUsage := range e.ModelUsage {
-					model, usage = fallbackModel, fallbackUsage
-				}
+		if len(p.turns) > 0 && p.turns[0] != nil && e.Type == "stream_event" &&
+			e.Event.Type == "content_block_delta" && e.Event.Delta.Type == "text_delta" && e.Event.Delta.Text != "" {
+			select {
+			case p.turns[0].deltas <- Delta{Text: e.Event.Delta.Text}:
+			default: // preview may drop under backpressure; JSONL truth-up repairs it
 			}
-			req.finish(Result{IsError: e.IsError, Subtype: e.Subtype, Model: model, ContextWindow: usage.ContextWindow})
 		}
+		if len(p.turns) > 0 && p.turns[0] != nil && e.Message.Model != "" {
+			p.turns[0].model = e.Message.Model
+		}
+		p.mu.Unlock()
 	}
 	if err := s.Err(); err != nil {
 		m.logger.Warn("claude stream-json read failed", "session", p.id, "err", err)
 		if p.cmd.Process != nil {
 			_ = procutil.KillGroup(p.cmd)
 		}
+	}
+}
+
+func (m *Manager) finishLifecycle(p *process, uuid, state string) {
+	if uuid == "" {
+		return
+	}
+	p.mu.Lock()
+	if state == "started" {
+		for _, candidate := range p.turns {
+			if candidate != nil && candidate.uuid == uuid {
+				candidate.started = true
+				break
+			}
+		}
+		p.lastUsed = time.Now()
+		p.mu.Unlock()
+		return
+	}
+	if state != "completed" && state != "cancelled" {
+		p.mu.Unlock()
+		return
+	}
+	var req *turnRequest
+	for i, candidate := range p.turns {
+		if candidate != nil && candidate.uuid == uuid {
+			req = candidate
+			p.turns = append(p.turns[:i], p.turns[i+1:]...)
+			break
+		}
+	}
+	if req == nil && len(p.turns) > 0 && p.turns[0] == nil {
+		// Close the placeholder for an externally submitted turn.
+		p.turns = p.turns[1:]
+	}
+	p.lastUsed = time.Now()
+	p.mu.Unlock()
+	if req != nil {
+		result := Result{Model: req.model}
+		if req.runtime != nil {
+			result = *req.runtime
+		}
+		result.Subtype = state
+		if state == "cancelled" {
+			result.IsError = true
+		}
+		req.finish(result)
 	}
 }
 

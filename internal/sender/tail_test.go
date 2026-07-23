@@ -214,3 +214,50 @@ func TestTailTurn_CancelBeforeFileAppears(t *testing.T) {
 		t.Fatalf("got %v, want [subprocess.exit]", types(got))
 	}
 }
+
+func TestTailTurn_CancelDrainsPersistedFinalLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := tailTurn(ctx, path, 0, nil, tailConfig{poll: time.Hour})
+
+	appendLines(path, 0, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}`)
+	cancel()
+
+	got := collect(t, ch, 2*time.Second)
+	if !eq(types(got), []string{"assistant", "subprocess.exit"}) {
+		t.Fatalf("got %v, want persisted final line before exit", types(got))
+	}
+}
+
+func TestTailTurn_ContentOnlyIgnoresLogCompletion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := fastCfg()
+	cfg.contentOnly = true
+	ch := tailTurn(ctx, path, 0, nil, cfg)
+	appendLines(path, 0, `{"type":"system","subtype":"turn_duration"}`)
+
+	select {
+	case ev := <-ch:
+		if ev.Type != "system" {
+			t.Fatalf("event = %s, want transcript line", ev.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion line was not streamed as content")
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("log marker ended content-only tail: %s", ev.Type)
+	case <-time.After(30 * time.Millisecond):
+	}
+	cancel()
+	if ev := <-ch; ev.Type != "subprocess.exit" {
+		t.Fatalf("cancel event = %s, want subprocess.exit", ev.Type)
+	}
+}

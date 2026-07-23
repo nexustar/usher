@@ -941,10 +941,11 @@ func (r *Router) CancelSend(sessionID string) error {
 	// Cancel means stop: drop queued follow-ups too, before cancelling the
 	// turn, so releaseSend finds nothing to promote.
 	r.flushSendQueue(sessionID, errors.New("cancelled"))
+	// Stop local collection before the best-effort interrupt RPC.
+	tok.cancel()
 	if err := r.senderFor(sessionID).Interrupt(sessionID); err != nil {
 		slog.Warn("interrupt session turn", "session", sessionID, "err", err)
 	}
-	tok.cancel()
 	return nil
 }
 

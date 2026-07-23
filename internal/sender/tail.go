@@ -20,6 +20,9 @@ type tailConfig struct {
 	poll       time.Duration // how often to re-check the file for growth
 	appearWait time.Duration // how long to wait for a not-yet-created file
 
+	// contentOnly leaves lifecycle completion to the backend protocol.
+	contentOnly bool
+
 	// turnComplete reports whether a session-log line is the backend's
 	// end-of-turn marker. Backend-specific: Claude Code uses system/turn_duration
 	// (the default below); Codex uses event_msg/task_complete. nil → Claude.
@@ -103,6 +106,7 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 		var pending []byte // partial trailing line not yet terminated by '\n'
 		ticker := time.NewTicker(cfg.poll)
 		defer ticker.Stop()
+		cancelled := false
 
 		for {
 			for {
@@ -130,7 +134,7 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 				// end_turn on intermediate thinking/tool_use messages too, so
 				// trusting it ends the turn before the tool even runs — which
 				// released ownership and sent permission prompts to the pane).
-				if cfg.turnComplete(line) {
+				if !cfg.contentOnly && cfg.turnComplete(line) {
 					if cfg.skipCompletions > 0 {
 						cfg.skipCompletions--
 						ev := StreamEvent{Type: lineType(line), Raw: append(json.RawMessage(nil), line...)}
@@ -140,7 +144,7 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 					emitExit()
 					return
 				}
-				if cfg.turnAborted != nil && cfg.turnAborted(line) {
+				if !cfg.contentOnly && cfg.turnAborted != nil && cfg.turnAborted(line) {
 					ev := StreamEvent{Type: lineType(line), Raw: append(json.RawMessage(nil), line...)}
 					_ = sendEvent(context.Background(), out, ev)
 					errRaw, _ := json.Marshal(map[string]string{"message": "turn aborted before completion"})
@@ -149,16 +153,25 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 					return
 				}
 				ev := StreamEvent{Type: lineType(line), Raw: append(json.RawMessage(nil), line...)}
-				if !sendEvent(ctx, out, ev) {
+				sendCtx := ctx
+				if cancelled || ctx.Err() != nil {
+					// Forward persisted records during the final EOF drain.
+					sendCtx = context.Background()
+				}
+				if !sendEvent(sendCtx, out, ev) {
 					emitExit() // ctx cancelled mid-stream
 					return
 				}
 			}
+			if cancelled {
+				emitExit()
+				return
+			}
 
 			select {
 			case <-ctx.Done():
-				emitExit()
-				return
+				// Read through EOF once more before exiting.
+				cancelled = true
 			case <-ticker.C:
 			}
 		}

@@ -29,7 +29,10 @@ while IFS= read -r line; do
   printf '%s\n' "$line" >> "${FAKE_CLAUDE_LOG}.input"
   case "$line" in
     *control_request*) ;;
-    *) printf '%s\n' '{"type":"result","subtype":"success","is_error":false}' ;;
+    *)
+      uuid=$(printf '%s\n' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+      printf '{"type":"command_lifecycle","command_uuid":"%s","state":"completed"}\n' "$uuid"
+      ;;
   esac
 done
 `
@@ -75,6 +78,31 @@ func TestLongRunningProcessServesMultipleTurns(t *testing.T) {
 	in, _ := os.ReadFile(log + ".input")
 	if !strings.Contains(string(in), `"content":[{"text":"hello","type":"text"}]`) {
 		t.Fatalf("user message is not content-block array: %s", in)
+	}
+	if !strings.Contains(string(in), `"uuid":"`) {
+		t.Fatalf("user message has no lifecycle uuid: %s", in)
+	}
+}
+
+func TestCommandLifecycleCompletesMatchingTurnAndIgnoresResult(t *testing.T) {
+	req1 := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta), uuid: "u1"}
+	req2 := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta), uuid: "u2"}
+	p := &process{turns: []*turnRequest{req1, req2}}
+	m := &Manager{}
+	input := strings.NewReader(
+		"{\"type\":\"command_lifecycle\",\"command_uuid\":\"u1\",\"state\":\"completed\"}\n" +
+			"{\"type\":\"result\",\"subtype\":\"success\"}\n" +
+			"{\"type\":\"command_lifecycle\",\"command_uuid\":\"u2\",\"state\":\"completed\"}\n")
+
+	m.readLoop(p, input)
+	if got := <-req1.done; got.IsError || got.Subtype != "completed" {
+		t.Fatalf("first lifecycle result = %+v", got)
+	}
+	if got := <-req2.done; got.IsError || got.Subtype != "completed" {
+		t.Fatalf("second lifecycle result = %+v", got)
+	}
+	if len(p.turns) != 0 {
+		t.Fatalf("turn bookkeeping = turns:%d", len(p.turns))
 	}
 }
 
@@ -202,6 +230,9 @@ func TestClaudePermissionControlE2E(t *testing.T) {
 		if got.IsError {
 			t.Fatalf("Claude result = %+v", got)
 		}
+		if got.ContextWindow <= 0 {
+			t.Fatalf("Claude lifecycle lost result runtime metadata: %+v", got)
+		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Claude result timeout")
 	}
@@ -252,17 +283,17 @@ func TestSpontaneousTurnTailEventsDoNotStickOrStealNextResult(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1)}
+	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "user-1"}
 	p.mu.Lock()
 	p.turns = append(p.turns, user)
 	p.mu.Unlock()
-	_, _ = io.WriteString(w, "{\"type\":\"result\",\"subtype\":\"success\"}\n{\"type\":\"command_lifecycle\"}\n{\"type\":\"rate_limit_event\"}\n")
+	_, _ = io.WriteString(w, "{\"type\":\"result\",\"subtype\":\"success\"}\n{\"type\":\"command_lifecycle\",\"command_uuid\":\"foreign\",\"state\":\"completed\"}\n{\"type\":\"rate_limit_event\"}\n")
 	select {
 	case <-user.done:
 		t.Fatal("spontaneous result was delivered to user turn")
 	case <-time.After(20 * time.Millisecond):
 	}
-	_, _ = io.WriteString(w, "{\"type\":\"result\",\"subtype\":\"success\"}\n")
+	_, _ = io.WriteString(w, "{\"type\":\"command_lifecycle\",\"command_uuid\":\"user-1\",\"state\":\"completed\"}\n")
 	select {
 	case <-user.done:
 	case <-time.After(time.Second):
@@ -298,7 +329,7 @@ func TestMessageStartMarksSpontaneousTurnButDeltasDoNot(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1)}
+	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "user-1"}
 	p.mu.Lock()
 	if p.turns[0] != nil {
 		p.mu.Unlock()
@@ -308,7 +339,7 @@ func TestMessageStartMarksSpontaneousTurnButDeltasDoNot(t *testing.T) {
 	p.mu.Unlock()
 	// The spontaneous turn's deltas must not leak into the queued user turn.
 	_, _ = io.WriteString(w, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"spontaneous"}}}`+"\n")
-	_, _ = io.WriteString(w, `{"type":"result","subtype":"success"}`+"\n")
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"foreign","state":"completed"}`+"\n")
 	select {
 	case <-user.done:
 		t.Fatal("spontaneous result was delivered to user turn")
@@ -316,7 +347,7 @@ func TestMessageStartMarksSpontaneousTurnButDeltasDoNot(t *testing.T) {
 		t.Fatalf("spontaneous delta leaked to user turn: %+v", d)
 	case <-time.After(20 * time.Millisecond):
 	}
-	_, _ = io.WriteString(w, `{"type":"result","subtype":"success"}`+"\n")
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"user-1","state":"completed"}`+"\n")
 	select {
 	case <-user.done:
 	case <-time.After(time.Second):
@@ -397,7 +428,7 @@ func TestLeadingSlashCommandValidation(t *testing.T) {
 
 func TestPartialTextDeltaRoutesToCurrentTurn(t *testing.T) {
 	m := New("", "", "", nil, 2, nil, nil)
-	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 2)}
+	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 2), uuid: "u1"}
 	p := &process{id: "s", lastUsed: time.Now(), turns: []*turnRequest{req}}
 	r, w := io.Pipe()
 	done := make(chan struct{})
@@ -411,21 +442,23 @@ func TestPartialTextDeltaRoutesToCurrentTurn(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("delta timeout")
 	}
-	_, _ = io.WriteString(w, `{"type":"result","subtype":"success"}`+"\n")
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"u1","state":"completed"}`+"\n")
 	<-req.done
 	_ = w.Close()
 	<-done
 }
 
-func TestResultUsesLastAssistantModelContextWindow(t *testing.T) {
+func TestLifecycleCarriesResultRuntimeMetadata(t *testing.T) {
 	m := New("", "", "", nil, 2, nil, nil)
-	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1)}
+	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "u1"}
 	p := &process{id: "s", lastUsed: time.Now(), turns: []*turnRequest{req}}
 	r, w := io.Pipe()
 	done := make(chan struct{})
 	go func() { m.readLoop(p, r); close(done) }()
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"u1","state":"started"}`+"\n")
 	_, _ = io.WriteString(w, `{"type":"assistant","message":{"model":"claude-opus-4-7"}}`+"\n")
 	_, _ = io.WriteString(w, `{"type":"result","subtype":"success","modelUsage":{"claude-sonnet-4-6":{"contextWindow":200000},"claude-opus-4-7":{"contextWindow":1000000}}}`+"\n")
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"u1","state":"completed"}`+"\n")
 	result := <-req.done
 	if result.Model != "claude-opus-4-7" || result.ContextWindow != 1000000 {
 		t.Fatalf("result runtime = %+v", result)
@@ -434,20 +467,21 @@ func TestResultUsesLastAssistantModelContextWindow(t *testing.T) {
 	<-done
 }
 
-func TestResultSingleModelUsageFallback(t *testing.T) {
-	m := New("", "", "", nil, 2, nil, nil)
-	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1)}
-	p := &process{id: "s", lastUsed: time.Now(), turns: []*turnRequest{req}}
-	r, w := io.Pipe()
-	done := make(chan struct{})
-	go func() { m.readLoop(p, r); close(done) }()
-	_, _ = io.WriteString(w, `{"type":"result","subtype":"success","modelUsage":{"claude-sonnet-4-6":{"contextWindow":200000}}}`+"\n")
-	result := <-req.done
-	if result.Model != "claude-sonnet-4-6" || result.ContextWindow != 200000 {
-		t.Fatalf("result runtime = %+v", result)
+func TestLateResultDoesNotContaminateUnstartedNextTurn(t *testing.T) {
+	req1 := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta), uuid: "u1", started: true}
+	req2 := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta), uuid: "u2"}
+	p := &process{turns: []*turnRequest{req1, req2}}
+	m := &Manager{}
+	input := strings.NewReader(
+		"{\"type\":\"command_lifecycle\",\"command_uuid\":\"u1\",\"state\":\"completed\"}\n" +
+			"{\"type\":\"result\",\"modelUsage\":{\"stale\":{\"contextWindow\":123}}}\n" +
+			"{\"type\":\"command_lifecycle\",\"command_uuid\":\"u2\",\"state\":\"completed\"}\n")
+
+	m.readLoop(p, input)
+	<-req1.done
+	if got := <-req2.done; got.ContextWindow != 0 || got.Model == "stale" {
+		t.Fatalf("late result contaminated next turn: %+v", got)
 	}
-	_ = w.Close()
-	<-done
 }
 
 func TestMaxLiveDoesNotGrowWhenAllProcessesBusy(t *testing.T) {
