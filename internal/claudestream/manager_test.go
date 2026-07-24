@@ -28,6 +28,10 @@ printf '%s\n' "$*" >> "$FAKE_CLAUDE_LOG"
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "${FAKE_CLAUDE_LOG}.input"
   case "$line" in
+    *'"subtype":"initialize"'*)
+      request_id=$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"commands":[{"name":"rename"},{"name":"compact"}]}}}\n' "$request_id"
+      ;;
     *control_request*) ;;
     *)
       uuid=$(printf '%s\n' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
@@ -81,6 +85,35 @@ func TestLongRunningProcessServesMultipleTurns(t *testing.T) {
 	}
 	if !strings.Contains(string(in), `"uuid":"`) {
 		t.Fatalf("user message has no lifecycle uuid: %s", in)
+	}
+}
+
+func TestRenameUsesInitializedCommandCatalog(t *testing.T) {
+	bin, log := fakeClaude(t)
+	m := New(bin, `{"hooks":{}}`, "/tmp/h.sock", nil, 4, nil, nil)
+	m.processes = map[string]*process{}
+	t.Setenv("FAKE_CLAUDE_LOG", log)
+	t.Cleanup(m.Shutdown)
+
+	ch, _, _, _, err := m.Send(context.Background(), "sid", "/rename hhh", "/tmp", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-ch:
+		if result.IsError {
+			t.Fatalf("result = %+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rename did not complete")
+	}
+
+	input, err := os.ReadFile(log + ".input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(input), `"text":"/rename hhh"`) {
+		t.Fatalf("rename was not forwarded unchanged: %s", input)
 	}
 }
 

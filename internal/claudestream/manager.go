@@ -61,8 +61,11 @@ type process struct {
 	mu            sync.Mutex
 	turns         []*turnRequest // nil entry represents a spontaneous turn
 	controls      map[string]context.CancelFunc
+	controlWait   map[string]chan error
 	commands      []Command
 	commandsReady bool
+	initDone      chan struct{}
+	initErr       error
 	leases        int
 	lastUsed      time.Time
 	stopping      bool
@@ -121,6 +124,12 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model string, resu
 		p.lastUsed = time.Now()
 		p.mu.Unlock()
 		m.mu.Unlock()
+		if err := waitForInitialization(ctx, p); err != nil {
+			if lease {
+				releaseProcess(p)
+			}
+			return nil, false, err
+		}
 		return p, false, nil
 	}
 	if len(m.processes) >= m.maxLive {
@@ -180,7 +189,11 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model string, resu
 		m.mu.Unlock()
 		return nil, false, err
 	}
-	p := &process{id: id, cmd: cmd, in: in, cwd: cwd, controls: map[string]context.CancelFunc{}, lastUsed: time.Now(), done: make(chan struct{})}
+	p := &process{
+		id: id, cmd: cmd, in: in, cwd: cwd,
+		controls: map[string]context.CancelFunc{}, controlWait: map[string]chan error{},
+		initDone: make(chan struct{}), lastUsed: time.Now(), done: make(chan struct{}),
+	}
 	if lease {
 		p.leases = 1
 	}
@@ -188,7 +201,69 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model string, resu
 	m.mu.Unlock()
 	go m.readLoop(p, out)
 	go func() { err := cmd.Wait(); m.died(p, err) }()
+	err = m.initializeProcess(ctx, p)
+	p.mu.Lock()
+	p.initErr = err
+	close(p.initDone)
+	p.mu.Unlock()
+	if err != nil {
+		m.mu.Lock()
+		if m.processes[id] == p {
+			delete(m.processes, id)
+		}
+		m.mu.Unlock()
+		stop(p)
+		return nil, false, err
+	}
 	return p, true, nil
+}
+
+func waitForInitialization(ctx context.Context, p *process) error {
+	// Injected process records are already initialized.
+	if p.initDone == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.done:
+		return errors.New("claude process exited during initialization")
+	case <-p.initDone:
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.initErr
+	}
+}
+
+func (m *Manager) initializeProcess(ctx context.Context, p *process) error {
+	requestID := fmt.Sprintf("usher-init-%d", time.Now().UnixNano())
+	result := make(chan error, 1)
+	p.mu.Lock()
+	p.controlWait[requestID] = result
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.controlWait, requestID)
+		p.mu.Unlock()
+	}()
+	if err := write(p, map[string]any{
+		"type": "control_request", "request_id": requestID,
+		"request": map[string]any{"subtype": "initialize", "hooks": nil},
+	}); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.done:
+		return errors.New("claude process exited during initialization")
+	case err := <-result:
+		if err != nil {
+			return err
+		}
+	}
+	_, err := waitForCommands(ctx, p)
+	return err
 }
 
 func scrubEnv(hookSock string) []string {
@@ -372,6 +447,10 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
 		}
+		if e.Type == "control_response" {
+			m.finishControlRequest(p, s.Bytes())
+			continue
+		}
 		if e.Type == "system" && e.Subtype == "init" {
 			skills := make(map[string]struct{}, len(e.Skills))
 			for _, name := range e.Skills {
@@ -456,6 +535,53 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			_ = procutil.KillGroup(p.cmd)
 		}
 	}
+}
+
+func (m *Manager) finishControlRequest(p *process, raw []byte) {
+	var msg struct {
+		Response struct {
+			Subtype   string `json:"subtype"`
+			RequestID string `json:"request_id"`
+			Error     string `json:"error"`
+			Response  struct {
+				Commands []struct {
+					Name string `json:"name"`
+				} `json:"commands"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.Response.RequestID == "" {
+		return
+	}
+	p.mu.Lock()
+	wait := p.controlWait[msg.Response.RequestID]
+	delete(p.controlWait, msg.Response.RequestID)
+	if msg.Response.Subtype == "success" {
+		commands := make([]Command, 0, len(msg.Response.Response.Commands))
+		seen := make(map[string]struct{}, len(msg.Response.Response.Commands))
+		for _, command := range msg.Response.Response.Commands {
+			name := strings.TrimPrefix(strings.TrimSpace(command.Name), "/")
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			commands = append(commands, Command{Name: name, Kind: "command"})
+		}
+		p.commands = commands
+		p.commandsReady = true
+	}
+	p.mu.Unlock()
+	if wait == nil {
+		return
+	}
+	var err error
+	if msg.Response.Subtype == "error" {
+		err = errors.New(msg.Response.Error)
+	}
+	wait <- err
 }
 
 func (m *Manager) finishLifecycle(p *process, uuid, state string) {
