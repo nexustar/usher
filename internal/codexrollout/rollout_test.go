@@ -49,6 +49,33 @@ func TestReadSessionMeta(t *testing.T) {
 	}
 }
 
+func TestRenameSessionUsesCodexIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session_index.jsonl")
+	if err := RenameSession(path, "thread-1", "First"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSession(path, "thread-2", "Other"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSession(path, "thread-1", "Latest"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadThreadName(path, "thread-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Latest" {
+		t.Fatalf("name = %q, want Latest", got)
+	}
+	names, err := ReadThreadNames(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names["thread-1"] != "Latest" || names["thread-2"] != "Other" {
+		t.Fatalf("names = %#v", names)
+	}
+}
+
 func TestReadSessionMetaSubagent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rollout-2026-07-13T00-00-00-019f5723-e850-7c71-b2e5-7735abe145fb.jsonl")

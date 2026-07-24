@@ -335,6 +335,17 @@ type Runtime struct {
 	workers          map[string]*worker
 }
 
+// Rename uses RPC when live and native metadata when idle.
+func (r *Runtime) Rename(ctx context.Context, id, path, title string) error {
+	w := r.leaseWorkerIfLive(id)
+	if w == nil {
+		return RenameSession(path, title)
+	}
+	defer r.releaseWorker(w)
+	_, err := w.c.request(ctx, "set_session_name", map[string]any{"name": title})
+	return err
+}
+
 func NewRuntime(bin, sessionsDir string, extra []string, max int, models Models, hooks *hook.Manager, logger *slog.Logger) *Runtime {
 	if max <= 0 {
 		max = 8
@@ -484,6 +495,15 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 		}
 	}
 	defer r.releaseWorker(w)
+	if command, args, ok := backend.ParseSlashCommand(prompt); ok && command == "/name" {
+		if args == "" {
+			return nil, errors.New("usage: /name <name>")
+		}
+		if _, err := w.c.request(ctx, "set_session_name", map[string]any{"name": args}); err != nil {
+			return nil, err
+		}
+		return backend.CompletedOperation(cwd), nil
+	}
 	return r.prompt(ctx, id, w, prompt, false)
 }
 
@@ -687,9 +707,11 @@ func composerItemsFromRPC(data json.RawMessage) ([]backend.ComposerItem, error) 
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, err
 	}
-	out := make([]backend.ComposerItem, 0, len(payload.Commands))
+	out := []backend.ComposerItem{{
+		Name: "name", Kind: "command", Description: "Set session display name",
+	}}
 	for _, command := range payload.Commands {
-		if command.Name == "" {
+		if command.Name == "" || command.Name == "name" {
 			continue
 		}
 		kind := command.Source

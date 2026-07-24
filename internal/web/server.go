@@ -607,7 +607,14 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	title := strings.TrimSpace(req.Title)
-	s.router.Rename(id, title)
+	if err := s.router.Rename(r.Context(), id, title); err != nil {
+		if errors.Is(err, router.ErrInvalidTitle) {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"title": title})
 }
 

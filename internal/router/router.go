@@ -34,6 +34,7 @@ import (
 // log on disk (so its path/backend can't be resolved).
 var ErrSessionNotFound = errors.New("session not found")
 var ErrBackendUnavailable = errors.New("backend capability unavailable")
+var ErrInvalidTitle = errors.New("session title must not be empty")
 
 type Router struct {
 	discovery *discovery.Discovery
@@ -457,7 +458,33 @@ func (r *Router) Archive(sessionID string)       { r.meta.Archive(sessionID) }
 func (r *Router) IsPinned(sessionID string) bool { return r.meta.IsPinned(sessionID) }
 func (r *Router) Pin(sessionID string)           { r.meta.Pin(sessionID) }
 func (r *Router) Unpin(sessionID string)         { r.meta.Unpin(sessionID) }
-func (r *Router) Rename(sessionID, title string) { r.meta.Rename(sessionID, title) }
+func (r *Router) Rename(ctx context.Context, sessionID, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ErrInvalidTitle
+	}
+	sess, ok := r.discovery.Get(sessionID)
+	if !ok {
+		return ErrSessionNotFound
+	}
+	path, ok := r.discovery.Path(sessionID)
+	if !ok {
+		return ErrSessionNotFound
+	}
+	b := r.backends[sess.Backend]
+	if b.Renamer == nil {
+		// Compatibility path for backends without native rename.
+		r.meta.Rename(sessionID, title)
+		return nil
+	}
+	if err := b.Renamer.Rename(ctx, sessionID, path, title); err != nil {
+		return err
+	}
+	// Native metadata supersedes the legacy usher override.
+	r.meta.Rename(sessionID, "")
+	r.discovery.SetTitle(sessionID, title)
+	return nil
+}
 
 func (r *Router) applyCustomTitle(s *core.Session) {
 	if t := r.meta.CustomTitle(s.ID); t != "" {

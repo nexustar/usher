@@ -229,6 +229,61 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 	return meta, sc.Err()
 }
 
+// ReadThreadName reads the latest name from Codex's append-only index.
+func ReadThreadName(indexPath, id string) (string, error) {
+	names, err := ReadThreadNames(indexPath)
+	return names[id], err
+}
+
+// ReadThreadNames reads the latest name for every indexed thread.
+func ReadThreadNames(indexPath string) (map[string]string, error) {
+	f, err := os.Open(indexPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	sc := newScanner(f)
+	names := make(map[string]string)
+	for sc.Scan() {
+		var record struct {
+			ID         string `json:"id"`
+			ThreadName string `json:"thread_name"`
+		}
+		if json.Unmarshal(sc.Bytes(), &record) == nil && record.ID != "" {
+			names[record.ID] = record.ThreadName
+		}
+	}
+	return names, sc.Err()
+}
+
+// RenameSession appends a Codex thread-name record.
+func RenameSession(indexPath, id, title string) error {
+	record := struct {
+		ID         string `json:"id"`
+		ThreadName string `json:"thread_name"`
+		UpdatedAt  string `json:"updated_at"`
+	}{
+		ID:         id,
+		ThreadName: title,
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	f, err := os.OpenFile(indexPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(data)
+	return err
+}
+
 // ReadTurns returns the grouped user/assistant turns of the rollout at path,
 // matching jsonl.ReadTurns' contract (limit>0 keeps the most recent N; total is
 // the count before trimming).

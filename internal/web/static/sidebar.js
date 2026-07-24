@@ -607,19 +607,27 @@ async function resumeSession(id) {
 }
 
 async function renameSession(id) {
-  const title = prompt('Rename session (empty to reset):');
+  const title = prompt('Rename session:');
   if (title === null) return;
+  if (!title.trim()) {
+    alert('Session title cannot be empty.');
+    return;
+  }
   try {
     const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/rename', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'HTTP ' + res.status);
+    }
     loadSidebar();
     loadList();
     if (id === currentDetailId) refreshSubtitle(id);
   } catch (e) {
     console.warn('rename failed', e);
+    alert('Failed to rename session: ' + String(e.message || e));
   }
 }

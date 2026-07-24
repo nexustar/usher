@@ -328,6 +328,7 @@ func (m *Manager) CommandsIfLive(id string) ([]Command, bool) {
 	defer p.mu.Unlock()
 	return append([]Command(nil), p.commands...), p.commandsReady
 }
+
 func write(p *process, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {

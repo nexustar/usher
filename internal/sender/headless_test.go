@@ -2,12 +2,22 @@ package sender
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/nexustar/usher/internal/appserver"
 	"github.com/nexustar/usher/internal/backend"
 )
+
+func TestNewCodexKeepsConfiguredIndexPath(t *testing.T) {
+	sessionsDir := filepath.Join(t.TempDir(), "codex", "sessions")
+	s := NewCodex("codex", sessionsDir, "", nil, 1, false, nil, nil)
+	want := filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl")
+	if s.indexPath != want {
+		t.Fatalf("indexPath = %q, want %q", s.indexPath, want)
+	}
+}
 
 func TestDrainTailCancelsAndKeepsFinalParts(t *testing.T) {
 	old := finalDrainQuiet

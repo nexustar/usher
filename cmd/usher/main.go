@@ -185,14 +185,16 @@ func serve(args []string) error {
 
 	if dir := *projectsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewClaudeSource(dir))
-		backends["claude"] = backend.Backend{Runtime: sender.New(*claudeCmd, *permissionMode, dir, *tmuxSocket+"-claude", hookSockPath(*dataDir), *maxLiveSessions, !*disableUsherTools, h, logger), Transcript: transcript.Claude{}, Forker: transcript.ClaudeForker{}, Models: modelcatalog.Claude{}}
+		claudeRuntime := sender.New(*claudeCmd, *permissionMode, dir, hookSockPath(*dataDir), *maxLiveSessions, !*disableUsherTools, h, logger)
+		backends["claude"] = backend.Backend{Runtime: claudeRuntime, Transcript: transcript.Claude{}, Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: modelcatalog.Claude{}}
 		defaultBackend = "claude"
 		logger.Info("claude backend enabled", "projects_dir", dir)
 	}
 	if dir := *codexSessionsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewCodexSource(dir))
 		modelsPath := filepath.Join(filepath.Dir(dir), "models_cache.json")
-		backends["codex"] = backend.Backend{Runtime: sender.NewCodex(*codexCmd, dir, *tmuxSocket+"-codex", hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, !*disableUsherTools, h, logger), Transcript: transcript.Codex{}, Forker: transcript.CodexForker{}, Models: modelcatalog.Codex{Path: modelsPath}}
+		codexRuntime := sender.NewCodex(*codexCmd, dir, hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, !*disableUsherTools, h, logger)
+		backends["codex"] = backend.Backend{Runtime: codexRuntime, Transcript: transcript.Codex{}, Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}}
 		// codex's per-account model catalog sits next to the sessions dir.
 		if defaultBackend == "" {
 			defaultBackend = "codex"
@@ -211,7 +213,7 @@ func serve(args []string) error {
 		}
 		piModels := piagent.Models{Path: filepath.Join(*dataDir, "pi-models.json")}
 		piRuntime := piagent.NewRuntime(*piCmd, dir, extra, *maxLiveSessions, piModels, h, logger)
-		backends["pi"] = backend.Backend{Runtime: piRuntime, Transcript: piagent.Transcript{}, Forker: piRuntime, Models: piModels}
+		backends["pi"] = backend.Backend{Runtime: piRuntime, Transcript: piagent.Transcript{}, Forker: piRuntime, Renamer: piRuntime, Models: piModels}
 		if defaultBackend == "" {
 			defaultBackend = "pi"
 		}

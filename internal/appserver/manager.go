@@ -217,6 +217,22 @@ func (m *Manager) Review(ctx context.Context, id, cwd, instructions string) (<-c
 	})
 }
 
+// Rename runs Codex's /rename RPC, resuming a cold thread if needed.
+func (m *Manager) Rename(ctx context.Context, id, cwd, title string) error {
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return err
+	}
+	defer m.releaseWorker(w)
+	m.mu.Lock()
+	busy := w.busy || w.client.Busy(id)
+	m.mu.Unlock()
+	if busy {
+		return fmt.Errorf("Codex session %s is busy", id)
+	}
+	return w.client.RenameThread(ctx, id, title)
+}
+
 func (m *Manager) startOperation(ctx context.Context, id, cwd string, start func(*Client) (<-chan TurnResult, <-chan Delta, error)) (<-chan TurnResult, <-chan Delta, error) {
 	// Keep the worker leased until start() has registered the operation.
 	w, err := m.leaseWorker(ctx, id, cwd)
@@ -289,6 +305,21 @@ func (m *Manager) SkillsIfLive(ctx context.Context, id, cwd string) ([]Skill, bo
 	defer m.releaseWorker(w)
 	skills, err := w.client.Skills(ctx, cwd)
 	return skills, err == nil, err
+}
+
+// RenameIfLive renames through an existing worker without entering the LRU.
+func (m *Manager) RenameIfLive(ctx context.Context, id, title string) (bool, error) {
+	m.mu.Lock()
+	w := m.workers[id]
+	if w == nil || w.ready != nil || w.err != nil || !w.client.Running() {
+		m.mu.Unlock()
+		return false, nil
+	}
+	w.leases++
+	w.lastUsed = time.Now()
+	m.mu.Unlock()
+	defer m.releaseWorker(w)
+	return true, w.client.RenameThread(ctx, id, title)
 }
 
 func (m *Manager) Interrupt(ctx context.Context, id string) error {

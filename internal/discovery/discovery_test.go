@@ -131,6 +131,77 @@ func TestDiscovery_LateAITitle(t *testing.T) {
 	}
 }
 
+func TestDiscovery_NativeTitleChange(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "-tmp-x", "rename.jsonl")
+	writeJSONL(t, path, "rename", "/tmp/x", "first prompt")
+
+	d := newTestDiscovery(t, tmp)
+	d.Upsert(path)
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"type":"custom-title","sessionId":"rename","customTitle":"Renamed"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(path)
+
+	sess, _ := d.Get("rename")
+	if sess.Title != "Renamed" {
+		t.Fatalf("Title = %q, want Renamed", sess.Title)
+	}
+}
+
+func TestDiscoveryRefreshesCodexNativeTitleIndex(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "sessions")
+	path := filepath.Join(root, "2026", "07", "24",
+		"rollout-2026-07-24T00-00-00-019f8abc-def0-7123-8456-789abcdef012.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"timestamp":"2026-07-24T00:00:00Z","type":"session_meta","payload":{"id":"019f8abc-def0-7123-8456-789abcdef012","cwd":"/work"}}` + "\n" +
+		`{"timestamp":"2026-07-24T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"first prompt"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := filepath.Join(home, "session_index.jsonl")
+	if err := os.WriteFile(indexPath, []byte(`{"id":"019f8abc-def0-7123-8456-789abcdef012","thread_name":"First"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := NewMulti(nil, NewCodexSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(path)
+	sess, _ := d.Get("019f8abc-def0-7123-8456-789abcdef012")
+	if sess.Title != "First" {
+		t.Fatalf("initial Title = %q", sess.Title)
+	}
+	f, err := os.OpenFile(indexPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"id":"019f8abc-def0-7123-8456-789abcdef012","thread_name":"Second"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !d.refreshMetadataFile(indexPath) {
+		t.Fatal("metadata file was not recognized")
+	}
+	sess, _ = d.Get("019f8abc-def0-7123-8456-789abcdef012")
+	if sess.Title != "Second" {
+		t.Fatalf("refreshed Title = %q", sess.Title)
+	}
+}
+
 // TestDiscovery_ConcurrentUpsert exercises upsert/List/Get from several
 // goroutines at once. Run under -race it guards the map accesses in upsert
 // against the watch goroutine racing a synchronous Upsert (e.g. ForkSession).

@@ -21,6 +21,11 @@ Do not introduce:
 - Utility libs (lo, samber/*) — write what you need
 - Frontend frameworks or build tooling (React/Vue, npm, bundlers, Tailwind)
 
+## Agent behavior
+
+When backend behavior is uncertain, inspect the local upstream sources before
+guessing: `../claude-agent-sdk-python`, `../codex`, and `../pi`.
+
 ## Frontend
 
 Priority order: maintainability > few dependencies > performance > visual

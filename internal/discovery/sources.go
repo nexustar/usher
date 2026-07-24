@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/nexustar/usher/internal/codexrollout"
 	"github.com/nexustar/usher/internal/core"
@@ -28,6 +29,12 @@ type Source interface {
 	SessionID(path string) string
 	// ReadMeta reads the lightweight descriptor used for listing.
 	ReadMeta(path string) (core.SessionMeta, error)
+}
+
+// MetadataSource lists metadata files that affect cached sessions.
+type MetadataSource interface {
+	MetadataFiles() []string
+	RefreshMetadata(string) (map[string]string, error)
 }
 
 // ClaudeSource scans Claude Code's projects tree:
@@ -107,30 +114,64 @@ func (s ClaudeSource) ReadMeta(path string) (core.SessionMeta, error) {
 // in the filename. The date partitioning is handled by Discovery's recursive
 // watch, so a session is recognized purely by its filename shape rather than by
 // depth — robust to Codex reorganizing the tree.
-type CodexSource struct{ root string }
+type CodexSource struct {
+	root, indexPath string
+	mu              sync.Mutex
+	names           map[string]string
+}
 
-func NewCodexSource(root string) CodexSource { return CodexSource{root: root} }
+func NewCodexSource(root string) *CodexSource {
+	return &CodexSource{root: root, indexPath: filepath.Join(filepath.Dir(root), "session_index.jsonl")}
+}
 
-func (s CodexSource) Backend() string { return "codex" }
-func (s CodexSource) Root() string    { return s.root }
+func (s *CodexSource) Backend() string { return "codex" }
+func (s *CodexSource) Root() string    { return s.root }
 
 // IsSessionFile accepts rollout files by their name (rollout-…-<uuid>.jsonl).
 // Codex keeps archived sessions under a sibling ~/.codex/archived_sessions, a
 // different root that is simply not scanned, so every rollout under Root is a
 // live session.
-func (s CodexSource) IsSessionFile(path string) bool {
+func (s *CodexSource) IsSessionFile(path string) bool {
 	base := filepath.Base(path)
 	return strings.HasPrefix(base, "rollout-") &&
 		strings.HasSuffix(base, ".jsonl") &&
 		codexrollout.SessionIDFromPath(base) != ""
 }
 
-func (s CodexSource) SessionID(path string) string {
+func (s *CodexSource) SessionID(path string) string {
 	return codexrollout.SessionIDFromPath(path)
 }
 
-func (s CodexSource) ReadMeta(path string) (core.SessionMeta, error) {
-	return codexrollout.ReadSessionMeta(path)
+func (s *CodexSource) ReadMeta(path string) (core.SessionMeta, error) {
+	meta, err := codexrollout.ReadSessionMeta(path)
+	if err != nil {
+		return meta, err
+	}
+	names, err := s.threadNames(false)
+	meta.Title = names[meta.ID]
+	return meta, err
+}
+
+func (s *CodexSource) MetadataFiles() []string { return []string{s.indexPath} }
+
+func (s *CodexSource) RefreshMetadata(path string) (map[string]string, error) {
+	if filepath.Clean(path) != filepath.Clean(s.indexPath) {
+		return nil, os.ErrNotExist
+	}
+	return s.threadNames(true)
+}
+
+func (s *CodexSource) threadNames(refresh bool) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.names == nil || refresh {
+		names, err := codexrollout.ReadThreadNames(s.indexPath)
+		if err != nil {
+			return nil, err
+		}
+		s.names = names
+	}
+	return s.names, nil
 }
 
 // PiSource scans pi's per-working-directory session tree. Directory names are

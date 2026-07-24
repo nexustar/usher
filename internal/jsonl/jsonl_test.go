@@ -93,6 +93,45 @@ func TestReadSessionMeta_TitleFallback(t *testing.T) {
 	}
 }
 
+func TestRenameSessionUsesClaudeCustomTitle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	body := `{"type":"user","timestamp":"2026-07-24T00:00:00Z","message":{"role":"user","content":"first prompt"}}` + "\n" +
+		`{"type":"ai-title","aiTitle":"AI title"}` + "\n" +
+		`{"type":"other-metadata","customTitle":"Field title"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadSessionMeta(path)
+	if err != nil || meta.Title != "Field title" {
+		t.Fatalf("field title meta = %+v, err=%v", meta, err)
+	}
+	if err := RenameSession(path, "session-1", "Native title"); err != nil {
+		t.Fatal(err)
+	}
+	meta, err = ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "Native title" {
+		t.Fatalf("Title = %q, want Native title", meta.Title)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte(`{"type":"other-metadata","customTitle":""}`+"\n")...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err = ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "AI title" || meta.Prompt != "first prompt" {
+		t.Fatalf("empty custom title meta = %+v", meta)
+	}
+}
+
 func TestReadSessionMeta_Missing(t *testing.T) {
 	if _, err := ReadSessionMeta("testdata/does-not-exist.jsonl"); err == nil {
 		t.Error("expected error")

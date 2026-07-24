@@ -122,6 +122,13 @@ func (d *Discovery) addWatches() error {
 			}
 			return nil
 		})
+		if ms, ok := s.(MetadataSource); ok {
+			for _, path := range ms.MetadataFiles() {
+				if err := d.watcher.Add(filepath.Dir(path)); err != nil {
+					d.logger.Warn("watch metadata dir", "path", filepath.Dir(path), "err", err)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -153,10 +160,9 @@ func (d *Discovery) upsert(path string) {
 
 	if known {
 		existing.LastEventAt = info.ModTime()
-		// cwd/prompt/title land in jsonl written after the file appears; re-read
-		// while any is empty. Title is set once and never cleared, so this
-		// self-limits. Codex has no ai-title, so exclude it from the title re-read.
-		needTitle := existing.Title == "" && existing.Backend != "codex"
+		// cwd/prompt/title can land after the session file appears. Native
+		// rename commands also change title after it was first populated.
+		needTitle := existing.Title == ""
 		if meta, err := src.ReadMeta(path); err == nil {
 			// Claude's status-line callback is the authoritative source because
 			// it includes the effective max window. Transcript usage is only a
@@ -181,6 +187,9 @@ func (d *Discovery) upsert(path string) {
 				if existing.LastInputAt.IsZero() {
 					existing.LastInputAt = meta.LastInputAt
 				}
+			}
+			if meta.Title != "" {
+				existing.Title = meta.Title
 			}
 		}
 		d.mu.Lock()
@@ -320,6 +329,9 @@ func (d *Discovery) run(ctx context.Context) {
 }
 
 func (d *Discovery) handle(ev fsnotify.Event) {
+	if d.refreshMetadataFile(ev.Name) {
+		return
+	}
 	switch {
 	case ev.Op.Has(fsnotify.Create):
 		info, err := os.Stat(ev.Name)
@@ -351,6 +363,36 @@ func (d *Discovery) handle(ev fsnotify.Event) {
 	case ev.Op.Has(fsnotify.Remove), ev.Op.Has(fsnotify.Rename):
 		d.remove(ev.Name)
 	}
+}
+
+func (d *Discovery) refreshMetadataFile(path string) bool {
+	for _, src := range d.sources {
+		ms, ok := src.(MetadataSource)
+		if !ok {
+			continue
+		}
+		for _, metadataPath := range ms.MetadataFiles() {
+			if filepath.Clean(path) != filepath.Clean(metadataPath) {
+				continue
+			}
+			titles, err := ms.RefreshMetadata(path)
+			if err != nil {
+				d.logger.Warn("refresh metadata", "path", path, "err", err)
+				return true
+			}
+			d.mu.Lock()
+			for id, session := range d.sessions {
+				if session.Backend == src.Backend() {
+					session.Title = titles[id]
+					resolveTitle(&session)
+					d.sessions[id] = session
+				}
+			}
+			d.mu.Unlock()
+			return true
+		}
+	}
+	return false
 }
 
 // List returns root sessions sorted by most recent user input. Subagents are
@@ -399,6 +441,18 @@ func (d *Discovery) Get(id string) (core.Session, bool) {
 		resolveTitle(&s)
 	}
 	return s, ok
+}
+
+// SetTitle updates the cache after a native rename.
+func (d *Discovery) SetTitle(id, title string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s, ok := d.sessions[id]
+	if !ok {
+		return
+	}
+	s.Title = title
+	d.sessions[id] = s
 }
 
 // resolveTitle fills Title from Prompt when no ai-title has been seen yet.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,97 @@ func TestReadSessionMeta(t *testing.T) {
 	}
 	if meta.ID != "sess-1" || meta.Cwd != "/work" || meta.Prompt != "hello pi" || meta.Runtime.Model != "claude-x" {
 		t.Fatalf("meta = %+v", meta)
+	}
+}
+
+func TestRenameSessionUsesPiSessionInfo(t *testing.T) {
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello pi"}}
+`)
+	if err := RenameSession(path, "  Native\r\n\npi title  "); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "Native pi title" {
+		t.Fatalf("Title = %q", meta.Title)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var got entry
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != "session_info" || got.ParentID == nil || *got.ParentID != "u1" || len(got.ID) != 8 {
+		t.Fatalf("session_info = %+v", got)
+	}
+}
+
+func TestRuntimeRenameUsesRPCForLiveWorker(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "rpc.log")
+	bin := filepath.Join(dir, "fake-pi")
+	body := `#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$FAKE_PI_LOG"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id"
+done
+`
+	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}`+"\n")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PI_LOG", logPath)
+	c, err := startClient(bin, dir, path, dir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.stop)
+	w := &worker{c: c, cwd: dir, path: path, last: time.Now()}
+	r := &Runtime{workers: map[string]*worker{"sess-1": w}, max: 1}
+	if err := r.Rename(context.Background(), "sess-1", path, "Live title"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := r.Send(context.Background(), "sess-1", "/name Command title", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eventTypes []string
+	for event := range events {
+		eventTypes = append(eventTypes, event.Type)
+	}
+	if !reflect.DeepEqual(eventTypes, []string{backend.EventProcessStarted, backend.EventProcessExit}) {
+		t.Fatalf("command events = %v", eventTypes)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("live rename modified session JSONL directly")
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logged), `"type":"set_session_name"`) ||
+		!strings.Contains(string(logged), `"name":"Live title"`) ||
+		!strings.Contains(string(logged), `"name":"Command title"`) ||
+		strings.Contains(string(logged), `"type":"prompt"`) {
+		t.Fatalf("RPC log = %s", logged)
+	}
+	if w.leases != 0 {
+		t.Fatalf("worker lease leaked: %d", w.leases)
 	}
 }
 

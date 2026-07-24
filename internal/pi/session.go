@@ -3,13 +3,18 @@ package pi
 
 import (
 	"bufio"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
 )
+
+var sessionNameNewlines = regexp.MustCompile(`[\r\n]+`)
 
 // SessionIDFromPath reads the stable id from a pi session header.
 func SessionIDFromPath(path string) string {
@@ -43,6 +48,7 @@ type entry struct {
 	ParentID  *string         `json:"parentId"`
 	Timestamp time.Time       `json:"timestamp"`
 	Message   json.RawMessage `json:"message"`
+	Name      string          `json:"name"`
 }
 
 type message struct {
@@ -89,6 +95,10 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 		if !e.Timestamp.IsZero() {
 			meta.LastEventAt = e.Timestamp
 		}
+		if e.Type == "session_info" {
+			meta.Title = e.Name
+			continue
+		}
 		if e.Type != "message" {
 			continue
 		}
@@ -108,6 +118,61 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 		}
 	}
 	return meta, sc.Err()
+}
+
+// RenameSession appends pi session_info metadata.
+func RenameSession(path, title string) error {
+	title = strings.TrimSpace(sessionNameNewlines.ReplaceAllString(title, " "))
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), 16<<20)
+	var parentID *string
+	for sc.Scan() {
+		var e entry
+		if json.Unmarshal(sc.Bytes(), &e) == nil && e.ID != "" {
+			id := e.ID
+			parentID = &id
+		}
+	}
+	closeErr := f.Close()
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	var idBytes [4]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
+		return err
+	}
+	record := struct {
+		Type      string  `json:"type"`
+		ID        string  `json:"id"`
+		ParentID  *string `json:"parentId"`
+		Timestamp string  `json:"timestamp"`
+		Name      string  `json:"name"`
+	}{
+		Type:      "session_info",
+		ID:        fmt.Sprintf("%x", idBytes[:]),
+		ParentID:  parentID,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Name:      title,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = out.Write(data)
+	return err
 }
 
 func sessionIDFromParent(path string) string {

@@ -37,6 +37,9 @@ while IFS= read -r line; do
       printf '%s\n' "$line" >> "$FAKE_LOG"
       if [ -n "$FAKE_SKILLS_DELAY" ]; then sleep "$FAKE_SKILLS_DELAY"; fi
       printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"cwd":"/tmp","skills":[{"name":"imagegen","description":"make images","path":"/skills/imagegen/SKILL.md","scope":"user","enabled":true}],"errors":[]}]}}\n' "$id" ;;
+    *'"method":"thread/name/set"'*)
+      printf '%s\n' "$line" >> "$FAKE_LOG"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
     *'"method":"thread/compact/start"'*|*'"method":"review/start"'*)
       printf '%s\n' "$line" >> "$FAKE_LOG"
       thread=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
@@ -50,6 +53,62 @@ done
 		t.Fatal(err)
 	}
 	return script, logPath
+}
+
+func TestRenameIfLiveUsesExistingWorkerWithoutColdResume(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	live, err := m.RenameIfLive(ctx, "cold-thread", "Cold")
+	if err != nil || live {
+		t.Fatalf("cold rename: live=%v err=%v", live, err)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("cold rename started app-server: err=%v", err)
+	}
+
+	if err := m.Resume(ctx, "live-thread", "/tmp"); err != nil {
+		t.Fatal(err)
+	}
+	live, err = m.RenameIfLive(ctx, "live-thread", "Native title")
+	if err != nil || !live {
+		t.Fatalf("live rename: live=%v err=%v", live, err)
+	}
+	m.Shutdown()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if strings.Count(got, "start ") != 1 ||
+		!strings.Contains(got, `"method":"thread/name/set"`) ||
+		!strings.Contains(got, `"name":"Native title"`) {
+		t.Fatalf("worker log = %q", got)
+	}
+}
+
+func TestRenameResumesColdWorker(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	t.Cleanup(m.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := m.Rename(ctx, "cold-thread", "/tmp", "Command title"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if strings.Count(got, "start ") != 1 ||
+		!strings.Contains(got, `"method":"thread/name/set"`) ||
+		!strings.Contains(got, `"name":"Command title"`) {
+		t.Fatalf("worker log = %q", got)
+	}
 }
 
 func TestManagerLRUEvictsIdleWorkerAndColdResumes(t *testing.T) {

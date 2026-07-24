@@ -706,6 +706,18 @@ func (c *Client) ResumeThread(ctx context.Context, id, cwd string) error {
 	c.mu.Unlock()
 	return nil
 }
+
+// RenameThread updates display metadata without starting a turn.
+func (c *Client) RenameThread(ctx context.Context, id, title string) error {
+	if err := c.ensure(ctx); err != nil {
+		return err
+	}
+	return c.call(ctx, "thread/name/set", map[string]any{
+		"threadId": id,
+		"name":     title,
+	}, nil)
+}
+
 func (c *Client) Interrupt(ctx context.Context, id string) error {
 	c.mu.Lock()
 	running := c.cmd != nil

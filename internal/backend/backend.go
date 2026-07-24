@@ -16,6 +16,16 @@ type Event struct {
 	Raw  json.RawMessage
 }
 
+// CompletedOperation reports a local command that created no model turn.
+func CompletedOperation(cwd string) <-chan Event {
+	ch := make(chan Event, 2)
+	started, _ := json.Marshal(ProcessStartedPayload{Cwd: cwd})
+	ch <- Event{Type: EventProcessStarted, Raw: started}
+	ch <- Event{Type: EventProcessExit, Raw: json.RawMessage(`{}`)}
+	close(ch)
+	return ch
+}
+
 const (
 	EventProcessStarted = "subprocess.started"
 	EventProcessExit    = "subprocess.exit"
@@ -127,6 +137,11 @@ type Forker interface {
 	Fork(context.Context, string, string, string) (string, string, error)
 }
 
+// Renamer writes a title to backend-native metadata. path is the transcript.
+type Renamer interface {
+	Rename(context.Context, string, string, string) error
+}
+
 // Model is the backend-neutral model-picker projection.
 type Model struct {
 	ID             string   `json:"id"`
@@ -147,5 +162,6 @@ type Backend struct {
 	Runtime    Runtime
 	Transcript Transcript
 	Forker     Forker
+	Renamer    Renamer
 	Models     ModelProvider
 }

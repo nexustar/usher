@@ -19,6 +19,7 @@ import (
 	"github.com/nexustar/usher/internal/claudestream"
 	"github.com/nexustar/usher/internal/codexrollout"
 	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/jsonl"
 )
 
 // StreamEvent is one event for a turn. Type is the jsonl line's "type"
@@ -34,12 +35,28 @@ type StreamEvent = backend.Event
 type timing struct{ confirm, poll time.Duration }
 
 type Sender struct {
-	app      *appserver.Manager // non-nil for the headless Codex backend
-	claude   *claudestream.Manager
-	locateFn func(string) string
-	logger   *slog.Logger
-	t        timing
-	tail     tailConfig
+	app       *appserver.Manager // non-nil for the headless Codex backend
+	claude    *claudestream.Manager
+	locateFn  func(string) string
+	indexPath string
+	logger    *slog.Logger
+	t         timing
+	tail      tailConfig
+}
+
+// Rename uses Codex RPC when live. Claude and idle Codex use native metadata;
+// Claude has no rename control RPC, and direct append avoids model context.
+func (s *Sender) Rename(ctx context.Context, id, path, title string) error {
+	if s.app != nil {
+		if live, err := s.app.RenameIfLive(ctx, id, title); live || err != nil {
+			return err
+		}
+		return codexrollout.RenameSession(s.indexPath, id, title)
+	}
+	if s.claude != nil {
+		return jsonl.RenameSession(path, id, title)
+	}
+	return errors.New("sender has no headless backend")
 }
 
 // claudeMCPConfigArgs writes an MCP config registering `usher mcp-stdio` next to
@@ -78,14 +95,12 @@ func claudeMCPConfigArgs(hookSock string, logger *slog.Logger) []string {
 // New builds a Sender. claudeCmd is the claude binary; permissionMode (if
 // non-empty) is passed through as --permission-mode; projectsDir is Claude
 // Code's projects root (used to locate session jsonl files by their globally
-// unique id); socket is retained for configuration compatibility; hookSock
-// routes AskUserQuestion hooks back to this instance; maxLive caps Claude
-// workers. Tool permissions use claudestream's stdio control protocol.
-func New(claudeCmd, permissionMode, projectsDir, socket, hookSock string, maxLive int, injectMCPTools bool, hooks *hook.Manager, logger *slog.Logger) *Sender {
+// unique id); hookSock routes AskUserQuestion hooks back to this instance;
+// maxLive caps Claude workers.
+func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, injectMCPTools bool, hooks *hook.Manager, logger *slog.Logger) *Sender {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	_ = socket // retained for CLI/config compatibility
 	var extra []string
 	if permissionMode != "" {
 		extra = []string{"--permission-mode", permissionMode}
@@ -170,11 +185,10 @@ func codexMCPConfig(logger *slog.Logger) map[string]any {
 // --sandbox workspace-write); hookSock, if set, routes the codex permission hook
 // back to this instance. maxLive caps Codex workers; idle workers are shut down
 // and cold-resumed on the next send. Codex assigns ids for new threads.
-func NewCodex(codexCmd, sessionsDir, socket, hookSock string, sandboxArgs []string, maxLive int, injectMCPTools bool, hooks *hook.Manager, logger *slog.Logger) *Sender {
+func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxLive int, injectMCPTools bool, hooks *hook.Manager, logger *slog.Logger) *Sender {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	_ = socket // retained for CLI/config compatibility
 	var env []string
 	if hookSock != "" {
 		env = append(env, "USHER_HOOK_SOCK="+hookSock)
@@ -189,10 +203,11 @@ func NewCodex(codexCmd, sessionsDir, socket, hookSock string, sandboxArgs []stri
 		config[k] = v
 	}
 	return &Sender{
-		app:      appserver.NewManager(codexCmd, hooks, sandbox, config, env, maxLive, logger),
-		locateFn: func(id string) string { return locateCodex(sessionsDir, id) },
-		logger:   logger,
-		t:        t,
+		app:       appserver.NewManager(codexCmd, hooks, sandbox, config, env, maxLive, logger),
+		locateFn:  func(id string) string { return locateCodex(sessionsDir, id) },
+		indexPath: filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
+		logger:    logger,
+		t:         t,
 		tail: tailConfig{
 			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
 			contentOnly: true, turnComplete: codexrollout.IsTurnComplete, turnAborted: codexrollout.IsTurnAborted,
@@ -264,6 +279,14 @@ func (s *Sender) codexPrompt(ctx context.Context, sessionID, prompt, cwd string,
 		return s.appOperation(ctx, sessionID, cwd, func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error) {
 			return s.app.Review(ctx, sessionID, cwd, args)
 		})
+	case "/rename":
+		if args == "" {
+			return nil, errors.New("usage: /rename <name>")
+		}
+		if err := s.app.Rename(ctx, sessionID, cwd, args); err != nil {
+			return nil, err
+		}
+		return backend.CompletedOperation(cwd), nil
 	default:
 		skills, err := s.app.Skills(ctx, sessionID, cwd)
 		if err != nil {
@@ -383,6 +406,7 @@ func (s *Sender) ComposerItems(ctx context.Context, sessionID, cwd string) (back
 	}
 	out := []backend.ComposerItem{
 		{Name: "compact", Kind: "command", Description: "Compact conversation context"},
+		{Name: "rename", Kind: "command", Description: "Rename this session"},
 		{Name: "review", Kind: "command", Description: "Review current changes"},
 	}
 	skills, available, err := s.app.SkillsIfLive(ctx, sessionID, cwd)

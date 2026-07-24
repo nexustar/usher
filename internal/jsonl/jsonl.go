@@ -37,6 +37,8 @@ type Event struct {
 	ToolUseResult json.RawMessage `json:"toolUseResult,omitempty"`
 
 	AITitle string `json:"aiTitle,omitempty"`
+	// CustomTitle is Claude's display-only session title.
+	CustomTitle *string `json:"customTitle,omitempty"`
 
 	// AttributionAgent is the subagent type ("Explore", "general-purpose", …)
 	// Claude Code stamps on the lines of a subagent (sidechain) transcript. It
@@ -85,7 +87,7 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 	// can exceed bufio's default 64K line limit.
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
-	var firstUserPrompt string
+	var firstUserPrompt, aiTitle, customTitle string
 	for sc.Scan() {
 		ev, err := ParseLine(sc.Bytes())
 		if err != nil {
@@ -101,7 +103,10 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 			meta.Cwd = ev.Cwd
 		}
 		if ev.Type == "ai-title" && ev.AITitle != "" {
-			meta.Title = ev.AITitle
+			aiTitle = ev.AITitle
+		}
+		if ev.CustomTitle != nil {
+			customTitle = *ev.CustomTitle
 		}
 		if meta.AgentName == "" && ev.AttributionAgent != "" {
 			meta.AgentName = ev.AttributionAgent
@@ -127,7 +132,43 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 	if firstUserPrompt != "" {
 		meta.Prompt = truncate(firstUserPrompt, 60)
 	}
+	if customTitle != "" {
+		meta.Title = customTitle
+	} else {
+		meta.Title = aiTitle
+	}
 	return meta, sc.Err()
+}
+
+// RenameSession directly appends Claude's native custom-title record. The
+// Claude SDK supports this for live sessions; unlike /rename, it stays out of
+// model context.
+func RenameSession(path, sessionID, title string) error {
+	record := struct {
+		Type        string `json:"type"`
+		CustomTitle string `json:"customTitle"`
+		SessionID   string `json:"sessionId"`
+	}{
+		Type:        "custom-title",
+		CustomTitle: title,
+		SessionID:   sessionID,
+	}
+	return appendRecord(path, record)
+}
+
+func appendRecord(path string, record any) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(data)
+	return err
 }
 
 func updateClaudeRuntime(runtime *core.SessionRuntime, raw json.RawMessage) {

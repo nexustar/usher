@@ -16,6 +16,7 @@ import (
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
 	"github.com/nexustar/usher/internal/sender"
+	"github.com/nexustar/usher/internal/sessionmeta"
 	"github.com/nexustar/usher/internal/transcript"
 )
 
@@ -107,6 +108,58 @@ func writeTemp(t *testing.T, name, content string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+type recordingRenamer struct {
+	id, path, title string
+	err             error
+}
+
+func (r *recordingRenamer) Rename(_ context.Context, id, path, title string) error {
+	r.id, r.path, r.title = id, path, title
+	return r.err
+}
+
+func TestRenameMigratesUsherOverrideToNativeMetadata(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "-tmp", "session-1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"role":"user","content":"first prompt"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(path)
+	meta := sessionmeta.New(filepath.Join(t.TempDir(), "sessions.json"), 0)
+	meta.Rename("session-1", "legacy override")
+	native := &recordingRenamer{}
+	r := New(d, map[string]backend.Backend{
+		"claude": {Renamer: native},
+	}, "claude", nil, nil, meta, nil)
+
+	if err := r.Rename(context.Background(), "session-1", "native title"); err != nil {
+		t.Fatal(err)
+	}
+	if native.id != "session-1" || native.path != path || native.title != "native title" {
+		t.Fatalf("native rename = %+v", native)
+	}
+	if got := meta.CustomTitle("session-1"); got != "" {
+		t.Fatalf("legacy override remains: %q", got)
+	}
+	sess, ok := d.Get("session-1")
+	if !ok || sess.Title != "native title" {
+		t.Fatalf("session after rename = %+v, ok=%v", sess, ok)
+	}
+	if err := r.Rename(context.Background(), "session-1", " \n "); !errors.Is(err, ErrInvalidTitle) {
+		t.Fatalf("empty rename error = %v", err)
+	}
+	if native.title != "native title" {
+		t.Fatalf("empty rename reached backend: %+v", native)
+	}
 }
 
 // TestReadTurnsForBackend proves the dispatch: each backend's parser
