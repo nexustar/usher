@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
@@ -222,4 +223,43 @@ func lineType(line []byte) string {
 // (during thinking or a pending tool call).
 func isTurnComplete(line []byte) bool {
 	return jsonl.IsTurnComplete(line)
+}
+
+// isClaudeTurnAborted matches the "[Request interrupted …]" user record Claude
+// writes on cancel (the abort path logs no turn_duration). It matches a whole
+// text block, not a substring, so a prompt quoting the phrase is not mistaken
+// for the marker.
+func isClaudeTurnAborted(line []byte) bool {
+	var o struct {
+		Type    string `json:"type"`
+		Message struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &o) != nil || o.Type != "user" {
+		return false
+	}
+	for _, b := range o.Message.Content {
+		if b.Type == "text" && strings.HasPrefix(b.Text, "[Request interrupted by user") {
+			return true
+		}
+	}
+	return false
+}
+
+// terminalMarker reports whether line is this backend's end-of-turn marker
+// (completion or abort). The control protocol owns lifecycle under contentOnly;
+// the drain uses this only as the deterministic "content finished" signal to
+// skip the silence window. Backends without a durable marker leave both nil.
+func (c tailConfig) terminalMarker(line []byte) bool {
+	if c.turnComplete != nil && c.turnComplete(line) {
+		return true
+	}
+	if c.turnAborted != nil && c.turnAborted(line) {
+		return true
+	}
+	return false
 }

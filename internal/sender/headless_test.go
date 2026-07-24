@@ -10,6 +10,9 @@ import (
 )
 
 func TestDrainTailCancelsAndKeepsFinalParts(t *testing.T) {
+	old := finalDrainQuiet
+	finalDrainQuiet = 30 * time.Millisecond
+	t.Cleanup(func() { finalDrainQuiet = old })
 	events := make(chan StreamEvent, 2)
 	out := make(chan StreamEvent, 2)
 	tailCtx, cancel := context.WithCancel(context.Background())
@@ -23,13 +26,96 @@ func TestDrainTailCancelsAndKeepsFinalParts(t *testing.T) {
 		close(events)
 	}()
 
-	drainTail(context.Background(), out, events, cancel)
+	drainTail(context.Background(), out, events, cancel, nil, false)
 
 	if tailCtx.Err() == nil {
 		t.Fatal("tail was not cancelled for its final EOF drain")
 	}
 	if first, second := (<-out).Type, (<-out).Type; first != "part" || second != "subprocess.exit" {
 		t.Fatalf("events = [%s %s], want [part subprocess.exit]", first, second)
+	}
+}
+
+// A tail that keeps growing past completion — a concurrent turn from another
+// frontend writing into the same jsonl — resets the quiet timer forever. Only
+// the hard ceiling stops the drain; without it the goroutine leaks and the
+// session is stuck "running".
+func TestDrainTailHardCeilingStopsUnboundedGrowth(t *testing.T) {
+	oldQuiet, oldCeil := finalDrainQuiet, finalDrainCeiling
+	finalDrainQuiet = 30 * time.Millisecond
+	finalDrainCeiling = 150 * time.Millisecond
+	t.Cleanup(func() { finalDrainQuiet = oldQuiet; finalDrainCeiling = oldCeil })
+
+	events := make(chan StreamEvent)
+	out := make(chan StreamEvent, 4096)
+	tailCtx, cancel := context.WithCancel(context.Background())
+
+	// Emit faster than the quiet window until the drain cancels the tailer,
+	// exactly as a live tailer would while the file keeps growing.
+	go func() {
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tailCtx.Done():
+				close(events)
+				return
+			case <-tick.C:
+				select {
+				case events <- StreamEvent{Type: "part"}:
+				case <-tailCtx.Done():
+					close(events)
+					return
+				}
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() { drainTail(context.Background(), out, events, cancel, nil, false); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainTail never returned under continuous growth: hard ceiling missing")
+	}
+	if tailCtx.Err() == nil {
+		t.Fatal("tail was not cancelled")
+	}
+}
+
+// The terminal marker is the deterministic "content finished" signal: drainTail
+// must stop the instant it forwards one, not wait out the quiet window. With a
+// long quiet window, only the fast path can return promptly.
+func TestDrainTailStopsOnTerminalMarker(t *testing.T) {
+	oldQuiet := finalDrainQuiet
+	finalDrainQuiet = 5 * time.Second // so a quiet-based stop would blow the deadline
+	t.Cleanup(func() { finalDrainQuiet = oldQuiet })
+
+	events := make(chan StreamEvent, 3)
+	out := make(chan StreamEvent, 8)
+	tailCtx, cancel := context.WithCancel(context.Background())
+	marker := []byte(`{"type":"system","subtype":"turn_duration"}`)
+	go func() {
+		events <- StreamEvent{Type: "assistant", Raw: []byte(`{"type":"assistant"}`)}
+		events <- StreamEvent{Type: "system", Raw: marker}
+		// The tailer emits its own exit once cancelled for the final EOF read.
+		<-tailCtx.Done()
+		events <- StreamEvent{Type: backend.EventProcessExit, Raw: []byte(`{}`)}
+		close(events)
+	}()
+
+	done := make(chan bool, 1)
+	go func() { done <- drainTail(context.Background(), out, events, cancel, isTurnComplete, false) }()
+	select {
+	case exited := <-done:
+		if !exited {
+			t.Fatal("drainTail reported no exit after the terminal marker")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainTail waited out the quiet window instead of stopping on the marker")
+	}
+	if tailCtx.Err() == nil {
+		t.Fatal("tail was not cancelled")
 	}
 }
 

@@ -105,7 +105,7 @@ func New(claudeCmd, permissionMode, projectsDir, socket, hookSock string, maxLiv
 		t:        t,
 		tail: tailConfig{
 			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
-			contentOnly: true, turnComplete: isTurnComplete,
+			contentOnly: true, turnComplete: isTurnComplete, turnAborted: isClaudeTurnAborted,
 		},
 	}
 }
@@ -540,15 +540,54 @@ func emitLiveDelta(ctx context.Context, out chan<- StreamEvent, kind, delta stri
 	return sendEvent(ctx, out, StreamEvent{Type: typ, Raw: raw})
 }
 
-// drainTail lets a completed backend protocol flush the final log records into
-// the live event stream. Protocol completion and file visibility are separate
-// clocks; cancelling the tail immediately can strand already-written parts
-// until the browser next reloads the transcript.
-func drainTail(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, cancel context.CancelFunc) {
-	cancel()
-	for ev := range events {
-		if !sendEvent(ctx, out, ev) {
-			return
+// drainTail flushes a finished turn's final records, then stops the tailer.
+// Protocol completion and file visibility are separate clocks, so it waits for
+// the transcript to catch up: until the backend's end-of-turn marker is
+// forwarded (alreadyTerminal if the caller already saw it), else a
+// finalDrainQuiet silence, else the finalDrainCeiling deadline. Records already
+// on disk are never dropped.
+func drainTail(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, cancel context.CancelFunc, isTerminal func([]byte) bool, alreadyTerminal bool) bool {
+	defer cancel()
+	exited := false
+	// forceStop cancels the still-live tailer and forwards its final EOF read.
+	// Only future growth is dropped, never a record already on disk.
+	forceStop := func() bool {
+		cancel()
+		for ev := range events {
+			exited = exited || ev.Type == backend.EventProcessExit
+			if !sendEvent(ctx, out, ev) {
+				return exited
+			}
+		}
+		return exited
+	}
+	if alreadyTerminal {
+		return forceStop()
+	}
+	quiet := time.NewTimer(finalDrainQuiet)
+	defer quiet.Stop()
+	ceiling := time.NewTimer(finalDrainCeiling)
+	defer ceiling.Stop()
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return exited
+			}
+			exited = exited || ev.Type == backend.EventProcessExit
+			if !sendEvent(ctx, out, ev) {
+				cancel()
+				return exited
+			}
+			if isTerminal != nil && isTerminal(ev.Raw) {
+				return forceStop()
+			}
+			quiet.Reset(finalDrainQuiet)
+		case <-quiet.C:
+			return forceStop()
+		case <-ceiling.C:
+			slog.Warn("final transcript drain hit hard ceiling; stopping tail")
+			return forceStop()
 		}
 	}
 }

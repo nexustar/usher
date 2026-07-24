@@ -12,6 +12,17 @@ import (
 // cancelGrace bounds the wait for a backend result after cancellation.
 var cancelGrace = 3 * time.Second
 
+// finalDrainQuiet is the no-marker fallback: how long the tail must be silent
+// before the drain assumes it caught up. Kept ~2x tail poll so a poll always
+// lands inside it (content is already on disk by completion; the window covers
+// poll jitter, not write lag).
+var finalDrainQuiet = 300 * time.Millisecond
+
+// finalDrainCeiling caps the whole drain: finalDrainQuiet resets on every
+// record, so a jsonl that keeps growing (a concurrent turn from another
+// frontend) would reset it forever. This is the absolute stop.
+var finalDrainCeiling = 3 * time.Second
+
 // loggedTurnConfig describes the small protocol-specific edges around the
 // shared content-plane loop: live deltas and the terminal protocol result.
 type loggedTurnConfig[R, D any] struct {
@@ -58,6 +69,11 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 		defer cancel()
 		events := tailTurn(tailCtx, path, cfg.offset, cfg.logger, cfg.tail)
 		deltas := cfg.deltas
+		// The end-of-turn marker is often forwarded here, before the protocol
+		// result arrives (the jsonl is flushed ahead of the completion signal),
+		// so remember it: drainTail can then stop at once instead of waiting out
+		// the silence window for a marker it will never see again.
+		terminalSeen := false
 		for {
 			select {
 			case delta, ok := <-deltas:
@@ -83,11 +99,12 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 					finishCancelled(out, cfg, events, cancel, ev)
 					return
 				}
+				terminalSeen = terminalSeen || cfg.tail.terminalMarker(ev.Raw)
 			case result := <-cfg.done:
 				// Detach finalization from a concurrent cancellation.
 				finalCtx := context.WithoutCancel(ctx)
 				cfg.result(finalCtx, out, result)
-				drainTail(finalCtx, out, events, cancel)
+				drainTail(finalCtx, out, events, cancel, cfg.tail.terminalMarker, terminalSeen)
 				return
 			case <-ctx.Done():
 				finishCancelled(out, cfg, events, cancel)
@@ -103,8 +120,12 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 func finishCancelled[R, D any](out chan<- StreamEvent, cfg loggedTurnConfig[R, D], events <-chan StreamEvent, cancel context.CancelFunc, pending ...StreamEvent) {
 	ctx := context.Background()
 	exited := false
+	// The abort marker can be forwarded here, while waiting for the backend
+	// result, so remember it for drainTail — same reason as the completion path.
+	terminalSeen := false
 	send := func(ev StreamEvent) {
 		exited = exited || ev.Type == backend.EventProcessExit
+		terminalSeen = terminalSeen || cfg.tail.terminalMarker(ev.Raw)
 		sendEvent(ctx, out, ev)
 	}
 	for _, ev := range pending {
@@ -129,11 +150,7 @@ func finishCancelled[R, D any](out chan<- StreamEvent, cfg loggedTurnConfig[R, D
 		}
 	}
 	if events != nil {
-		// Stopping the tailer triggers its final EOF drain.
-		cancel()
-		for ev := range events {
-			send(ev)
-		}
+		exited = drainTail(ctx, out, events, cancel, cfg.tail.terminalMarker, terminalSeen) || exited
 	}
 	if !exited {
 		// User-requested cancellation reconciles as a normal turn end.

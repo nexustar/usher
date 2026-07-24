@@ -261,3 +261,26 @@ func TestTailTurn_ContentOnlyIgnoresLogCompletion(t *testing.T) {
 		t.Fatalf("cancel event = %s, want subprocess.exit", ev.Type)
 	}
 }
+
+func TestIsClaudeTurnAborted(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"interrupt marker", `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`, true},
+		{"tool-use variant", `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`, true},
+		{"normal user prompt", `{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}`, false},
+		// A prompt merely quoting the phrase mid-text is not the marker.
+		{"phrase quoted mid-text", `{"type":"user","message":{"content":[{"type":"text","text":"why did you log [Request interrupted by user] here?"}]}}`, false},
+		// A tool_result block that happens to contain the phrase is not the marker.
+		{"tool result containing phrase", `{"type":"user","message":{"content":[{"type":"tool_result","content":"[Request interrupted by user]"}]}}`, false},
+		{"assistant line", `{"type":"assistant","message":{"content":[]}}`, false},
+		{"turn_duration is not an abort", `{"type":"system","subtype":"turn_duration"}`, false},
+	}
+	for _, c := range cases {
+		if got := isClaudeTurnAborted([]byte(c.line)); got != c.want {
+			t.Errorf("%s: isClaudeTurnAborted = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

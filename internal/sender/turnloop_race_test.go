@@ -14,8 +14,13 @@ import (
 // Concurrent completion and cancellation must still emit an exit.
 func TestMergeLoggedTurn_CompletionRacingCancelStillExits(t *testing.T) {
 	old := cancelGrace
+	oldQuiet := finalDrainQuiet
 	cancelGrace = 200 * time.Millisecond
-	t.Cleanup(func() { cancelGrace = old })
+	finalDrainQuiet = 30 * time.Millisecond
+	t.Cleanup(func() {
+		cancelGrace = old
+		finalDrainQuiet = oldQuiet
+	})
 
 	const attempts = 25
 	for i := 0; i < attempts; i++ {
