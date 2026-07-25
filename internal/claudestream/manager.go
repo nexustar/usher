@@ -24,6 +24,7 @@ import (
 type Result struct {
 	IsError       bool
 	Subtype       string
+	Error         string
 	Model         string
 	ContextWindow int64
 }
@@ -428,7 +429,8 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			Message struct {
 				Model string `json:"model"`
 			} `json:"message"`
-			IsError    bool `json:"is_error"`
+			IsError    bool     `json:"is_error"`
+			Errors     []string `json:"errors"`
 			ModelUsage map[string]struct {
 				ContextWindow int64 `json:"contextWindow"`
 			} `json:"modelUsage"`
@@ -507,6 +509,7 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 				}
 				req.runtime = &Result{
 					IsError: e.IsError, Subtype: e.Subtype,
+					Error: strings.Join(e.Errors, "; "),
 					Model: model, ContextWindow: usage.ContextWindow,
 				}
 			}
@@ -623,9 +626,11 @@ func (m *Manager) finishLifecycle(p *process, uuid, state string) {
 		if req.runtime != nil {
 			result = *req.runtime
 		}
-		result.Subtype = state
 		if state == "cancelled" {
 			result.IsError = true
+			result.Subtype = state
+		} else if !result.IsError {
+			result.Subtype = state
 		}
 		req.finish(result)
 	}

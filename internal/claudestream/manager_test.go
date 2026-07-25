@@ -500,6 +500,29 @@ func TestLifecycleCarriesResultRuntimeMetadata(t *testing.T) {
 	<-done
 }
 
+func TestErrorResultPreservesMessageAndSubtypeAtLifecycleEnd(t *testing.T) {
+	m := New("", "", "", nil, 1, nil, nil)
+	req := &turnRequest{
+		done:    make(chan Result, 1),
+		deltas:  make(chan Delta, 1),
+		uuid:    "u1",
+		started: true,
+	}
+	p := &process{turns: []*turnRequest{req}}
+	r, w := io.Pipe()
+	done := make(chan struct{})
+	go func() { m.readLoop(p, r); close(done) }()
+	_, _ = io.WriteString(w, `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["tool timed out","ENOENT: missing file"]}`+"\n")
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"u1","state":"completed"}`+"\n")
+	got := <-req.done
+	if !got.IsError || got.Subtype != "error_during_execution" ||
+		got.Error != "tool timed out; ENOENT: missing file" {
+		t.Fatalf("result = %+v", got)
+	}
+	_ = w.Close()
+	<-done
+}
+
 func TestLateResultDoesNotContaminateUnstartedNextTurn(t *testing.T) {
 	req1 := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta), uuid: "u1", started: true}
 	req2 := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta), uuid: "u2"}

@@ -485,9 +485,12 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model string, 
 		tail: tail, done: done, deltas: deltas, logger: s.logger,
 		delta: func(d claudestream.Delta) (string, string, bool) { return "text", d.Text, true },
 		result: func(ctx context.Context, out chan<- StreamEvent, result claudestream.Result) {
-			// User-requested cancellation is not a turn failure.
-			if result.IsError && result.Subtype != "error_during_execution" && result.Subtype != "cancelled" {
-				emitError(ctx, out, "claude turn failed: "+result.Subtype)
+			if result.Subtype != "cancelled" {
+				if result.Error != "" {
+					emitError(ctx, out, result.Error)
+				} else if result.IsError {
+					emitError(ctx, out, "claude turn failed: "+result.Subtype)
+				}
 			}
 			emitClaudeRuntime(ctx, out, result)
 		},
@@ -542,7 +545,9 @@ func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, 
 			return d.Kind, d.Text, true
 		},
 		result: func(ctx context.Context, out chan<- StreamEvent, result appserver.TurnResult) {
-			if result.Status == "failed" {
+			if result.Error != "" {
+				emitError(ctx, out, result.Error)
+			} else if result.Status == "failed" {
 				emitError(ctx, out, "codex turn failed")
 			}
 		},

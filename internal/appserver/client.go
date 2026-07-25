@@ -39,7 +39,10 @@ type response struct {
 }
 
 // TurnResult is delivered when app-server announces a terminal turn state.
-type TurnResult struct{ Status string }
+type TurnResult struct {
+	Status string
+	Error  string
+}
 
 // Delta is ephemeral protocol output used for live preview. The rollout file
 // remains the canonical transcript.
@@ -59,6 +62,7 @@ type Skill struct {
 type turnStream struct {
 	done   chan TurnResult
 	deltas chan Delta
+	errMsg string
 }
 
 // finish closes deltas before done, so a receiver of done may safely abandon
@@ -304,6 +308,25 @@ func (c *Client) dispatch(m rpcMessage) {
 		c.mu.Unlock()
 		return
 	}
+	if m.Method == "error" {
+		var p struct {
+			ThreadID  string `json:"threadId"`
+			WillRetry bool   `json:"willRetry"`
+			Error     struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		// Retry errors may still be followed by a successful turn.
+		if !p.WillRetry && p.Error.Message != "" {
+			c.mu.Lock()
+			if stream := c.turns[p.ThreadID]; stream != nil {
+				stream.errMsg = p.Error.Message
+			}
+			c.mu.Unlock()
+		}
+		return
+	}
 	if m.Method == "turn/completed" {
 		var p struct {
 			ThreadID string `json:"threadId"`
@@ -314,11 +337,15 @@ func (c *Client) dispatch(m rpcMessage) {
 		_ = json.Unmarshal(m.Params, &p)
 		c.mu.Lock()
 		stream := c.turns[p.ThreadID]
+		errMsg := ""
+		if stream != nil {
+			errMsg = stream.errMsg
+		}
 		delete(c.turns, p.ThreadID)
 		delete(c.active, p.ThreadID)
 		c.mu.Unlock()
 		if stream != nil {
-			stream.finish(TurnResult{Status: p.Turn.Status})
+			stream.finish(TurnResult{Status: p.Turn.Status, Error: errMsg})
 		}
 	}
 }

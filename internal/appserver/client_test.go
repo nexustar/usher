@@ -62,6 +62,26 @@ func TestAgentMessageDeltaRoutesByThread(t *testing.T) {
 	}
 }
 
+func TestErrorNotificationSurfacesFinalMessageAtTurnEnd(t *testing.T) {
+	c := New("codex", nil, nil, nil, nil, nil)
+	stream := &turnStream{done: make(chan TurnResult, 1), deltas: make(chan Delta, 1)}
+	c.turns["thread-1"] = stream
+	c.dispatch(rpcMessage{Method: "error", Params: json.RawMessage(`{"threadId":"thread-1","willRetry":true,"error":{"message":"Service Unavailable"}}`)})
+	if stream.errMsg != "" {
+		t.Fatalf("retry error stashed: %q", stream.errMsg)
+	}
+	c.dispatch(rpcMessage{Method: "error", Params: json.RawMessage(`{"threadId":"thread-1","willRetry":false,"error":{"message":"Service Unavailable"}}`)})
+	c.dispatch(rpcMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`)})
+	select {
+	case r := <-stream.done:
+		if r.Status != "failed" || r.Error != "Service Unavailable" {
+			t.Fatalf("result = %+v", r)
+		}
+	default:
+		t.Fatal("turn/completed did not finish the stream")
+	}
+}
+
 func TestInterruptStoppedClientIsNoop(t *testing.T) {
 	c := New("definitely-not-a-command", hook.New(""), nil, nil, nil, nil)
 	if err := c.Interrupt(context.Background(), "missing"); err != nil {
