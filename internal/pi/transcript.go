@@ -166,6 +166,17 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 			cp := p
 			parts = append(parts, &cp)
 		}
+		// A failed model response is persisted as an assistant record with
+		// stopReason "error" and usually no content. Emit one error turn per
+		// record so a reload shows the failure instead of ending silently.
+		if m.StopReason == "error" && m.ErrorMessage != "" {
+			var done []core.Turn
+			if t := a.Flush(); t != nil {
+				done = append(done, *t)
+			}
+			done = append(done, core.Turn{Role: "error", Content: m.ErrorMessage, Time: ts, UUID: e.ID, EndTime: ts})
+			return done, parts
+		}
 		a.cur.Touch(ts)
 		return nil, parts
 	case "toolResult":

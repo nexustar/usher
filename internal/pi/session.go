@@ -52,13 +52,15 @@ type entry struct {
 }
 
 type message struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	Model      string          `json:"model"`
-	ToolCallID string          `json:"toolCallId"`
-	ToolName   string          `json:"toolName"`
-	IsError    bool            `json:"isError"`
-	Timestamp  int64           `json:"timestamp"`
+	Role         string          `json:"role"`
+	Content      json.RawMessage `json:"content"`
+	Model        string          `json:"model"`
+	ToolCallID   string          `json:"toolCallId"`
+	ToolName     string          `json:"toolName"`
+	IsError      bool            `json:"isError"`
+	StopReason   string          `json:"stopReason"`
+	ErrorMessage string          `json:"errorMessage"`
+	Timestamp    int64           `json:"timestamp"`
 }
 
 type block struct {

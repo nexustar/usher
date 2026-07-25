@@ -178,6 +178,39 @@ func TestTranscriptProjectsCompaction(t *testing.T) {
 	}
 }
 
+func TestTranscriptSurfacesPersistedError(t *testing.T) {
+	// Each failed model response is its own stopReason "error" record; the
+	// transcript must show one error turn per record, not end silently.
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-25T08:57:42Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-25T08:57:43Z","message":{"role":"user","content":"run"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-25T08:57:44Z","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}
+{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-07-25T09:03:10Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"terminated"}}
+{"type":"message","id":"a3","parentId":"a2","timestamp":"2026-07-25T09:03:13Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"Service Unavailable"}}
+{"type":"message","id":"a4","parentId":"a3","timestamp":"2026-07-25T09:03:18Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"Service Unavailable"}}
+`)
+	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 5 {
+		t.Fatalf("len(turns) = %d, want 5: %+v", len(turns), turns)
+	}
+	if turns[1].Role != "assistant" || len(turns[1].Parts) != 1 || turns[1].Parts[0].Content != "working" {
+		t.Fatalf("assistant turn = %+v", turns[1])
+	}
+	want := []struct{ content, uuid string }{
+		{"terminated", "a2"},
+		{"Service Unavailable", "a3"},
+		{"Service Unavailable", "a4"},
+	}
+	for i, w := range want {
+		got := turns[2+i]
+		if got.Role != "error" || got.Content != w.content || got.UUID != w.uuid {
+			t.Fatalf("error turn %d = %+v, want role=error content=%q uuid=%q", i, got, w.content, w.uuid)
+		}
+	}
+}
+
 func TestRenameSessionUsesPiSessionInfo(t *testing.T) {
 	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
 {"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello pi"}}
