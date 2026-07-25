@@ -83,6 +83,7 @@ func TestComposerItemsFromRPC(t *testing.T) {
 	}
 	want := []backend.ComposerItem{
 		{Name: "name", Kind: "command", Description: "Set session display name"},
+		{Name: "compact", Kind: "command", Description: "Manually compact the session context"},
 		{Name: "deploy", Kind: "extension", Description: "Deploy the app"},
 		{Name: "fix-tests", Kind: "prompt", Description: "Fix failing tests"},
 		{Name: "skill:brave-search", Kind: "skill", Description: "Search the web"},

@@ -98,7 +98,22 @@ func (a *Assembler) FeedLine(raw []byte) ([]core.Turn, *core.TurnPart) {
 // FeedLineParts exposes every block Pi stores together in one assistant record.
 func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 	var e entry
-	if json.Unmarshal(raw, &e) != nil || e.Type != "message" {
+	if json.Unmarshal(raw, &e) != nil {
+		return nil, nil
+	}
+	if e.Type == "compaction" {
+		var completed []core.Turn
+		if t := a.Flush(); t != nil {
+			completed = append(completed, *t)
+		}
+		return append(completed, core.Turn{
+			Role:    "system",
+			Content: "Context compacted",
+			Time:    e.Timestamp,
+			UUID:    e.ID,
+		}), nil
+	}
+	if e.Type != "message" {
 		return nil, nil
 	}
 	var m message

@@ -495,16 +495,75 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 		}
 	}
 	defer r.releaseWorker(w)
-	if command, args, ok := backend.ParseSlashCommand(prompt); ok && command == "/name" {
-		if args == "" {
-			return nil, errors.New("usage: /name <name>")
+	if command, args, ok := backend.ParseSlashCommand(prompt); ok {
+		switch command {
+		case "/name":
+			if args == "" {
+				return nil, errors.New("usage: /name <name>")
+			}
+			if _, err := w.c.request(ctx, "set_session_name", map[string]any{"name": args}); err != nil {
+				return nil, err
+			}
+			return backend.CompletedOperation(cwd), nil
+		case "/compact":
+			fields := map[string]any{}
+			if args != "" {
+				fields["customInstructions"] = args
+			}
+			return r.rpcOperation(ctx, id, w, "compact", fields)
 		}
-		if _, err := w.c.request(ctx, "set_session_name", map[string]any{"name": args}); err != nil {
-			return nil, err
-		}
-		return backend.CompletedOperation(cwd), nil
 	}
 	return r.prompt(ctx, id, w, prompt, false)
+}
+
+func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ string, fields map[string]any) (<-chan backend.Event, error) {
+	r.mu.Lock()
+	if w.busy {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("pi session %s is busy", id)
+	}
+	w.busy = true
+	w.last = time.Now()
+	r.mu.Unlock()
+
+	out := make(chan backend.Event, 4)
+	go func() {
+		defer close(out)
+		defer func() {
+			r.mu.Lock()
+			if r.workers[id] == w {
+				w.busy = false
+				w.last = time.Now()
+			}
+			r.mu.Unlock()
+		}()
+
+		started, _ := json.Marshal(backend.ProcessStartedPayload{Cwd: w.cwd})
+		out <- backend.Event{Type: backend.EventProcessStarted, Raw: started}
+		if typ == "compact" {
+			raw, _ := json.Marshal(backend.TurnStatusPayload{Status: "compacting"})
+			out <- backend.Event{Type: backend.EventTurnStatus, Raw: raw}
+		}
+		if _, err := w.c.request(ctx, typ, fields); err != nil {
+			raw, _ := json.Marshal(backend.ErrorPayload{Message: err.Error()})
+			out <- backend.Event{Type: backend.EventError, Raw: raw}
+		}
+		// RPC events emitted by the operation precede its response on stdout.
+		// They must not leak into the next model turn.
+		for {
+			select {
+			case _, ok := <-w.c.events:
+				if !ok {
+					out <- backend.Event{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)}
+					return
+				}
+			default:
+				out <- backend.Event{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)}
+				return
+			}
+		}
+	}()
+	return out, nil
 }
 
 // Resume starts an idle RPC worker for an existing session without prompting
@@ -707,11 +766,12 @@ func composerItemsFromRPC(data json.RawMessage) ([]backend.ComposerItem, error) 
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, err
 	}
-	out := []backend.ComposerItem{{
-		Name: "name", Kind: "command", Description: "Set session display name",
-	}}
+	out := []backend.ComposerItem{
+		{Name: "name", Kind: "command", Description: "Set session display name"},
+		{Name: "compact", Kind: "command", Description: "Manually compact the session context"},
+	}
 	for _, command := range payload.Commands {
-		if command.Name == "" || command.Name == "name" {
+		if command.Name == "" || command.Name == "name" || command.Name == "compact" {
 			continue
 		}
 		kind := command.Source

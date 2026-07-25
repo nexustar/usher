@@ -725,9 +725,12 @@ export async function showDetail(id) {
     const userNode = appendChatMessage({ role: 'user', content: text });
     if (userNode) userNode.classList.add('optimistic');
     // Codex slash input may become an RPC operation or normalize /skill to
-    // $skill. Reconcile at turn end so the original optimistic echo cannot
-    // linger beside app-server's canonical transcript form.
-    if (sess.backend === 'codex' && text.startsWith('/')) {
+    // $skill. Pi's local metadata/compaction commands also create no canonical
+    // user turn. Reconcile at turn end so optimistic command text disappears
+    // and newly persisted system records become visible.
+    const piLocalCommand = sess.backend === 'pi' &&
+      /^\/(?:name|compact)(?:\s|$)/.test(text);
+    if ((sess.backend === 'codex' && text.startsWith('/')) || piLocalCommand) {
       liveTurnDirty = true;
     }
     try {

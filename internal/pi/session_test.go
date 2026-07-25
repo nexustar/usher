@@ -161,6 +161,23 @@ func TestReadSessionMeta(t *testing.T) {
 	}
 }
 
+func TestTranscriptProjectsCompaction(t *testing.T) {
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T10:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"before"}]}}
+{"type":"compaction","id":"c1","parentId":"a1","timestamp":"2026-07-01T10:00:03Z","summary":"internal summary"}
+{"type":"message","id":"u2","parentId":"c1","timestamp":"2026-07-01T10:00:04Z","message":{"role":"user","content":"continue"}}
+`)
+	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 4 || turns[1].Role != "assistant" || turns[2].Role != "system" ||
+		turns[2].Content != "Context compacted" || turns[2].UUID != "c1" {
+		t.Fatalf("turns = %+v", turns)
+	}
+}
+
 func TestRenameSessionUsesPiSessionInfo(t *testing.T) {
 	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
 {"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello pi"}}
@@ -230,6 +247,19 @@ done
 	if !reflect.DeepEqual(eventTypes, []string{backend.EventProcessStarted, backend.EventProcessExit}) {
 		t.Fatalf("command events = %v", eventTypes)
 	}
+	events, err = r.Send(context.Background(), "sess-1", "/compact Keep the API details", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventTypes = eventTypes[:0]
+	for event := range events {
+		eventTypes = append(eventTypes, event.Type)
+	}
+	if !reflect.DeepEqual(eventTypes, []string{
+		backend.EventProcessStarted, backend.EventTurnStatus, backend.EventProcessExit,
+	}) {
+		t.Fatalf("compact events = %v", eventTypes)
+	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -244,11 +274,66 @@ done
 	if !strings.Contains(string(logged), `"type":"set_session_name"`) ||
 		!strings.Contains(string(logged), `"name":"Live title"`) ||
 		!strings.Contains(string(logged), `"name":"Command title"`) ||
+		!strings.Contains(string(logged), `"type":"compact"`) ||
+		!strings.Contains(string(logged), `"customInstructions":"Keep the API details"`) ||
 		strings.Contains(string(logged), `"type":"prompt"`) {
 		t.Fatalf("RPC log = %s", logged)
 	}
 	if w.leases != 0 {
 		t.Fatalf("worker lease leaked: %d", w.leases)
+	}
+}
+
+// A manual /compact must swallow the events pi streams before the RPC response
+// so they cannot leak into the next turn's event consumption.
+func TestCompactDrainsPreResponseEvents(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-pi")
+	body := `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"compact"'*)
+      printf '{"type":"compaction_start","reason":"manual"}\n'
+      printf '{"type":"compaction_end","reason":"manual"}\n'
+      printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id"
+      ;;
+    *)
+      printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := startClient(bin, dir, "", dir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.stop)
+	w := &worker{c: c, cwd: dir, path: path, last: time.Now()}
+	r := &Runtime{workers: map[string]*worker{"s1": w}, max: 1}
+
+	ch, err := r.Send(context.Background(), "s1", "/compact", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for _, ev := range collectPi(t, ch, 5*time.Second) {
+		types = append(types, ev.Type)
+	}
+	if !reflect.DeepEqual(types, []string{
+		backend.EventProcessStarted, backend.EventTurnStatus, backend.EventProcessExit,
+	}) {
+		t.Fatalf("compact events = %v", types)
+	}
+	if n := len(w.c.events); n != 0 {
+		t.Errorf("%d pre-response events leaked into the next turn, want 0", n)
 	}
 }
 
