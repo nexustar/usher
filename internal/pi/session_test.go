@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/core"
 )
 
 func TestPiPermissionSystemRequestRecognition(t *testing.T) {
@@ -247,6 +248,16 @@ func TestRuntimeRenameUsesRPCForLiveWorker(t *testing.T) {
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_PI_LOG"
   id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"get_state"'*)
+      printf '{"type":"response","id":"%s","success":true,"data":{"model":{"provider":"anthropic","id":"claude-x"},"thinkingLevel":"high"}}\n' "$id"
+      continue
+      ;;
+    *'"type":"get_session_stats"'*)
+      printf '{"type":"response","id":"%s","success":true,"data":{"contextUsage":{"tokens":42000,"contextWindow":200000,"percent":21}}}\n' "$id"
+      continue
+      ;;
+  esac
   printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id"
 done
 `
@@ -285,13 +296,25 @@ done
 		t.Fatal(err)
 	}
 	eventTypes = eventTypes[:0]
+	var runtimeEvent backend.Event
 	for event := range events {
 		eventTypes = append(eventTypes, event.Type)
+		if event.Type == backend.EventRuntime {
+			runtimeEvent = event
+		}
 	}
 	if !reflect.DeepEqual(eventTypes, []string{
-		backend.EventProcessStarted, backend.EventTurnStatus, backend.EventProcessExit,
+		backend.EventProcessStarted, backend.EventTurnStatus, backend.EventRuntime, backend.EventProcessExit,
 	}) {
 		t.Fatalf("compact events = %v", eventTypes)
+	}
+	var runtime core.SessionRuntime
+	if err := json.Unmarshal(runtimeEvent.Raw, &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Model != "claude-x" || runtime.Effort != "high" ||
+		runtime.ContextTokens != 42000 || runtime.ContextWindow != 200000 {
+		t.Fatalf("runtime = %+v", runtime)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {

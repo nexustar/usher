@@ -167,7 +167,12 @@ func (d *Discovery) upsert(path string) {
 			// Claude's status-line callback is the authoritative source because
 			// it includes the effective max window. Transcript usage is only a
 			// fallback; never let a later fsnotify scan erase a captured window.
-			if existing.Backend != "claude" || existing.Runtime.ContextWindow == 0 {
+			if existing.Backend == "pi" {
+				// Pi transcript metadata lacks RPC-only effort/context.
+				if existing.Runtime.Model == "" {
+					existing.Runtime.Model = meta.Runtime.Model
+				}
+			} else if existing.Backend != "claude" || existing.Runtime.ContextWindow == 0 {
 				existing.Runtime = meta.Runtime
 			}
 			if existing.Cwd == "" || existing.Prompt == "" || existing.LastInputAt.IsZero() || needTitle {
@@ -298,11 +303,12 @@ func (d *Discovery) UpdateRuntime(id string, runtime core.SessionRuntime) bool {
 	if runtime.Effort != "" {
 		s.Runtime.Effort = runtime.Effort
 	}
-	if runtime.ContextTokens > 0 {
-		s.Runtime.ContextTokens = runtime.ContextTokens
-	}
 	if runtime.ContextWindow > 0 {
 		s.Runtime.ContextWindow = runtime.ContextWindow
+	}
+	if runtime.ContextTokens > 0 || (s.Backend == "pi" && runtime.ContextWindow > 0) {
+		// Pi reports zero after compaction to clear stale usage.
+		s.Runtime.ContextTokens = runtime.ContextTokens
 	}
 	d.sessions[id] = s
 	return true

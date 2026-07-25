@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/hook"
 )
 
@@ -172,6 +173,56 @@ func rpcDataCancelled(raw json.RawMessage) bool {
 		Cancelled bool `json:"cancelled"`
 	}
 	return json.Unmarshal(raw, &data) == nil && data.Cancelled
+}
+
+func readRuntime(ctx context.Context, c *client) (core.SessionRuntime, error) {
+	var runtime core.SessionRuntime
+	stateRaw, err := c.request(ctx, "get_state", nil)
+	if err != nil {
+		return runtime, err
+	}
+	var state struct {
+		Model *struct {
+			ID string `json:"id"`
+		} `json:"model"`
+		ThinkingLevel string `json:"thinkingLevel"`
+	}
+	if err := json.Unmarshal(stateRaw, &state); err != nil {
+		return runtime, err
+	}
+	if state.Model != nil {
+		runtime.Model = state.Model.ID
+	}
+	runtime.Effort = state.ThinkingLevel
+
+	statsRaw, err := c.request(ctx, "get_session_stats", nil)
+	if err != nil {
+		return runtime, err
+	}
+	var stats struct {
+		ContextUsage *struct {
+			Tokens        *int64 `json:"tokens"`
+			ContextWindow int64  `json:"contextWindow"`
+		} `json:"contextUsage"`
+	}
+	if err := json.Unmarshal(statsRaw, &stats); err != nil {
+		return runtime, err
+	}
+	if stats.ContextUsage != nil {
+		runtime.ContextWindow = stats.ContextUsage.ContextWindow
+		if stats.ContextUsage.Tokens != nil {
+			runtime.ContextTokens = *stats.ContextUsage.Tokens
+		}
+	}
+	return runtime, nil
+}
+
+func emitRuntime(out chan<- backend.Event, runtime core.SessionRuntime) {
+	if runtime == (core.SessionRuntime{}) {
+		return
+	}
+	raw, _ := json.Marshal(runtime)
+	out <- backend.Event{Type: backend.EventRuntime, Raw: raw}
 }
 
 func (c *client) send(v map[string]any) error {
@@ -547,6 +598,14 @@ func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ st
 		if _, err := w.c.request(ctx, typ, fields); err != nil {
 			raw, _ := json.Marshal(backend.ErrorPayload{Message: err.Error()})
 			out <- backend.Event{Type: backend.EventError, Raw: raw}
+		} else {
+			runtimeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			runtime, err := readRuntime(runtimeCtx, w.c)
+			cancel()
+			if err != nil {
+				r.logger.Warn("pi runtime snapshot", "session", id, "err", err)
+			}
+			emitRuntime(out, runtime)
 		}
 		// RPC events emitted by the operation precede its response on stdout.
 		// They must not leak into the next model turn.
@@ -701,6 +760,13 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 				case "agent_settled":
 					// Read through EOF before finalizing.
 					emitTail()
+					runtimeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+					runtime, err := readRuntime(runtimeCtx, w.c)
+					cancel()
+					if err != nil {
+						r.logger.Warn("pi runtime snapshot", "session", id, "err", err)
+					}
+					emitRuntime(out, runtime)
 					emitExit("")
 					return
 				case "extension_error":

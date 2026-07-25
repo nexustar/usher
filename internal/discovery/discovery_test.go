@@ -95,6 +95,36 @@ func TestDiscovery_GetAndPath(t *testing.T) {
 	}
 }
 
+func TestUpdateRuntimeClearsContextTokens(t *testing.T) {
+	d := &Discovery{sessions: map[string]core.Session{
+		"pi": {ID: "pi", Backend: "pi", Runtime: core.SessionRuntime{ContextTokens: 80, ContextWindow: 100}},
+	}}
+	if !d.UpdateRuntime("pi", core.SessionRuntime{ContextWindow: 100}) {
+		t.Fatal("session not updated")
+	}
+	sess, _ := d.Get("pi")
+	if sess.Runtime.ContextTokens != 0 || sess.Runtime.ContextWindow != 100 {
+		t.Fatalf("runtime = %+v", sess.Runtime)
+	}
+}
+
+func TestUpdateRuntimePreservesClaudeContextTokens(t *testing.T) {
+	d := &Discovery{sessions: map[string]core.Session{
+		"claude": {
+			ID:      "claude",
+			Backend: "claude",
+			Runtime: core.SessionRuntime{ContextTokens: 80, ContextWindow: 100},
+		},
+	}}
+	if !d.UpdateRuntime("claude", core.SessionRuntime{ContextWindow: 200}) {
+		t.Fatal("session not updated")
+	}
+	sess, _ := d.Get("claude")
+	if sess.Runtime.ContextTokens != 80 || sess.Runtime.ContextWindow != 200 {
+		t.Fatalf("runtime = %+v", sess.Runtime)
+	}
+}
+
 // TestDiscovery_LateAITitle covers ai-title surfacing on a live session.
 // Claude writes the ai-title some turns AFTER the first user prompt, so upsert
 // must keep re-reading while Title is empty and pick it up on a later Write —
