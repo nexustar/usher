@@ -17,13 +17,14 @@ type Claude struct{}
 
 func (Claude) Models(context.Context) ([]backend.Model, error) {
 	return []backend.Model{
-		{ID: "opus", DisplayName: "Opus"},
-		{ID: "claude-opus-4-6", DisplayName: "Opus 4.6"},
-		{ID: "sonnet", DisplayName: "Sonnet"},
-		{ID: "sonnet[1m]", DisplayName: "Sonnet 1M"},
-		{ID: "haiku", DisplayName: "Haiku"},
 		{ID: "fable", DisplayName: "Fable"},
+		{ID: "opus", DisplayName: "Opus"},
+		{ID: "sonnet", DisplayName: "Sonnet"},
+		{ID: "haiku", DisplayName: "Haiku"},
 		{ID: "opusplan", DisplayName: "Opus Plan"},
+		{ID: "claude-opus-4-8", DisplayName: "Opus 4.8"},
+		{ID: "claude-opus-4-6", DisplayName: "Opus 4.6"},
+		{ID: "claude-sonnet-4-6", DisplayName: "Sonnet 4.6"},
 	}, nil
 }
 
