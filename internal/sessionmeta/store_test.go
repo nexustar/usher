@@ -139,6 +139,38 @@ func TestPin(t *testing.T) {
 	}
 }
 
+func TestPin_OverridesArchive(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+	stale := now.Add(-30 * 24 * time.Hour)
+
+	s.Pin("auto")
+	if s.IsArchived("auto", stale, now) {
+		t.Errorf("pinned session should not auto-archive when stale")
+	}
+
+	s.Archive("manual")
+	s.Pin("manual")
+	if s.IsArchived("manual", now, now) {
+		t.Errorf("pin should overlay an earlier manual archive")
+	}
+	s.Unpin("manual")
+	if !s.IsArchived("manual", now, now) {
+		t.Errorf("unpin should restore the earlier manual archive")
+	}
+}
+
+func TestArchive_Unpins(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+
+	s.Pin("a")
+	s.Archive("a")
+	if s.IsPinned("a") || !s.IsArchived("a", now, now) {
+		t.Errorf("archiving a pinned session should drop the pin and take effect")
+	}
+}
+
 func TestForget(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now()

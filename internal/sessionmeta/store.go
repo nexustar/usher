@@ -113,12 +113,15 @@ func (s *Store) persist() {
 	}
 }
 
+// Archive drops the pin — a pin overrides archiving, so keeping both would make
+// this a no-op.
 func (s *Store) Archive(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.archived[id] == decisionArchived {
+	if s.archived[id] == decisionArchived && !s.pinned[id] {
 		return
 	}
+	delete(s.pinned, id)
 	s.archived[id] = decisionArchived
 	s.persist()
 }
@@ -142,10 +145,16 @@ func (s *Store) Unarchive(id string, lastEventAt time.Time, now time.Time) {
 	s.persist()
 }
 
+// A pin wins over the auto-archive timer and over an earlier explicit archive,
+// as an overlay: unpinning restores the underlying state.
 func (s *Store) IsArchived(id string, lastEventAt time.Time, now time.Time) bool {
 	s.mu.Lock()
 	d, ok := s.archived[id]
+	pinned := s.pinned[id]
 	s.mu.Unlock()
+	if pinned {
+		return false
+	}
 	if ok {
 		return d == decisionArchived
 	}
