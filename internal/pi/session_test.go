@@ -72,6 +72,36 @@ func TestClientReapsExitedProcess(t *testing.T) {
 	}
 }
 
+func TestStartClientPassesAppendSystemPrompt(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "fake-pi")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c, err := startClientWithSystemPrompt(
+		bin, t.TempDir(), "", t.TempDir(), "", "Be concise.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c.done
+	got := strings.Join(c.cmd.Args, "\x00")
+	if !strings.Contains(got, "--append-system-prompt\x00Be concise.") {
+		t.Fatalf("args = %q", c.cmd.Args)
+	}
+}
+
+func TestSystemPromptLookup(t *testing.T) {
+	r := NewRuntime("pi", t.TempDir(), nil, 1, Models{}, nil, nil)
+	r.SetSystemPromptLookup(func(id string) string {
+		if id == "saved" {
+			return "Persisted prompt."
+		}
+		return ""
+	})
+	if got := r.promptFor("saved"); got != "Persisted prompt." {
+		t.Fatalf("promptFor(saved) = %q", got)
+	}
+}
+
 func TestCleanupForkFailureDoesNotRestoreRemovedWorker(t *testing.T) {
 	w := &worker{busy: true}
 	r := &Runtime{workers: map[string]*worker{}}

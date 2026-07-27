@@ -29,7 +29,7 @@ done
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := New(script, hook.New(""), nil, nil, nil, nil)
+	c := New(script, hook.New(""), nil, nil, nil, nil, nil)
 	t.Cleanup(c.Shutdown)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -59,7 +59,7 @@ done
 
 // Before turn/started, no active turn ID is known.
 func TestInterruptBeforeTurnStartedSendsEmptyTurnID(t *testing.T) {
-	c := New("unused", nil, nil, nil, nil, nil)
+	c := New("unused", nil, nil, nil, nil, nil, nil)
 	c.turns["t1"] = &turnStream{done: make(chan TurnResult, 1), deltas: make(chan Delta, 1)}
 	if id, ok := c.active["t1"]; ok || id != "" {
 		t.Fatalf("active turn id before turn/started = %q, %v; want empty", id, ok)
@@ -68,7 +68,7 @@ func TestInterruptBeforeTurnStartedSendsEmptyTurnID(t *testing.T) {
 
 // Completion must clear the tracked turn ID.
 func TestTurnCompletedClearsTrackedTurnID(t *testing.T) {
-	c := New("unused", nil, nil, nil, nil, nil)
+	c := New("unused", nil, nil, nil, nil, nil, nil)
 	c.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"t1","turn":{"id":"turn-abc"}}`)})
 	if c.active["t1"] != "turn-abc" {
 		t.Fatalf("tracked turn id = %q, want turn-abc", c.active["t1"])

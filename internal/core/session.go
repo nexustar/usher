@@ -87,3 +87,15 @@ type SessionSearchResult struct {
 	TurnIndex int    `json:"turn_index"`
 	Snippet   string `json:"snippet"`
 }
+
+// CreateOptions describes a session to create. Every field is optional except
+// Cwd and InitialMessage: an empty Model takes the backend's default, and an
+// empty Backend preserves the legacy model-name inference for callers that
+// don't know which agent owns the selected model.
+type CreateOptions struct {
+	Backend            string
+	Cwd                string
+	InitialMessage     string
+	Model              string
+	AppendSystemPrompt string
+}

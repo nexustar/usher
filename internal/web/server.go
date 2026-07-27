@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/agent/usheragent"
+	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/attachment"
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
@@ -79,6 +80,7 @@ type Server struct {
 	editorURL string
 	uiDir     string
 	themePath string
+	agents    *agentprofile.Store
 
 	// Main-chat delivery. The user message is persisted in the POST handler
 	// (202 means durable); the agent turn then runs on the chat's single
@@ -105,6 +107,7 @@ func NewServer(
 	editorURL string,
 	uiDir string,
 	themePath string,
+	agents *agentprofile.Store,
 	logger *slog.Logger,
 ) *Server {
 	if logger == nil {
@@ -123,6 +126,7 @@ func NewServer(
 		editorURL:      editorURL,
 		uiDir:          uiDir,
 		themePath:      themePath,
+		agents:         agents,
 		chatSubs:       map[string]map[chan chatFrame]func(){},
 		chatQueues:     map[string]chan mainchat.Message{},
 		chatPending:    map[string]int{},
@@ -163,6 +167,10 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	webMux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	webMux.HandleFunc("GET /api/models", s.handleModels)
+	webMux.HandleFunc("GET /api/agents", s.handleAgents)
+	webMux.HandleFunc("POST /api/agents", s.handleCreateAgent)
+	webMux.HandleFunc("PUT /api/agents/{name}", s.handleUpdateAgent)
+	webMux.HandleFunc("DELETE /api/agents/{name}", s.handleDeleteAgent)
 	webMux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	webMux.HandleFunc("GET /api/sessions/{id}/commands", s.handleSessionCommands)
 	webMux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
@@ -482,6 +490,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 type createSessionRequest struct {
+	Agent          string `json:"agent"`
 	Cwd            string `json:"cwd"`
 	InitialMessage string `json:"initial_message"`
 	Backend        string `json:"backend"`
@@ -494,16 +503,58 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	model := req.Model
-	if model == "default" {
-		model = ""
+	opts, err := s.agents.Resolve(req.Agent, req.Cwd, req.Backend, req.Model)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	id, err := s.router.StartSessionWithBackend(req.Backend, req.Cwd, req.InitialMessage, model)
+	opts.InitialMessage = req.InitialMessage
+	id, err := s.router.StartSession(opts)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
+}
+
+func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"agents": s.agents.List()})
+}
+
+func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	var profile agentprofile.Profile
+	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	created, err := s.agents.Create(profile)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
+	var profile agentprofile.Profile
+	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	updated, err := s.agents.Update(r.PathValue("name"), profile)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	if err := s.agents.Delete(r.PathValue("name")); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleConfig exposes the few server-side settings the SPA needs to render

@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -30,9 +31,10 @@ type Manager struct {
 	logger  *slog.Logger
 	maxLive int
 
-	mu       sync.Mutex
-	workers  map[string]*worker
-	starting int
+	mu           sync.Mutex
+	workers      map[string]*worker
+	starting     int
+	systemPrompt func(string) string
 }
 
 func NewManager(bin string, hooks *hook.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
@@ -45,8 +47,29 @@ func NewManager(bin string, hooks *hook.Manager, sandbox, config map[string]any,
 	return &Manager{bin: bin, hooks: hooks, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}}
 }
 
-func (m *Manager) newClient() *Client {
-	return New(m.bin, m.hooks, m.sandbox, m.config, m.env, m.logger)
+func (m *Manager) newClient(instructions string) *Client {
+	var args []string
+	if instructions != "" {
+		quoted, _ := json.Marshal(instructions)
+		args = []string{"-c", "developer_instructions=" + string(quoted)}
+	}
+	return New(m.bin, m.hooks, m.sandbox, m.config, m.env, args, m.logger)
+}
+
+func (m *Manager) SetSystemPromptLookup(lookup func(string) string) {
+	m.mu.Lock()
+	m.systemPrompt = lookup
+	m.mu.Unlock()
+}
+
+func (m *Manager) promptFor(id string) string {
+	m.mu.Lock()
+	lookup := m.systemPrompt
+	m.mu.Unlock()
+	if lookup == nil {
+		return ""
+	}
+	return lookup(id)
 }
 
 // reserve makes room for a new worker. The returned idle victim has already
@@ -86,7 +109,7 @@ func (m *Manager) finishStart() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) StartThread(ctx context.Context, cwd, model string) (string, error) {
+func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions string) (string, error) {
 	victim, err := m.reserve()
 	if err != nil {
 		return "", err
@@ -94,7 +117,7 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model string) (string, e
 	if victim != nil {
 		victim.Shutdown()
 	}
-	c := m.newClient()
+	c := m.newClient(instructions)
 	id, err := c.StartThread(ctx, cwd, model)
 	if err != nil {
 		m.finishStart()
@@ -167,7 +190,7 @@ func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, err
 			victim.Shutdown()
 		}
 		ready := make(chan struct{})
-		w := &worker{client: m.newClient(), ready: ready, lastUsed: time.Now()}
+		w := &worker{client: m.newClient(m.promptFor(id)), ready: ready, lastUsed: time.Now()}
 		m.mu.Lock()
 		m.starting--
 		if existing := m.workers[id]; existing != nil {

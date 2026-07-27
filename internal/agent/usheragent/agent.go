@@ -71,16 +71,16 @@ type AgentAPI interface {
 	// session mentioned X?" primitive — one call instead of per-session fan-out.
 	SearchAllSessions(query string, maxSessions, contextChars int) ([]core.SessionSearchResult, bool, error)
 
-	// CreateSession starts a brand-new session in cwd with the given initial
-	// message and waits for the first assistant response. Returns the new
-	// session id and the assistant text.
-	CreateSessionWithBackend(ctx context.Context, cwd, initialMsg, backend, model string, timeout time.Duration) (string, string, error)
+	// CreateSession starts a brand-new session in o.Cwd with o.InitialMessage
+	// and waits for the first assistant response. Returns the new session id
+	// and the assistant text.
+	CreateSession(ctx context.Context, o core.CreateOptions, timeout time.Duration) (string, string, error)
 
 	// CreateSessionRelayed is CreateSession without the in-turn wait: it
 	// returns once the new session id is known and hands the first assistant
 	// reply to onDone in the background (same contract as
 	// SendToSessionRelayed; onDone also receives the new session id).
-	CreateSessionRelayedWithBackend(cwd, initialMsg, backend, model string, onDone func(sessionID, reply string, err error)) (string, error)
+	CreateSessionRelayed(o core.CreateOptions, onDone func(sessionID, reply string, err error)) (string, error)
 }
 
 // RelayTag is the marker prepended to a relayed session reply when it is fed

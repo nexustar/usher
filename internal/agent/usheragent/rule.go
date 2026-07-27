@@ -256,7 +256,8 @@ func (a *RuleAgent) create(ctx context.Context, args string) (string, string) {
 	if cwd == "" || initial == "" {
 		return "usage: /new <cwd> <initial message>", ""
 	}
-	newID, reply, err := a.api.CreateSessionWithBackend(ctx, cwd, initial, "", "", defaultCreateTimeout)
+	newID, reply, err := a.api.CreateSession(ctx,
+		core.CreateOptions{Cwd: cwd, InitialMessage: initial}, defaultCreateTimeout)
 	if err != nil {
 		if newID != "" {
 			return fmt.Sprintf("created %s but: %s", shortID(newID), err.Error()), newID

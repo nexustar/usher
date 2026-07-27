@@ -101,7 +101,7 @@ const maxQueuedSends = 32
 
 // New builds a Router over explicitly assembled backends (at least one).
 func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, defaultBackend string, b *broker.Broker, h *hook.Manager, meta *sessionmeta.Store, term *terminal.Manager) *Router {
-	return &Router{
+	r := &Router{
 		discovery:      d,
 		backends:       backends,
 		defaultBackend: defaultBackend,
@@ -114,6 +114,14 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 		creating:       map[string]core.Session{},
 		composerCache:  map[composerCacheKey][]backendpkg.ComposerItem{},
 	}
+	if meta != nil {
+		for _, backend := range backends {
+			if setter, ok := backend.Runtime.(backendpkg.SystemPrompter); ok {
+				setter.SetSystemPromptLookup(meta.AppendSystemPrompt)
+			}
+		}
+	}
+	return r
 }
 
 type composerCacheKey struct {
@@ -429,6 +437,9 @@ func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 	newID, dstPath, err := b.Forker.Fork(context.Background(), srcID, path, afterUUID)
 	if err != nil {
 		return "", err
+	}
+	if r.meta != nil {
+		r.meta.SetAppendSystemPrompt(newID, r.meta.AppendSystemPrompt(srcID))
 	}
 	// Ingest synchronously so the id resolves the moment the client navigates
 	// to it, instead of racing the fsnotify watcher.
@@ -1472,32 +1483,33 @@ func extractErrorMessage(raw json.RawMessage) string {
 	return e.Message
 }
 
-// StartSession creates a new session and returns once its backend-assigned ID
-// is known. The first turn continues in the background and streams to broker.
-func (r *Router) StartSession(cwd, initialMsg, model string) (string, error) {
-	return r.StartSessionWithBackend("", cwd, initialMsg, model)
+// prepare validates the caller's inputs and pins the backend, so the three
+// create paths below differ only in how they wait for the first reply.
+func (r *Router) prepare(ctx context.Context, o core.CreateOptions) (core.CreateOptions, error) {
+	cwd, err := validateCreateInputs(o.Cwd, o.InitialMessage)
+	if err != nil {
+		return o, err
+	}
+	o.Cwd = cwd
+	o.Backend, err = r.resolveCreateBackend(ctx, o.Backend, o.Model)
+	return o, err
 }
 
-// StartSessionWithBackend is the unambiguous create path used by frontends
-// that know which agent the selected model belongs to. Empty backend preserves
-// the legacy model-name inference for older plugin clients.
-func (r *Router) StartSessionWithBackend(backend, cwd, initialMsg, model string) (string, error) {
-	cwd, err := validateCreateInputs(cwd, initialMsg)
-	if err != nil {
-		return "", err
-	}
-	backend, err = r.resolveCreateBackend(context.Background(), backend, model)
+// StartSession creates a new session and returns once its backend-assigned ID
+// is known. The first turn continues in the background and streams to broker.
+func (r *Router) StartSession(o core.CreateOptions) (string, error) {
+	o, err := r.prepare(context.Background(), o)
 	if err != nil {
 		return "", err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	id, ch, tok, err := r.beginNewSession(ctx, cancel, cwd, initialMsg, model, backend)
+	id, ch, tok, err := r.beginNewSession(ctx, cancel, o)
 	if err != nil {
 		cancel()
 		return "", err
 	}
-	format, _ := r.transcriptForBackend(backend) // beginNewSession validated it
+	format, _ := r.transcriptForBackend(o.Backend) // beginNewSession validated it
 	go func() {
 		defer r.releaseSend(id, tok)
 		asm := format.NewAssembler()
@@ -1529,24 +1541,27 @@ func (r *Router) resolveCreateBackend(ctx context.Context, backend, model string
 	return backend, nil
 }
 
-func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc, cwd, prompt, model, backendName string) (string, <-chan sender.StreamEvent, *sendToken, error) {
-	if _, err := r.transcriptForBackend(backendName); err != nil {
+func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc, o core.CreateOptions) (string, <-chan sender.StreamEvent, *sendToken, error) {
+	if _, err := r.transcriptForBackend(o.Backend); err != nil {
 		return "", nil, nil, err
 	}
-	id, ch, err := r.senderForBackend(backendName).Start(ctx, backendpkg.StartRequest{
-		Cwd: cwd, Prompt: prompt, Model: model,
+	id, ch, err := r.senderForBackend(o.Backend).Start(ctx, backendpkg.StartRequest{
+		Cwd: o.Cwd, Prompt: o.InitialMessage, Model: o.Model, AppendSystemPrompt: o.AppendSystemPrompt,
 	})
 	if err != nil {
 		return "", nil, nil, err
+	}
+	if r.meta != nil {
+		r.meta.SetAppendSystemPrompt(id, o.AppendSystemPrompt)
 	}
 	tok := &sendToken{cancel: cancel}
 	now := time.Now()
 	r.sendMu.Lock()
 	r.activeSend[id] = tok
 	r.creating[id] = core.Session{
-		ID: id, Title: truncateRunes(prompt, 60), Cwd: cwd,
+		ID: id, Title: truncateRunes(o.InitialMessage, 60), Cwd: o.Cwd,
 		Status: core.StatusRunning, StartedAt: now, LastEventAt: now,
-		LastInputAt: now, Backend: backendName,
+		LastInputAt: now, Backend: o.Backend,
 	}
 	r.sendMu.Unlock()
 	return id, ch, tok, nil
@@ -1599,16 +1614,8 @@ func truncateRunes(s string, n int) string {
 // generated session id and the accumulated assistant text. The session
 // will appear in discovery via fsnotify shortly after the subprocess
 // starts writing its jsonl.
-func (r *Router) CreateSession(ctx context.Context, cwd, initialMsg string, timeout time.Duration) (string, string, error) {
-	return r.CreateSessionWithBackend(ctx, cwd, initialMsg, "", "", timeout)
-}
-
-func (r *Router) CreateSessionWithBackend(ctx context.Context, cwd, initialMsg, backend, model string, timeout time.Duration) (string, string, error) {
-	cwd, err := validateCreateInputs(cwd, initialMsg)
-	if err != nil {
-		return "", "", err
-	}
-	backend, err = r.resolveCreateBackend(ctx, backend, model)
+func (r *Router) CreateSession(ctx context.Context, o core.CreateOptions, timeout time.Duration) (string, string, error) {
+	o, err := r.prepare(ctx, o)
 	if err != nil {
 		return "", "", err
 	}
@@ -1616,12 +1623,12 @@ func (r *Router) CreateSessionWithBackend(ctx context.Context, cwd, initialMsg, 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	sessionID, ch, tok, err := r.beginNewSession(waitCtx, cancel, cwd, initialMsg, model, backend)
+	sessionID, ch, tok, err := r.beginNewSession(waitCtx, cancel, o)
 	if err != nil {
 		return "", "", err
 	}
 
-	reply := r.collectNewSessionText(sessionID, backend, ch)
+	reply := r.collectNewSessionText(sessionID, o.Backend, ch)
 	expired := waitCtx.Err() != nil // before releaseSend, which cancels waitCtx
 	r.releaseSend(sessionID, tok)
 
@@ -1638,30 +1645,22 @@ func (r *Router) CreateSessionWithBackend(ctx context.Context, cwd, initialMsg, 
 // the not-yet-assigned return value). For Claude the id is pre-assigned so
 // this returns almost immediately; for Codex it returns once the rollout file
 // is discovered.
-func (r *Router) CreateSessionRelayed(cwd, initialMsg string, onDone func(sessionID, reply string, err error)) (string, error) {
-	return r.CreateSessionRelayedWithBackend(cwd, initialMsg, "", "", onDone)
-}
-
-func (r *Router) CreateSessionRelayedWithBackend(cwd, initialMsg, backend, model string, onDone func(sessionID, reply string, err error)) (string, error) {
-	cwd, err := validateCreateInputs(cwd, initialMsg)
-	if err != nil {
-		return "", err
-	}
-	backend, err = r.resolveCreateBackend(context.Background(), backend, model)
+func (r *Router) CreateSessionRelayed(o core.CreateOptions, onDone func(sessionID, reply string, err error)) (string, error) {
+	o, err := r.prepare(context.Background(), o)
 	if err != nil {
 		return "", err
 	}
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), relayWaitCeiling)
 
-	sessionID, ch, tok, err := r.beginNewSession(waitCtx, cancel, cwd, initialMsg, model, backend)
+	sessionID, ch, tok, err := r.beginNewSession(waitCtx, cancel, o)
 	if err != nil {
 		cancel()
 		return "", err
 	}
 
 	go func() {
-		reply := r.collectNewSessionText(sessionID, backend, ch)
+		reply := r.collectNewSessionText(sessionID, o.Backend, ch)
 		expired := waitCtx.Err() != nil // before releaseSend, which cancels waitCtx
 		r.releaseSend(sessionID, tok)
 		if expired && reply == "" {

@@ -90,6 +90,7 @@ func TestPersistence(t *testing.T) {
 	s1.Unarchive("b", stale, now)
 	s1.Archive("c")
 	s1.Pin("x")
+	s1.SetAppendSystemPrompt("prompted", "Be concise.")
 
 	s2 := New(path, sevenDays)
 	if !s2.IsArchived("a", now, now) {
@@ -103,6 +104,18 @@ func TestPersistence(t *testing.T) {
 	}
 	if !s2.IsPinned("x") {
 		t.Errorf("x should be pinned after rehydrate")
+	}
+	if got := s2.AppendSystemPrompt("prompted"); got != "Be concise." {
+		t.Errorf("append system prompt = %q after rehydrate", got)
+	}
+}
+
+func TestForgetDropsAppendSystemPrompt(t *testing.T) {
+	s := newTestStore(t)
+	s.SetAppendSystemPrompt("a", "prompt")
+	s.Forget("a")
+	if got := s.AppendSystemPrompt("a"); got != "" {
+		t.Fatalf("append system prompt after Forget = %q", got)
 	}
 }
 

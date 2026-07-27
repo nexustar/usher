@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nexustar/usher/internal/appserver"
@@ -35,13 +36,15 @@ type StreamEvent = backend.Event
 type timing struct{ confirm, poll time.Duration }
 
 type Sender struct {
-	app       *appserver.Manager // non-nil for the headless Codex backend
-	claude    *claudestream.Manager
-	locateFn  func(string) string
-	indexPath string
-	logger    *slog.Logger
-	t         timing
-	tail      tailConfig
+	app          *appserver.Manager // non-nil for the headless Codex backend
+	claude       *claudestream.Manager
+	locateFn     func(string) string
+	indexPath    string
+	logger       *slog.Logger
+	t            timing
+	tail         tailConfig
+	promptMu     sync.Mutex
+	systemPrompt func(string) string
 }
 
 // Rename uses Codex RPC when live. Claude and idle Codex use native metadata;
@@ -257,7 +260,8 @@ func (s *Sender) Send(ctx context.Context, sessionID, prompt, cwd string) (<-cha
 		return s.codexPrompt(ctx, sessionID, prompt, cwd, false)
 	}
 	if s.claude != nil {
-		return s.claudeTurn(ctx, sessionID, prompt, cwd, "", true)
+		return s.claudeTurn(
+			ctx, sessionID, prompt, cwd, "", s.promptFor(sessionID), true)
 	}
 	return nil, errors.New("sender has no headless backend")
 }
@@ -325,11 +329,11 @@ func codexSlashSkillPrompt(command, args string, skills []appserver.Skill) (stri
 func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <-chan StreamEvent, error) {
 	if s.claude != nil {
 		id := newSessionID()
-		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, false)
+		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, false)
 		return id, ch, err
 	}
 	if s.app != nil {
-		id, err := s.app.StartThread(ctx, req.Cwd, req.Model)
+		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt)
 		if err != nil {
 			return "", nil, err
 		}
@@ -369,9 +373,30 @@ func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
 		return s.app.Resume(ctx, sessionID, cwd)
 	}
 	if s.claude != nil {
-		return s.claude.Resume(ctx, sessionID, cwd)
+		return s.claude.Resume(ctx, sessionID, cwd, s.promptFor(sessionID))
 	}
 	return errors.New("sender has no headless backend")
+}
+
+var _ backend.SystemPrompter = (*Sender)(nil)
+
+func (s *Sender) SetSystemPromptLookup(lookup func(string) string) {
+	s.promptMu.Lock()
+	s.systemPrompt = lookup
+	s.promptMu.Unlock()
+	if s.app != nil {
+		s.app.SetSystemPromptLookup(lookup)
+	}
+}
+
+func (s *Sender) promptFor(id string) string {
+	s.promptMu.Lock()
+	lookup := s.systemPrompt
+	s.promptMu.Unlock()
+	if lookup == nil {
+		return ""
+	}
+	return lookup(id)
 }
 
 // LiveSessions returns the ids of sessions with a live backend worker.
@@ -465,7 +490,7 @@ func (s *Sender) Shutdown() {
 	}
 }
 
-func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model string, resume bool) (<-chan StreamEvent, error) {
+func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendSystemPrompt string, resume bool) (<-chan StreamEvent, error) {
 	path := s.locate(id)
 	var offset int64
 	if path != "" {
@@ -473,7 +498,7 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model string, 
 			offset = fi.Size()
 		}
 	}
-	done, deltas, fresh, queuedAhead, err := s.claude.Send(ctx, id, prompt, cwd, model, resume)
+	done, deltas, fresh, queuedAhead, err := s.claude.Send(ctx, id, prompt, cwd, model, appendSystemPrompt, resume)
 	if err != nil {
 		return nil, err
 	}

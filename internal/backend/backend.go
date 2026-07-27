@@ -91,9 +91,10 @@ type Transcript interface {
 
 // StartRequest describes the first turn of a new backend session.
 type StartRequest struct {
-	Cwd    string
-	Prompt string
-	Model  string
+	Cwd                string
+	Prompt             string
+	Model              string
+	AppendSystemPrompt string
 }
 
 // Runtime owns live workers for one coding-agent backend.
@@ -140,6 +141,16 @@ type Forker interface {
 // Renamer writes a title to backend-native metadata. path is the transcript.
 type Renamer interface {
 	Rename(context.Context, string, string, string) error
+}
+
+// SystemPrompter is an optional runtime capability: restoring a session's
+// appended system prompt when a cold worker is rebuilt. StartRequest carries
+// the prompt into a brand-new session, but no backend keeps it in the
+// transcript, so a runtime that respawns processes (eviction, restart, resume)
+// must ask for it again by session id. Runtimes that don't implement this lose
+// the prompt on respawn.
+type SystemPrompter interface {
+	SetSystemPromptLookup(lookup func(sessionID string) string)
 }
 
 // Model is the backend-neutral model-picker projection.

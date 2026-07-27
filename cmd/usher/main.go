@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/agent/usheragent"
+	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
@@ -167,6 +168,10 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load auth: %w", err)
 	}
+	agents, err := agentprofile.Load(filepath.Join(*dataDir, "agents.json"))
+	if err != nil {
+		return err
+	}
 	if !authStore.IsConfigured() && !addrIsLoopback(*addr) {
 		return fmt.Errorf(
 			"refusing to bind non-loopback %q without a password.\n"+
@@ -304,13 +309,13 @@ func serve(args []string) error {
 	// same Router seam the Telegram hub uses, over a 0600 Unix socket. Always
 	// on — it is inert until a plugin connects.
 	go func() {
-		if err := pluginapi.NewServer(r, attachmentsDir, logger).Run(ctx, pluginapi.SocketPath(*dataDir)); err != nil && ctx.Err() == nil {
+		if err := pluginapi.NewServer(r, attachmentsDir, agents, logger).Run(ctx, pluginapi.SocketPath(*dataDir)); err != nil && ctx.Err() == nil {
 			logger.Warn("plugin api stopped", "err", err)
 		}
 	}()
 
 	themePath := filepath.Join(*dataDir, "theme.css")
-	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, mainStore, agent, pushMgr, *editorURL, *uiDir, themePath, logger)
+	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, mainStore, agent, pushMgr, *editorURL, *uiDir, themePath, agents, logger)
 
 	// Foreign-turn watcher: turns usher didn't start (background workflow
 	// continuations, pane-typed prompts) get relayed to the chats that

@@ -101,21 +101,14 @@ func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, hooks *h
 	return &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, hooks: hooks, logger: logger, processes: map[string]*process{}}
 }
 
-func (m *Manager) ensure(ctx context.Context, id, cwd, model string, resume bool) (*process, bool, error) {
-	return m.ensureProcess(ctx, id, cwd, model, resume, false)
-}
-
-// leaseProcess is ensure plus a lease pinning the process against eviction
-// while a send preflight runs. It spawns a cold process like ensure does; the
-// lease is taken under the same lock that resolves it, so there is no window
-// where a caller holds a process that another spawn may already have evicted.
-// A successful send becomes eviction-safe through its queued turn before the
-// lease is released.
-func (m *Manager) leaseProcess(ctx context.Context, id, cwd, model string, resume bool) (*process, bool, error) {
-	return m.ensureProcess(ctx, id, cwd, model, resume, true)
-}
-
-func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model string, resume, lease bool) (*process, bool, error) {
+// ensureProcess resolves id's live process, spawning a cold one when needed.
+// appendSystemPrompt only reaches a spawn — a live process keeps the prompt it
+// started with. With lease, the process is pinned against eviction while a
+// send preflight runs: the lease is taken under the same lock that resolves
+// the process, so there is no window where a caller holds a process that
+// another spawn may already have evicted. A successful send becomes
+// eviction-safe through its queued turn before the lease is released.
+func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSystemPrompt string, resume, lease bool) (*process, bool, error) {
 	m.mu.Lock()
 	if p := m.processes[id]; p != nil {
 		p.mu.Lock()
@@ -166,6 +159,9 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model string, resu
 	}
 	if model != "" {
 		args = append(args, "--model", model)
+	}
+	if appendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", appendSystemPrompt)
 	}
 	if m.settings != "" {
 		args = append(args, "--settings", m.settings)
@@ -288,8 +284,8 @@ func scrubEnv(hookSock string) []string {
 	return out
 }
 
-func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model string, resume bool) (<-chan Result, <-chan Delta, bool, int, error) {
-	p, fresh, err := m.leaseProcess(ctx, id, cwd, model, resume)
+func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model, appendSystemPrompt string, resume bool) (<-chan Result, <-chan Delta, bool, int, error) {
+	p, fresh, err := m.ensureProcess(ctx, id, cwd, model, appendSystemPrompt, resume, true)
 	if err != nil {
 		return nil, nil, false, 0, err
 	}
@@ -379,8 +375,8 @@ func waitForCommands(ctx context.Context, p *process) ([]Command, error) {
 
 // Resume starts an idle process for an existing session without submitting a
 // user turn. It is idempotent when the process is already live.
-func (m *Manager) Resume(ctx context.Context, id, cwd string) error {
-	_, _, err := m.ensure(ctx, id, cwd, "", true)
+func (m *Manager) Resume(ctx context.Context, id, cwd, appendSystemPrompt string) error {
+	_, _, err := m.ensureProcess(ctx, id, cwd, "", appendSystemPrompt, true, false)
 	return err
 }
 

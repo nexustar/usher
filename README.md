@@ -73,7 +73,8 @@ first understanding the authentication guidance there.
 ## Main features
 
 - **Sessions:** discover existing sessions, create new ones, resume, fork,
-  rename, pin, archive, search, and switch backend or model.
+  rename, pin, archive, search, switch backend or model, and use named
+  session agents.
 - **Live work:** stream assistant output and tool activity, interrupt turns,
   answer questions, and approve or deny native backend permission requests.
 - **Context:** render markdown, images, uploads, subagents, context usage, and
@@ -128,6 +129,7 @@ Reference material explains stable behavior that is not useful to repeat in
 command-line help:
 
 - [Security and trust model](docs/reference/security.md)
+- [Session agents](docs/reference/agents.md)
 - Complete CLI options: `usher serve -h`
 
 ## Project boundaries

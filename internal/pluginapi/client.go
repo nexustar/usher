@@ -97,26 +97,16 @@ func (c *Client) SendToSession(id, text string) error {
 	return c.post(ctx, "/v1/sessions/"+id+"/send", sendReq{Text: text})
 }
 
-// StartSession asks the router to spawn a brand-new session.
-func (c *Client) StartSession(cwd, initialMsg, model string) (string, error) {
-	return c.StartSessionWithBackend("", cwd, initialMsg, model)
-}
-
-// StartSessionWithBackend asks the router to spawn a session on an explicitly
-// selected backend. Empty backend preserves model inference/default behavior.
-func (c *Client) StartSessionWithBackend(backend, cwd, initialMsg, model string) (string, error) {
+// StartSession asks the router to spawn a brand-new session. An empty Backend
+// preserves model inference/default behavior; see CreateRequest for how Agent
+// interacts with the other fields.
+func (c *Client) StartSession(req CreateRequest) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	var out struct {
 		ID string `json:"id"`
 	}
-	err := c.postJSON(ctx, "/v1/sessions", startSessionReq{
-		Backend:        backend,
-		Cwd:            cwd,
-		InitialMessage: initialMsg,
-		Model:          model,
-	}, &out, http.StatusAccepted)
-	if err != nil {
+	if err := c.postJSON(ctx, "/v1/sessions", req, &out, http.StatusAccepted); err != nil {
 		return "", err
 	}
 	return out.ID, nil

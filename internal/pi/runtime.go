@@ -46,12 +46,19 @@ type client struct {
 }
 
 func startClient(bin, cwd, sessionPath, sessionsDir, model string, extra []string) (*client, error) {
+	return startClientWithSystemPrompt(bin, cwd, sessionPath, sessionsDir, model, "", extra)
+}
+
+func startClientWithSystemPrompt(bin, cwd, sessionPath, sessionsDir, model, appendSystemPrompt string, extra []string) (*client, error) {
 	args := []string{"--mode", "rpc", "--session-dir", sessionsDir}
 	if sessionPath != "" {
 		args = append(args, "--session", sessionPath)
 	}
 	if model != "" {
 		args = append(args, "--model", model)
+	}
+	if appendSystemPrompt != "" {
+		args = append(args, "--append-system-prompt", appendSystemPrompt)
 	}
 	args = append(args, extra...)
 	cmd := exec.Command(bin, args...)
@@ -384,6 +391,7 @@ type Runtime struct {
 	hooks            *hook.Manager
 	mu               sync.Mutex
 	workers          map[string]*worker
+	systemPrompt     func(string) string
 }
 
 // Rename uses RPC when live and native metadata when idle.
@@ -405,6 +413,24 @@ func NewRuntime(bin, sessionsDir string, extra []string, max int, models Models,
 		logger = slog.Default()
 	}
 	return &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, hooks: hooks, logger: logger, workers: map[string]*worker{}}
+}
+
+var _ backend.SystemPrompter = (*Runtime)(nil)
+
+func (r *Runtime) SetSystemPromptLookup(lookup func(string) string) {
+	r.mu.Lock()
+	r.systemPrompt = lookup
+	r.mu.Unlock()
+}
+
+func (r *Runtime) promptFor(id string) string {
+	r.mu.Lock()
+	lookup := r.systemPrompt
+	r.mu.Unlock()
+	if lookup == nil {
+		return ""
+	}
+	return lookup(id)
 }
 
 func (r *Runtime) refreshModels(ctx context.Context, c *client) {
@@ -489,7 +515,7 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	if model == "default" {
 		model = ""
 	}
-	c, err := startClient(r.bin, req.Cwd, "", r.sessionsDir, model, r.extra)
+	c, err := startClientWithSystemPrompt(r.bin, req.Cwd, "", r.sessionsDir, model, req.AppendSystemPrompt, r.extra)
 	if err != nil {
 		return "", nil, err
 	}
@@ -534,7 +560,8 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 		if path == "" {
 			return nil, fmt.Errorf("pi session %s not found", id)
 		}
-		c, err := startClient(r.bin, cwd, path, r.sessionsDir, "", r.extra)
+		c, err := startClientWithSystemPrompt(
+			r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.extra)
 		if err != nil {
 			return nil, err
 		}
@@ -638,7 +665,8 @@ func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
 	if path == "" {
 		return fmt.Errorf("pi session %s not found", id)
 	}
-	c, err := startClient(r.bin, cwd, path, r.sessionsDir, "", r.extra)
+	c, err := startClientWithSystemPrompt(
+		r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.extra)
 	if err != nil {
 		return err
 	}

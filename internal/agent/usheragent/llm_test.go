@@ -171,8 +171,8 @@ func (f *fakeAgentAPI) SearchAllSessions(query string, maxSessions, _ int) ([]co
 	}
 	return out, truncated, nil
 }
-func (f *fakeAgentAPI) CreateSessionWithBackend(_ context.Context, cwd, msg, backend, model string, _ time.Duration) (string, string, error) {
-	f.created = append(f.created, createCall{Cwd: cwd, Msg: msg, Backend: backend, Model: model})
+func (f *fakeAgentAPI) CreateSession(_ context.Context, o core.CreateOptions, _ time.Duration) (string, string, error) {
+	f.created = append(f.created, createCall{Cwd: o.Cwd, Msg: o.InitialMessage, Backend: o.Backend, Model: o.Model})
 	if f.createErr != nil {
 		return f.createNewID, f.createReply, f.createErr
 	}
@@ -190,8 +190,8 @@ func (f *fakeAgentAPI) SendToSessionRelayed(id, text string, onDone func(session
 	return nil
 }
 
-func (f *fakeAgentAPI) CreateSessionRelayedWithBackend(cwd, msg, backend, model string, onDone func(sessionID, reply string, err error)) (string, error) {
-	f.created = append(f.created, createCall{Cwd: cwd, Msg: msg, Backend: backend, Model: model})
+func (f *fakeAgentAPI) CreateSessionRelayed(o core.CreateOptions, onDone func(sessionID, reply string, err error)) (string, error) {
+	f.created = append(f.created, createCall{Cwd: o.Cwd, Msg: o.InitialMessage, Backend: o.Backend, Model: o.Model})
 	if f.createErr != nil {
 		return "", f.createErr
 	}

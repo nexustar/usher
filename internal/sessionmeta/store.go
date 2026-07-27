@@ -21,19 +21,21 @@ const (
 )
 
 type fileFormat struct {
-	Archived map[string]archiveDecision `json:"archived,omitempty"`
-	Pinned   []string                   `json:"pinned,omitempty"`
-	Titles   map[string]string          `json:"titles,omitempty"`
+	Archived           map[string]archiveDecision `json:"archived,omitempty"`
+	Pinned             []string                   `json:"pinned,omitempty"`
+	Titles             map[string]string          `json:"titles,omitempty"`
+	AppendSystemPrompt map[string]string          `json:"append_system_prompt,omitempty"`
 }
 
 type Store struct {
 	path      string
 	autoAfter time.Duration
 
-	mu       sync.Mutex
-	archived map[string]archiveDecision
-	pinned   map[string]bool
-	titles   map[string]string
+	mu                 sync.Mutex
+	archived           map[string]archiveDecision
+	pinned             map[string]bool
+	titles             map[string]string
+	appendSystemPrompt map[string]string
 }
 
 func New(path string, autoAfter time.Duration) *Store {
@@ -41,11 +43,12 @@ func New(path string, autoAfter time.Duration) *Store {
 		autoAfter = 0
 	}
 	s := &Store{
-		path:      path,
-		autoAfter: autoAfter,
-		archived:  map[string]archiveDecision{},
-		pinned:    map[string]bool{},
-		titles:    map[string]string{},
+		path:               path,
+		autoAfter:          autoAfter,
+		archived:           map[string]archiveDecision{},
+		pinned:             map[string]bool{},
+		titles:             map[string]string{},
+		appendSystemPrompt: map[string]string{},
 	}
 	s.load()
 	return s
@@ -80,6 +83,9 @@ func (s *Store) load() {
 	for id, t := range f.Titles {
 		s.titles[id] = t
 	}
+	for id, prompt := range f.AppendSystemPrompt {
+		s.appendSystemPrompt[id] = prompt
+	}
 }
 
 func (s *Store) persist() {
@@ -94,7 +100,14 @@ func (s *Store) persist() {
 	if len(s.titles) > 0 {
 		titles = s.titles
 	}
-	data, err := json.Marshal(fileFormat{Archived: s.archived, Pinned: pinned, Titles: titles})
+	var prompts map[string]string
+	if len(s.appendSystemPrompt) > 0 {
+		prompts = s.appendSystemPrompt
+	}
+	data, err := json.Marshal(fileFormat{
+		Archived: s.archived, Pinned: pinned, Titles: titles,
+		AppendSystemPrompt: prompts,
+	})
 	if err != nil {
 		slog.Warn("sessionmeta: encode", "err", err)
 		return
@@ -207,6 +220,29 @@ func (s *Store) CustomTitle(id string) string {
 	return s.titles[id]
 }
 
+func (s *Store) SetAppendSystemPrompt(id, prompt string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prompt == "" {
+		if _, ok := s.appendSystemPrompt[id]; !ok {
+			return
+		}
+		delete(s.appendSystemPrompt, id)
+	} else {
+		if s.appendSystemPrompt[id] == prompt {
+			return
+		}
+		s.appendSystemPrompt[id] = prompt
+	}
+	s.persist()
+}
+
+func (s *Store) AppendSystemPrompt(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendSystemPrompt[id]
+}
+
 // Forget drops all state for id.
 func (s *Store) Forget(id string) {
 	s.mu.Lock()
@@ -214,11 +250,13 @@ func (s *Store) Forget(id string) {
 	_, hasArchive := s.archived[id]
 	hasPin := s.pinned[id]
 	_, hasTitle := s.titles[id]
-	if !hasArchive && !hasPin && !hasTitle {
+	_, hasPrompt := s.appendSystemPrompt[id]
+	if !hasArchive && !hasPin && !hasTitle && !hasPrompt {
 		return
 	}
 	delete(s.archived, id)
 	delete(s.pinned, id)
 	delete(s.titles, id)
+	delete(s.appendSystemPrompt, id)
 	s.persist()
 }

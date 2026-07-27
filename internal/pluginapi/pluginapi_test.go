@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/hook"
@@ -28,14 +29,7 @@ type fakeRouter struct {
 	pendingCh chan hook.Pending
 	responses map[string]hook.Response
 	startErr  error
-	started   []startCall
-}
-
-type startCall struct {
-	backend string
-	cwd     string
-	initial string
-	model   string
+	started   []core.CreateOptions
 }
 
 func newFakeRouter() *fakeRouter {
@@ -69,15 +63,15 @@ func (f *fakeRouter) SendToSession(id, text string) error {
 	return nil
 }
 
-func (f *fakeRouter) StartSessionWithBackend(backend, cwd, initialMsg, model string) (string, error) {
+func (f *fakeRouter) StartSession(o core.CreateOptions) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.startErr != nil {
 		return "", f.startErr
 	}
 	id := "s_new"
-	f.started = append(f.started, startCall{backend: backend, cwd: cwd, initial: initialMsg, model: model})
-	f.sessions[id] = core.Session{ID: id, Cwd: cwd}
+	f.started = append(f.started, o)
+	f.sessions[id] = core.Session{ID: id, Cwd: o.Cwd}
 	return id, nil
 }
 
@@ -103,6 +97,10 @@ func (f *fakeRouter) RespondInteraction(id string, resp hook.Response) error {
 
 // startServer runs a Server on a temp socket and returns a connected Client.
 func startServer(t *testing.T, f *fakeRouter) *Client {
+	return startServerWithAgents(t, f, nil)
+}
+
+func startServerWithAgents(t *testing.T, f *fakeRouter, agents *agentprofile.Store) *Client {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "pa")
 	if err != nil {
@@ -115,7 +113,7 @@ func startServer(t *testing.T, f *fakeRouter) *Client {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := NewServer(f, t.TempDir(), nil).Run(ctx, sock); err != nil {
+		if err := NewServer(f, t.TempDir(), agents, nil).Run(ctx, sock); err != nil {
 			t.Errorf("server: %v", err)
 		}
 	}()
@@ -180,7 +178,9 @@ func TestStartSessionRoundTrip(t *testing.T) {
 	f := newFakeRouter()
 	c := startServer(t, f)
 
-	id, err := c.StartSessionWithBackend("codex", "/tmp/work", "hello", "codex-test")
+	id, err := c.StartSession(CreateRequest{
+		Backend: "codex", Cwd: "/tmp/work", InitialMessage: "hello", Model: "codex-test",
+	})
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
@@ -188,15 +188,70 @@ func TestStartSessionRoundTrip(t *testing.T) {
 		t.Fatalf("id = %q", id)
 	}
 	f.mu.Lock()
-	started := append([]startCall(nil), f.started...)
+	started := append([]core.CreateOptions(nil), f.started...)
 	f.startErr = errors.New("bad cwd")
 	f.mu.Unlock()
-	if len(started) != 1 || started[0].backend != "codex" || started[0].cwd != "/tmp/work" || started[0].initial != "hello" || started[0].model != "codex-test" {
-		t.Fatalf("started = %+v", started)
+	want := core.CreateOptions{
+		Backend: "codex", Cwd: "/tmp/work", InitialMessage: "hello", Model: "codex-test",
+	}
+	if len(started) != 1 || started[0] != want {
+		t.Fatalf("started = %+v, want %+v", started, want)
 	}
 
-	if _, err := c.StartSession("/nope", "hello", ""); err == nil || err.Error() != "bad cwd" {
+	_, err = c.StartSession(CreateRequest{Cwd: "/nope", InitialMessage: "hello"})
+	if err == nil || err.Error() != "bad cwd" {
 		t.Fatalf("StartSession error = %v", err)
+	}
+}
+
+func TestStartSessionWithAgent(t *testing.T) {
+	f := newFakeRouter()
+	c := startServerWithAgents(t, f, agentprofile.New([]agentprofile.Profile{{
+		Name: "dev", Cwd: "/work/dev",
+		Backend: "codex", Model: "codex-default", AppendSystemPrompt: "Be careful.",
+	}}))
+
+	id, err := c.StartSession(CreateRequest{
+		Agent: "dev", InitialMessage: "hello", Model: "codex-override",
+	})
+	if err != nil || id != "s_new" {
+		t.Fatalf("StartSession = %q, %v", id, err)
+	}
+	f.mu.Lock()
+	started := append([]core.CreateOptions(nil), f.started...)
+	f.mu.Unlock()
+	want := core.CreateOptions{
+		Backend: "codex", Cwd: "/work/dev", InitialMessage: "hello",
+		Model: "codex-override", AppendSystemPrompt: "Be careful.",
+	}
+	if len(started) != 1 || started[0] != want {
+		t.Fatalf("started = %+v, want %+v", started, want)
+	}
+}
+
+// "default" must beat a configured profile model on its way to the backend's
+// own default, and an unknown agent must fail rather than silently spawn.
+func TestStartSessionAgentModelAndUnknown(t *testing.T) {
+	f := newFakeRouter()
+	c := startServerWithAgents(t, f, agentprofile.New([]agentprofile.Profile{{
+		Name: "dev", Cwd: "/work/dev", Model: "profile-model",
+	}}))
+
+	if _, err := c.StartSession(CreateRequest{
+		Agent: "dev", InitialMessage: "hello", Model: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	started := append([]core.CreateOptions(nil), f.started...)
+	f.mu.Unlock()
+	if len(started) != 1 || started[0].Model != "" {
+		t.Fatalf("started = %+v, want the backend default model", started)
+	}
+
+	_, err := c.StartSession(CreateRequest{Agent: "nope", InitialMessage: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
+		t.Fatalf("unknown agent error = %v", err)
 	}
 }
 
@@ -284,7 +339,7 @@ func TestReconnect(t *testing.T) {
 
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	done1 := make(chan struct{})
-	go func() { defer close(done1); _ = NewServer(f, t.TempDir(), nil).Run(ctx1, sock) }()
+	go func() { defer close(done1); _ = NewServer(f, t.TempDir(), nil, nil).Run(ctx1, sock) }()
 
 	c := NewClient(sock, nil)
 	waitPing(t, c)
@@ -299,7 +354,7 @@ func TestReconnect(t *testing.T) {
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	done2 := make(chan struct{})
-	go func() { defer close(done2); _ = NewServer(f, t.TempDir(), nil).Run(ctx2, sock) }()
+	go func() { defer close(done2); _ = NewServer(f, t.TempDir(), nil, nil).Run(ctx2, sock) }()
 	t.Cleanup(func() { cancel2(); <-done2 })
 	waitPing(t, c)
 

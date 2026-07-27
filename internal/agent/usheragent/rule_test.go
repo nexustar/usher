@@ -135,8 +135,8 @@ func (f *fakeAPI) SearchAllSessions(query string, maxSessions, _ int) ([]core.Se
 	}
 	return out, truncated, nil
 }
-func (f *fakeAPI) CreateSessionWithBackend(_ context.Context, cwd, msg, _, _ string, _ time.Duration) (string, string, error) {
-	f.created = append(f.created, createCall{Cwd: cwd, Msg: msg})
+func (f *fakeAPI) CreateSession(_ context.Context, o core.CreateOptions, _ time.Duration) (string, string, error) {
+	f.created = append(f.created, createCall{Cwd: o.Cwd, Msg: o.InitialMessage})
 	if f.createErr != nil {
 		return f.createNewID, f.createReply, f.createErr
 	}
@@ -157,8 +157,8 @@ func (f *fakeAPI) SendToSessionRelayed(id, text string, onDone func(sessionID, r
 	return nil
 }
 
-func (f *fakeAPI) CreateSessionRelayedWithBackend(cwd, msg, _, _ string, onDone func(sessionID, reply string, err error)) (string, error) {
-	f.created = append(f.created, createCall{Cwd: cwd, Msg: msg})
+func (f *fakeAPI) CreateSessionRelayed(o core.CreateOptions, onDone func(sessionID, reply string, err error)) (string, error) {
+	f.created = append(f.created, createCall{Cwd: o.Cwd, Msg: o.InitialMessage})
 	if f.createErr != nil {
 		return "", f.createErr
 	}

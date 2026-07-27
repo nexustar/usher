@@ -99,13 +99,16 @@ type Client struct {
 	sandbox  map[string]any
 	config   map[string]any
 	env      []string
+	args     []string
 }
 
-func New(bin string, hooks *hook.Manager, sandbox, config map[string]any, env []string, logger *slog.Logger) *Client {
+// New builds a client for one codex app-server process. args are extra binary
+// arguments (config overrides) that must be fixed for the process's lifetime.
+func New(bin string, hooks *hook.Manager, sandbox, config map[string]any, env, args []string, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{bin: bin, hooks: hooks, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, pending: map[string]chan response{}, turns: map[string]*turnStream{}, active: map[string]string{}, threads: map[string]string{}}
+	return &Client{bin: bin, hooks: hooks, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), args: append([]string(nil), args...), logger: logger, pending: map[string]chan response{}, turns: map[string]*turnStream{}, active: map[string]string{}, threads: map[string]string{}}
 }
 
 func scrubEnv() []string {
@@ -133,7 +136,8 @@ func (c *Client) ensure(ctx context.Context) error {
 		}
 	}
 	state := &initState{done: make(chan struct{})}
-	cmd := exec.CommandContext(context.Background(), c.bin, "app-server")
+	args := append(append([]string(nil), c.args...), "app-server")
+	cmd := exec.CommandContext(context.Background(), c.bin, args...)
 	procutil.ConfigureGroup(cmd)
 	cmd.Env = append(scrubEnv(), c.env...)
 	in, err := cmd.StdinPipe()

@@ -17,7 +17,7 @@ func fakeAppServer(t *testing.T) (string, string) {
 	logPath := filepath.Join(dir, "workers.log")
 	script := filepath.Join(dir, "fake-codex")
 	body := `#!/bin/sh
-printf 'start %s\n' "$$" >> "$FAKE_LOG"
+printf 'start %s %s\n' "$$" "$*" >> "$FAKE_LOG"
 IFS= read -r line
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"fake/1"}}'
 IFS= read -r line
@@ -25,6 +25,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"thread/start"'*)
+      printf '%s\n' "$line" >> "$FAKE_LOG"
       printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"new-thread"}}}' ;;
     *'"method":"thread/resume"'*)
       printf 'resume\n' >> "$FAKE_LOG"
@@ -116,7 +117,7 @@ func TestManagerLRUEvictsIdleWorkerAndColdResumes(t *testing.T) {
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, err := m.StartThread(ctx, "/tmp", "")
+	id, err := m.StartThread(ctx, "/tmp", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +141,51 @@ func TestManagerLRUEvictsIdleWorkerAndColdResumes(t *testing.T) {
 	}
 	if m.Has(id) {
 		t.Fatalf("LRU did not evict %s", id)
+	}
+}
+
+func TestStartThreadPassesDeveloperInstructions(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := m.StartThread(ctx, "/tmp", "", "Be concise."); err != nil {
+		t.Fatal(err)
+	}
+	m.Shutdown()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `-c developer_instructions="Be concise." app-server`) {
+		t.Fatalf("worker log = %q", data)
+	}
+	if strings.Contains(string(data), `"developerInstructions"`) {
+		t.Fatalf("prompt was also sent as thread/start override: %q", data)
+	}
+}
+
+func TestColdResumeRestoresDeveloperInstructions(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	m.SetSystemPromptLookup(func(id string) string {
+		if id == "cold-thread" {
+			return "Persisted prompt."
+		}
+		return ""
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.Resume(ctx, "cold-thread", "/tmp"); err != nil {
+		t.Fatal(err)
+	}
+	m.Shutdown()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `-c developer_instructions="Persisted prompt." app-server`) {
+		t.Fatalf("worker log = %q", data)
 	}
 }
 
@@ -201,7 +247,7 @@ func TestManagerWorkerFailureIsIsolated(t *testing.T) {
 
 func TestManagerMaxLiveRejectsWhenAllWorkersBusy(t *testing.T) {
 	m := NewManager("unused", nil, nil, nil, nil, 1, nil)
-	m.workers["busy"] = &worker{client: m.newClient(), busy: true, lastUsed: time.Now()}
+	m.workers["busy"] = &worker{client: m.newClient(""), busy: true, lastUsed: time.Now()}
 	if _, err := m.reserve(); err == nil || !strings.Contains(err.Error(), "all busy") {
 		t.Fatalf("reserve error = %v, want all busy", err)
 	}

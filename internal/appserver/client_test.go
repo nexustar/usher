@@ -25,7 +25,7 @@ func TestThreadParamsCarryPolicySandboxAndNativeMCP(t *testing.T) {
 		"mcp_servers.usher.env_vars":                     []string{"USHER_HOOK_SOCK"},
 		"mcp_servers.usher.default_tools_approval_mode":  "approve",
 		"features.code_mode.direct_only_tool_namespaces": []string{"usher"},
-	}, nil, nil)
+	}, nil, nil, nil)
 	p := c.threadParams("/work/project", "gpt-test")
 	if p["approvalPolicy"] != "on-request" || p["sandbox"] != "workspace-write" || p["cwd"] != "/work/project" {
 		t.Fatalf("missing thread policy params: %#v", p)
@@ -48,7 +48,7 @@ func TestThreadParamsCarryPolicySandboxAndNativeMCP(t *testing.T) {
 }
 
 func TestAgentMessageDeltaRoutesByThread(t *testing.T) {
-	c := New("codex", nil, nil, nil, nil, nil)
+	c := New("codex", nil, nil, nil, nil, nil, nil)
 	stream := &turnStream{done: make(chan TurnResult, 1), deltas: make(chan Delta, 2)}
 	c.turns["thread-1"] = stream
 	c.dispatch(rpcMessage{Method: "item/agentMessage/delta", Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"hello"}`)})
@@ -63,7 +63,7 @@ func TestAgentMessageDeltaRoutesByThread(t *testing.T) {
 }
 
 func TestErrorNotificationSurfacesFinalMessageAtTurnEnd(t *testing.T) {
-	c := New("codex", nil, nil, nil, nil, nil)
+	c := New("codex", nil, nil, nil, nil, nil, nil)
 	stream := &turnStream{done: make(chan TurnResult, 1), deltas: make(chan Delta, 1)}
 	c.turns["thread-1"] = stream
 	c.dispatch(rpcMessage{Method: "error", Params: json.RawMessage(`{"threadId":"thread-1","willRetry":true,"error":{"message":"Service Unavailable"}}`)})
@@ -83,7 +83,7 @@ func TestErrorNotificationSurfacesFinalMessageAtTurnEnd(t *testing.T) {
 }
 
 func TestInterruptStoppedClientIsNoop(t *testing.T) {
-	c := New("definitely-not-a-command", hook.New(""), nil, nil, nil, nil)
+	c := New("definitely-not-a-command", hook.New(""), nil, nil, nil, nil, nil)
 	if err := c.Interrupt(context.Background(), "missing"); err != nil {
 		t.Fatalf("interrupt stopped client: %v", err)
 	}
@@ -105,7 +105,7 @@ while IFS= read -r line; do :; done
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	c := New(script, hook.New(""), nil, nil, []string{"FAKE_LOG=" + logPath}, nil)
+	c := New(script, hook.New(""), nil, nil, []string{"FAKE_LOG=" + logPath}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -138,7 +138,7 @@ while IFS= read -r line; do :; done
 }
 
 func TestClientTracksSpontaneousTurnActivity(t *testing.T) {
-	c := New("unused", nil, nil, nil, nil, nil)
+	c := New("unused", nil, nil, nil, nil, nil, nil)
 	c.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"session-1","turn":{"id":"turn-1"}}`)})
 	if !c.Busy("session-1") {
 		t.Fatal("turn/started did not mark the session busy")
@@ -178,7 +178,7 @@ func TestPermissionsApprovalUsesPermissionProfileResponse(t *testing.T) {
 	hooks := hook.New("")
 	hooks.SetAutoApprove("thread-1", true)
 	out := new(testWriteCloser)
-	c := New("unused", hooks, nil, nil, nil, nil)
+	c := New("unused", hooks, nil, nil, nil, nil, nil)
 	c.in = out
 	c.permissionsApproval(rpcMessage{
 		ID:     json.RawMessage(`7`),
@@ -202,7 +202,7 @@ func TestPermissionsApprovalUsesPermissionProfileResponse(t *testing.T) {
 
 func TestPermissionsApprovalDenialReturnsEmptyProfile(t *testing.T) {
 	out := new(testWriteCloser)
-	c := New("unused", nil, nil, nil, nil, nil)
+	c := New("unused", nil, nil, nil, nil, nil, nil)
 	c.in = out
 	c.permissionsApproval(rpcMessage{
 		ID:     json.RawMessage(`8`),
@@ -236,7 +236,7 @@ func TestNewServerRequestsUseTheirOwnResponseShapes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.method, func(t *testing.T) {
 			out := new(testWriteCloser)
-			c := New("unused", nil, nil, nil, nil, nil)
+			c := New("unused", nil, nil, nil, nil, nil, nil)
 			c.in = out
 			c.handleServerRequest(rpcMessage{ID: json.RawMessage(`9`), Method: tt.method, Params: json.RawMessage(`{}`)})
 			if !strings.Contains(out.String(), tt.want) {
@@ -250,7 +250,7 @@ func TestMcpConfirmationElicitationUsesPermissionDecision(t *testing.T) {
 	hooks := hook.New("")
 	hooks.SetAutoApprove("thread-1", true)
 	out := new(testWriteCloser)
-	c := New("unused", hooks, nil, nil, nil, nil)
+	c := New("unused", hooks, nil, nil, nil, nil, nil)
 	c.in = out
 	c.mcpElicitation(rpcMessage{
 		ID:     json.RawMessage(`10`),
@@ -266,7 +266,7 @@ func TestMcpInputFormIsNotAcceptedWithoutAnswers(t *testing.T) {
 	hooks := hook.New("")
 	hooks.SetAutoApprove("thread-1", true)
 	out := new(testWriteCloser)
-	c := New("unused", hooks, nil, nil, nil, nil)
+	c := New("unused", hooks, nil, nil, nil, nil, nil)
 	c.in = out
 	c.mcpElicitation(rpcMessage{
 		ID:     json.RawMessage(`11`),

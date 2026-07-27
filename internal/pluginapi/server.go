@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/attachment"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
@@ -34,7 +35,7 @@ import (
 // list so a (re)connecting plugin can catch up on prompts it missed.
 type RouterAPI interface {
 	GetSession(id string) (core.Session, bool)
-	StartSessionWithBackend(backend, cwd, initialMsg, model string) (string, error)
+	StartSession(o core.CreateOptions) (string, error)
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	SendToSession(id, text string) error
 	ListPendingInteractions() []hook.Pending
@@ -46,14 +47,15 @@ type RouterAPI interface {
 type Server struct {
 	router         RouterAPI
 	attachmentsDir string
+	agents         *agentprofile.Store
 	logger         *slog.Logger
 }
 
-func NewServer(router RouterAPI, attachmentsDir string, logger *slog.Logger) *Server {
+func NewServer(router RouterAPI, attachmentsDir string, agents *agentprofile.Store, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{router: router, attachmentsDir: attachmentsDir, logger: logger}
+	return &Server{router: router, attachmentsDir: attachmentsDir, agents: agents, logger: logger}
 }
 
 // Run listens on the Unix socket at path and serves until ctx is cancelled.
@@ -131,20 +133,30 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
-type startSessionReq struct {
+// CreateRequest spawns a session. When Agent names a configured agent,
+// non-empty Cwd/Backend/Model override that agent's defaults; without it they
+// are the request in full.
+type CreateRequest struct {
+	Agent          string `json:"agent,omitempty"`
 	Backend        string `json:"backend,omitempty"`
-	Cwd            string `json:"cwd"`
+	Cwd            string `json:"cwd,omitempty"`
 	InitialMessage string `json:"initial_message"`
 	Model          string `json:"model"`
 }
 
 func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
-	var req startSessionReq
+	var req CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad request body: "+err.Error())
 		return
 	}
-	id, err := s.router.StartSessionWithBackend(req.Backend, req.Cwd, req.InitialMessage, req.Model)
+	opts, err := s.agents.Resolve(req.Agent, req.Cwd, req.Backend, req.Model)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	opts.InitialMessage = req.InitialMessage
+	id, err := s.router.StartSession(opts)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

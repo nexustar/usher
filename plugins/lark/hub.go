@@ -35,7 +35,7 @@ import (
 // the plugin socket.
 type RouterAPI interface {
 	GetSession(id string) (core.Session, bool)
-	StartSessionWithBackend(backend, cwd, initialMsg, model string) (string, error)
+	StartSession(req pluginapi.CreateRequest) (string, error)
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	SendToSession(id, text string) error
 	UploadAttachment(id, filename string, src io.Reader) (string, error)
@@ -759,7 +759,7 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	// while StartSession sends this initial prompt as part of creating it.
 	// Keep resource placeholders in the prompt; attachment transfer is only a
 	// supported future path for later turns on an already-bound session.
-	cwd, backendName, model, instruction, err := parseGuestFlags(text, h.defaultCwd)
+	agent, cwd, backendName, model, instruction, err := parseGuestFlags(text, h.defaultCwd)
 	if err != nil {
 		_, _ = h.lark.ReplyText(ctx, msg.id, "⚠️ "+err.Error())
 		return
@@ -777,7 +777,10 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	}
 	initial := buildGuestPrompt(transcript, instruction, truncated)
 	h.createMu.Lock()
-	sessionID, err := h.router.StartSessionWithBackend(backendName, cwd, initial, model)
+	sessionID, err := h.router.StartSession(pluginapi.CreateRequest{
+		Agent: agent, Backend: backendName, Cwd: cwd,
+		InitialMessage: initial, Model: model,
+	})
 	if err == nil {
 		err = h.store.putGuest(sessionID, binding{
 			Root:   msg.id,
@@ -795,11 +798,17 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	}
 	h.recordSent(sessionID, initial)
 	h.ack(ctx, msg.id)
-	modelLabel := model
-	if modelLabel == "" {
-		modelLabel = "default"
+	status := "▷ session " + imutil.ShortID(sessionID)
+	if agent != "" {
+		status += " · agent " + agent
+	} else {
+		modelLabel := model
+		if modelLabel == "" {
+			modelLabel = "default"
+		}
+		status += " · cwd " + cwd + " · model " + modelLabel
 	}
-	thread, err := h.lark.ReplyText(ctx, msg.id, "▷ session "+imutil.ShortID(sessionID)+" · cwd "+cwd+" · model "+modelLabel)
+	thread, err := h.lark.ReplyText(ctx, msg.id, status)
 	if err != nil {
 		h.logger.Warn("lark: guest status reply", "session", sessionID, "err", err)
 		return
@@ -1471,25 +1480,26 @@ func buildGuestPrompt(transcript []guestLine, instruction string, truncated bool
 	return b.String()
 }
 
-// parseGuestFlags consumes leading --cwd/--backend/--model tokens; the rest is the
-// instruction, kept verbatim (newlines in pasted logs must survive).
-func parseGuestFlags(text, defaultCwd string) (cwd, backendName, model, instruction string, err error) {
-	cwd = defaultCwd
+// parseGuestFlags consumes leading creation flags; the rest is the instruction,
+// kept verbatim (newlines in pasted logs must survive).
+func parseGuestFlags(text, defaultCwd string) (agent, cwd, backendName, model, instruction string, err error) {
 	rest := strings.TrimSpace(text)
 	for strings.HasPrefix(rest, "--") {
 		var flag string
 		flag, rest = cutToken(rest)
 		switch flag {
-		case "--cwd", "--backend", "--model":
+		case "--agent", "--cwd", "--backend", "--model":
 			var val string
 			val, rest = cutToken(rest)
 			if val == "" || strings.HasPrefix(val, "--") {
-				return "", "", "", "", fmt.Errorf("%s requires a value", flag)
+				return "", "", "", "", "", fmt.Errorf("%s requires a value", flag)
 			}
-			if flag == "--cwd" {
+			if flag == "--agent" {
+				agent = val
+			} else if flag == "--cwd" {
 				cwd, err = expandGuestCwd(val)
 				if err != nil {
-					return "", "", "", "", err
+					return "", "", "", "", "", err
 				}
 			} else if flag == "--backend" {
 				backendName = val
@@ -1497,14 +1507,17 @@ func parseGuestFlags(text, defaultCwd string) (cwd, backendName, model, instruct
 				model = val
 			}
 		default:
-			return "", "", "", "", fmt.Errorf("unknown flag %s", flag)
+			return "", "", "", "", "", fmt.Errorf("unknown flag %s", flag)
 		}
+	}
+	if cwd == "" && agent == "" {
+		cwd = defaultCwd
 	}
 	instruction = strings.TrimSpace(rest)
 	if instruction == "" {
-		return "", "", "", "", fmt.Errorf("instruction is required")
+		return "", "", "", "", "", fmt.Errorf("instruction is required")
 	}
-	return cwd, backendName, model, instruction, nil
+	return agent, cwd, backendName, model, instruction, nil
 }
 
 // cutToken splits the first whitespace-delimited token off s.

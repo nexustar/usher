@@ -546,6 +546,10 @@ func (a *LLMAgent) executeTool(ctx context.Context, name, argsJSON string, relay
 		if args.Cwd == "" || args.InitialMessage == "" {
 			return errResult("cwd and initial_message are required"), ""
 		}
+		opts := core.CreateOptions{
+			Backend: args.Backend, Cwd: args.Cwd,
+			InitialMessage: args.InitialMessage, Model: args.Model,
+		}
 		if relay == nil {
 			timeout := defaultCreateTimeout
 			if args.TimeoutSeconds > 0 {
@@ -555,7 +559,7 @@ func (a *LLMAgent) executeTool(ctx context.Context, name, argsJSON string, relay
 				}
 				timeout = t
 			}
-			newID, text, err := a.api.CreateSessionWithBackend(ctx, args.Cwd, args.InitialMessage, args.Backend, args.Model, timeout)
+			newID, text, err := a.api.CreateSession(ctx, opts, timeout)
 			if err != nil {
 				payload, _ := json.Marshal(map[string]any{"session_id": newID, "response": text, "error": err.Error()})
 				return string(payload), newID
@@ -563,7 +567,7 @@ func (a *LLMAgent) executeTool(ctx context.Context, name, argsJSON string, relay
 			payload, _ := json.Marshal(map[string]any{"session_id": newID, "response": text})
 			return string(payload), newID
 		}
-		newID, err := a.api.CreateSessionRelayedWithBackend(args.Cwd, args.InitialMessage, args.Backend, args.Model, relay)
+		newID, err := a.api.CreateSessionRelayed(opts, relay)
 		if err != nil {
 			return errResult(err.Error()), ""
 		}

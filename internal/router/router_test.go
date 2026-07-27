@@ -115,6 +115,63 @@ type recordingRenamer struct {
 	err             error
 }
 
+type testForker struct {
+	dstPath string
+	newID   string
+}
+
+func (f testForker) Fork(_ context.Context, _, _, _ string) (string, string, error) {
+	if err := os.MkdirAll(filepath.Dir(f.dstPath), 0o755); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(f.dstPath, []byte(claudeLog), 0o600); err != nil {
+		return "", "", err
+	}
+	return f.newID, f.dstPath, nil
+}
+
+func TestForkSessionInheritsAppendSystemPrompt(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "-tmp")
+	srcPath := filepath.Join(projectDir, "source.jsonl")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcPath, []byte(claudeLog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(srcPath)
+	metaPath := filepath.Join(t.TempDir(), "sessions.json")
+	meta := sessionmeta.New(metaPath, 0)
+	meta.SetAppendSystemPrompt("source", "Persisted prompt.")
+	forker := testForker{
+		dstPath: filepath.Join(projectDir, "branch.jsonl"),
+		newID:   "branch",
+	}
+	r := New(d, map[string]backend.Backend{
+		"claude": {Forker: forker},
+	}, "claude", nil, nil, meta, nil)
+
+	newID, err := r.ForkSession("source", "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newID != "branch" {
+		t.Fatalf("new id = %q", newID)
+	}
+	if got := meta.AppendSystemPrompt("branch"); got != "Persisted prompt." {
+		t.Fatalf("fork prompt = %q", got)
+	}
+	reloaded := sessionmeta.New(metaPath, 0)
+	if got := reloaded.AppendSystemPrompt("branch"); got != "Persisted prompt." {
+		t.Fatalf("persisted fork prompt = %q", got)
+	}
+}
+
 func (r *recordingRenamer) Rename(_ context.Context, id, path, title string) error {
 	r.id, r.path, r.title = id, path, title
 	return r.err
