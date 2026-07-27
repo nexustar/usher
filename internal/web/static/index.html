@@ -31,6 +31,7 @@
   </div>
   <div class="sidebar-footer">
     <div id="settings-menu" class="settings-menu" hidden>
+      <a href="#/settings" class="settings-item">Settings</a>
       <button id="notif-toggle" class="settings-item" type="button" hidden>Enable notifications</button>
       <a href="/logout" class="settings-item settings-danger">Sign out</a>
     </div>
@@ -45,6 +46,25 @@
   </header>
   <main id="root"></main>
 </div>
+<dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+  <header class="settings-dialog-header">
+    <a id="settings-back" class="settings-back" href="#/settings" aria-label="Back to all settings">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+           stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10 3 L5 8 L10 13"/>
+      </svg>
+    </a>
+    <h1 id="settings-title">
+      <span class="settings-title-all">Settings</span>
+      <span id="settings-title-pane" class="settings-title-pane"></span>
+    </h1>
+    <button id="settings-close" class="settings-close" type="button" aria-label="Close settings">×</button>
+  </header>
+  <div class="settings-dialog-body">
+    <nav id="settings-nav" class="settings-nav"></nav>
+    <div id="settings-pane" class="settings-pane"></div>
+  </div>
+</dialog>
 <div id="kebab-popover" hidden role="menu"></div>
 <script src="/vendor/marked.umd.js"></script>
 <script type="module" src="/app.js"></script>

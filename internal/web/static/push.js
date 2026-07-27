@@ -5,11 +5,17 @@
 // registration just means no offline/install. Once registered, wire up web
 // push (turn-done + permission notifications) behind the sidebar toggle.
 
-const notifToggle = document.getElementById('notif-toggle');
+// Every toggle bound with bindPushToggle, so the sidebar item and the Settings
+// row always show the same state. Disconnected nodes are pruned on refresh —
+// the settings pane rebuilds its DOM on every open.
+const toggles = new Set();
 // Cached subscription so the click handler can decide enable-vs-disable
 // synchronously and, on iOS/WebKit, call requestPermission() inside the gesture
 // before any await consumes the transient activation.
 let pushSub = null;
+let swReg = null;
+let vapidKey = '';
+let pushReady = false;
 
 function urlBase64ToUint8Array(base64) {
   const padding = '='.repeat((4 - (base64.length % 4)) % 4);
@@ -20,11 +26,10 @@ function urlBase64ToUint8Array(base64) {
   return out;
 }
 
-// setupPush decides whether the notifications toggle is usable here. Push needs
-// a PushManager and a server VAPID key; without either the toggle stays hidden.
+// setupPush decides whether notifications are usable here. Push needs a
+// PushManager and a server VAPID key; without either every toggle stays hidden.
 async function setupPush(reg) {
-  if (!notifToggle || !('PushManager' in window) || !('Notification' in window)) return;
-  let vapidKey;
+  if (!('PushManager' in window) || !('Notification' in window)) return;
   try {
     const res = await fetch('/api/push/vapid-key');
     if (!res.ok) return; // push not available server-side
@@ -34,45 +39,69 @@ async function setupPush(reg) {
   }
   if (!vapidKey) return;
 
-  notifToggle.hidden = false;
-  await refreshNotifToggle(reg);
+  swReg = reg;
+  pushReady = true;
+  await refreshToggles();
+}
 
-  // The handler itself is NOT async: requestPermission() must run synchronously
-  // in the gesture (iOS/WebKit drops the prompt once an await intervenes). We
-  // branch off the cached pushSub instead of awaiting getSubscription() here.
-  notifToggle.addEventListener('click', () => {
+// bindPushToggle adopts a button as a notifications toggle. Safe to call before
+// the service worker is ready: the button stays hidden until setupPush says
+// otherwise, and refreshToggles picks it up then.
+export function bindPushToggle(el) {
+  if (!el) return;
+  toggles.add(el);
+  // NOT async: requestPermission() must run synchronously in the gesture
+  // (iOS/WebKit drops the prompt once an await intervenes). We branch off the
+  // cached pushSub instead of awaiting getSubscription() here.
+  el.addEventListener('click', () => {
+    if (!pushReady) return;
     if (pushSub) {
-      runToggle(disableNotifications(pushSub), reg);
+      runToggle(disableNotifications(pushSub));
     } else {
       // Kick off the permission request first thing, still inside the gesture;
       // enableNotifications awaits the promise we hand it.
-      runToggle(enableNotifications(reg, vapidKey, Notification.requestPermission()), reg);
+      runToggle(enableNotifications(swReg, vapidKey, Notification.requestPermission()));
     }
   });
+  applyState(el);
 }
 
-// runToggle drives the button's busy state around an enable/disable op, then
-// refreshes the label.
-async function runToggle(op, reg) {
-  notifToggle.disabled = true;
+// runToggle drives the busy state around an enable/disable op, then refreshes
+// every bound toggle.
+async function runToggle(op) {
+  for (const el of toggles) el.disabled = true;
   try {
     await op;
   } catch (err) {
     console.warn('push toggle failed', err);
   } finally {
-    notifToggle.disabled = false;
-    await refreshNotifToggle(reg);
+    await refreshToggles();
   }
 }
 
-async function refreshNotifToggle(reg) {
+async function refreshToggles() {
+  if (pushReady && Notification.permission !== 'denied') {
+    pushSub = await swReg.pushManager.getSubscription();
+  }
+  for (const el of toggles) {
+    if (!el.isConnected) {
+      toggles.delete(el);
+      continue;
+    }
+    applyState(el);
+  }
+}
+
+function applyState(el) {
+  el.hidden = !pushReady;
+  if (!pushReady) return;
   if (Notification.permission === 'denied') {
-    notifToggle.textContent = 'Notifications blocked';
-    notifToggle.disabled = true;
+    el.textContent = 'Notifications blocked';
+    el.disabled = true;
     return;
   }
-  pushSub = await reg.pushManager.getSubscription();
-  notifToggle.textContent = pushSub ? 'Disable notifications' : 'Enable notifications';
+  el.disabled = false;
+  el.textContent = pushSub ? 'Disable notifications' : 'Enable notifications';
 }
 
 async function enableNotifications(reg, vapidKey, permPromise) {
@@ -102,6 +131,7 @@ async function disableNotifications(sub) {
 }
 
 export function initServiceWorker() {
+  bindPushToggle(document.getElementById('notif-toggle'));
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('/sw.js')

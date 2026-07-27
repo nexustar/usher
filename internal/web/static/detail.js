@@ -191,7 +191,13 @@ function wireCommandPreview(promptEl, sessionID) {
 // id immediately and streams to broker subscribers), then hash-routes to
 // the freshly-created session's detail page.
 
-export async function showNewSession(prefillCwd) {
+// opts: {cwd} prefills the directory, {agent} preselects a configured agent.
+// Both deep-link (#/new/<cwd>, #/new/agent/<name>); the config menu keeps the
+// hash in sync as the choice changes, so refresh and share land on the same
+// starting point.
+export async function showNewSession(opts = {}) {
+  const prefillCwd = opts.cwd;
+  let agentName = opts.agent || '';
   clearListInterval();
   setCurrentDetailId(null);
   setCurrentDraftKey(null); // not draft-managed; don't clobber a session draft
@@ -223,10 +229,10 @@ export async function showNewSession(prefillCwd) {
           <textarea id="prompt" rows="1" placeholder="message…"></textarea>
           <div class="composer-bar">
             <div class="composer-tools">
-              <div class="composer-model-pickers">
-                <select id="new-backend" class="composer-picker composer-backend" aria-label="backend"></select>
-                <span class="picker-divider" aria-hidden="true"></span>
-                <select id="new-model" class="composer-picker composer-model" aria-label="model"></select>
+              <div class="composer-config-wrap">
+                <button id="new-config" class="composer-picker" type="button"
+                        aria-haspopup="menu" aria-expanded="false"></button>
+                <div id="new-config-menu" class="composer-config-menu" role="menu" hidden></div>
               </div>
             </div>
             <div class="composer-send"><button id="send">send</button></div>
@@ -240,8 +246,8 @@ export async function showNewSession(prefillCwd) {
   const promptEl = document.getElementById('prompt');
   const sendBtn = document.getElementById('send');
   const cwdEl = document.getElementById('new-cwd');
-  const backendEl = document.getElementById('new-backend');
-  const modelEl = document.getElementById('new-model');
+  const configBtn = document.getElementById('new-config');
+  const configMenu = document.getElementById('new-config-menu');
   const errEl = document.getElementById('new-session-err');
   // Prefilled from a sidebar cwd "+": cwd is known, so drop the cursor in the
   // message box instead of the cwd field.
@@ -253,58 +259,171 @@ export async function showNewSession(prefillCwd) {
   }
 
   let modelCatalogs = {};
-  const renderModels = () => {
-    const backend = backendEl.value;
-    const models = modelCatalogs[backend] || [];
-    const choices = models.length ? models : [{id: 'default', display_name: 'Default'}];
-    modelEl.replaceChildren(...choices.map(m => {
-      const o = document.createElement('option');
-      o.value = m.id;
-      o.textContent = m.display_name || m.id;
-      return o;
-    }));
-    try {
-      const key = 'usher.newModel.' + backend;
-      const saved = localStorage.getItem(key);
-      if (saved && [...modelEl.options].some(o => o.value === saved)) {
-        modelEl.value = saved;
-      }
-    } catch {/* private mode → keep first model */}
-    backendEl.parentElement.dataset.backend = backend || 'claude';
+  let backends = [];
+  let agentProfiles = [];
+  let backend = '';
+  let model = '';
+  let expanded = ''; // config-menu section currently unfolded: 'backend' | 'model' | ''
+
+  // Choice lists double as display names; an id outside the catalog (an agent
+  // pinning something not installed) still renders, marked unavailable.
+  const backendChoices = () => {
+    const choices = backends.map(b => ({id: b, display_name: b.charAt(0).toUpperCase() + b.slice(1)}));
+    if (backend && !choices.some(c => c.id === backend)) {
+      choices.push({id: backend, display_name: backend + ' (unavailable)'});
+    }
+    return choices;
   };
-  backendEl.addEventListener('change', () => {
-    try { localStorage.setItem('usher.newBackend', backendEl.value); } catch {/* private mode */}
-    renderModels();
+  const modelChoices = () => {
+    const models = modelCatalogs[backend] || [];
+    const choices = models.length ? [...models] : [{id: 'default', display_name: 'Default'}];
+    if (model && !choices.some(c => c.id === model)) {
+      choices.push({id: model, display_name: model + ' (unavailable)'});
+    }
+    return choices;
+  };
+  const displayName = (choices, id) => (choices.find(c => c.id === id) || {display_name: id}).display_name;
+
+  // The whole config collapsed to one word: the agent name, or backend · model
+  // when custom.
+  const updateConfigLabel = () => {
+    configBtn.parentElement.dataset.backend = backend || 'claude';
+    configBtn.textContent = agentName ||
+      displayName(backendChoices(), backend) + ' · ' + displayName(modelChoices(), model);
+  };
+
+  // Saved per-backend model if the catalog still offers it, else the catalog
+  // head — what the old model <select> landed on.
+  const defaultModelFor = b => {
+    const models = modelCatalogs[b] || [];
+    let m = models.length ? models[0].id : 'default';
+    try {
+      const saved = localStorage.getItem('usher.newModel.' + b);
+      if (saved && models.some(x => x.id === saved)) m = saved;
+    } catch {/* private mode → catalog head */}
+    return m;
+  };
+  // Switching back to Custom must not leave the agent's backend/model behind:
+  // the stored preference was never overwritten, it just stopped being shown.
+  const restoreSavedChoice = () => {
+    backend = backends[0] || 'claude';
+    try {
+      const saved = localStorage.getItem('usher.newBackend');
+      if (saved && backends.includes(saved)) backend = saved;
+    } catch {/* private mode → first backend */}
+    model = defaultModelFor(backend);
+    updateConfigLabel();
+  };
+
+  // The agent fills the fields it has an opinion about; they stay editable, so
+  // anything changed afterwards is sent as an override.
+  const applyAgent = profile => {
+    if (profile.cwd) cwdEl.value = profile.cwd;
+    if (profile.backend) backend = profile.backend;
+    model = profile.model || defaultModelFor(backend);
+    updateConfigLabel();
+  };
+
+  // The hash mirrors the choice via replaceState — refresh and share land on
+  // the same starting point — rather than by navigating, which would re-enter
+  // the view and wipe the typed message.
+  const selectAgent = profile => {
+    agentName = profile ? profile.name : '';
+    if (profile) applyAgent(profile); else restoreSavedChoice();
+    subtitle.textContent = profile ? 'new session · ' + profile.name : 'new session';
+    history.replaceState(null, '', profile ? '#/new/agent/' + encodeURIComponent(profile.name) : '#/new');
+  };
+
+  // One popover holds the whole config: agents as directly-clickable rows (the
+  // common case), backend and model as rows that open a side submenu. A
+  // submenu rather than inline expansion because the menu is bottom-anchored:
+  // growing in place would push the agent rows upward.
+  const renderConfigMenu = () => {
+    const check = on => `<span class="config-check">${on ? '✓' : ''}</span>`;
+    const agentRows = agentProfiles.length
+      ? [{id: '', label: 'custom'}, ...agentProfiles.map(p => ({id: p.name, label: p.name}))].map(a =>
+          `<button type="button" class="config-row" data-agent="${esc(a.id)}">` +
+          `<span>${esc(a.label)}</span>${check(a.id === agentName)}</button>`
+        ).join('') + '<div class="config-sep"></div>'
+      : '';
+    const fold = (name, choices, selectedID) =>
+      `<button type="button" class="config-row config-fold${expanded === name ? ' open' : ''}" data-fold="${name}">` +
+      `<span class="config-fold-name">${name}</span>` +
+      `<span>${esc(displayName(choices, selectedID))} <span class="muted">▸</span></span></button>`;
+    const submenu = (name, choices, selectedID) =>
+      `<div class="config-submenu">` + choices.map(c =>
+        `<button type="button" class="config-row" data-${name}="${esc(c.id)}">` +
+        `<span>${esc(c.display_name)}</span>${check(c.id === selectedID)}</button>`).join('') + `</div>`;
+    configMenu.innerHTML = `<div class="config-menu-body">` + agentRows +
+      fold('backend', backendChoices(), backend) +
+      fold('model', modelChoices(), model) + `</div>` +
+      (expanded === 'backend' ? submenu('backend', backendChoices(), backend) :
+       expanded === 'model' ? submenu('model', modelChoices(), model) : '');
+  };
+
+  const onDocClick = e => { if (!e.target.closest('.composer-config-wrap')) closeConfigMenu(); };
+  const onDocKeydown = e => { if (e.key === 'Escape') closeConfigMenu(); };
+  const closeConfigMenu = () => {
+    if (configMenu.hidden) return;
+    configMenu.hidden = true;
+    configBtn.setAttribute('aria-expanded', 'false');
+    expanded = '';
+    document.removeEventListener('click', onDocClick);
+    document.removeEventListener('keydown', onDocKeydown);
+  };
+  configBtn.addEventListener('click', () => {
+    if (!configMenu.hidden) { closeConfigMenu(); return; }
+    renderConfigMenu();
+    configMenu.hidden = false;
+    configBtn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onDocKeydown);
   });
-  modelEl.addEventListener('change', () => {
-    try { localStorage.setItem('usher.newModel.' + backendEl.value, modelEl.value); } catch {/* private mode */}
+  configMenu.addEventListener('click', e => {
+    // Re-rendering below detaches e.target, so by the time this bubbles to
+    // onDocClick its closest() finds nothing and would close the menu.
+    e.stopPropagation();
+    const row = e.target.closest('button');
+    if (!row) return;
+    if (row.dataset.agent !== undefined) {
+      selectAgent(agentProfiles.find(a => a.name === row.dataset.agent));
+      closeConfigMenu();
+    } else if (row.dataset.fold) {
+      expanded = expanded === row.dataset.fold ? '' : row.dataset.fold;
+      renderConfigMenu();
+    } else if (row.dataset.backend !== undefined) {
+      backend = row.dataset.backend;
+      try { localStorage.setItem('usher.newBackend', backend); } catch {/* private mode */}
+      model = defaultModelFor(backend);
+      updateConfigLabel();
+      renderConfigMenu(); // refresh the ✓ and the Model row's reset value
+    } else if (row.dataset.model !== undefined) {
+      model = row.dataset.model;
+      try { localStorage.setItem('usher.newModel.' + backend, model); } catch {/* private mode */}
+      updateConfigLabel();
+      closeConfigMenu();
+    }
   });
 
-  // Build the backend picker once, then show only that backend's models.
-  fetch('/api/models').then(r => r.ok ? r.json() : {}).then(data => {
-    const backends = (data && data.backends) || ['claude'];
-    modelCatalogs = (data && data.models) || {};
-    backendEl.replaceChildren();
-    for (const name of backends) {
-      const o = document.createElement('option');
-      o.value = name;
-      o.textContent = name.charAt(0).toUpperCase() + name.slice(1);
-      backendEl.appendChild(o);
+  // Both catalogs land together so the agent options and the backend/model
+  // options are never half-populated when one of the two requests is slow.
+  const getJSON = url => fetch(url).then(r => r.ok ? r.json() : {}).catch(() => ({}));
+  Promise.all([getJSON('/api/models'), getJSON('/api/agents')]).then(([models, agents]) => {
+    backends = (models && models.backends) || ['claude'];
+    modelCatalogs = (models && models.models) || {};
+    restoreSavedChoice();
+
+    agentProfiles = (agents && agents.agents) || [];
+    if (agentName && !agentProfiles.some(a => a.name === agentName)) {
+      // Stale link (agent renamed or deleted): fall back to a custom session
+      // rather than letting submit fail on a name the server won't resolve.
+      errEl.textContent = `agent "${agentName}" is not configured; starting a custom session`;
+      errEl.style.display = '';
+      agentName = '';
+      history.replaceState(null, '', '#/new');
     }
-    try {
-      const savedBackend = localStorage.getItem('usher.newBackend');
-      if (savedBackend && backends.includes(savedBackend)) {
-        backendEl.value = savedBackend;
-      }
-    } catch {/* private mode → keep first backend */}
-    renderModels();
-  }).catch(() => {
-    modelCatalogs = {};
-    const o = document.createElement('option');
-    o.value = 'claude';
-    o.textContent = 'Claude';
-    backendEl.replaceChildren(o);
-    renderModels();
+    const profile = agentProfiles.find(a => a.name === agentName);
+    if (profile) selectAgent(profile);
   });
 
   const submit = async () => {
@@ -314,15 +433,20 @@ export async function showNewSession(prefillCwd) {
     sendBtn.disabled = true;
     sendBtn.textContent = 'creating…';
     try {
+      const profile = agentProfiles.find(a => a.name === agentName);
+      const request = {
+        agent: agentName,
+        initial_message: promptEl.value,
+      };
+      // Omitted values inherit from the server-side profile; edited ones are
+      // explicit overrides. Custom always sends all three.
+      if (!profile || cwdEl.value.trim() !== (profile.cwd || '')) request.cwd = cwdEl.value.trim();
+      if (!profile || backend !== (profile.backend || '')) request.backend = backend;
+      if (!profile || model !== (profile.model || '')) request.model = model;
       const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          cwd: cwdEl.value.trim(),
-          initial_message: promptEl.value,
-          backend: backendEl.value,
-          model: modelEl.value,
-        }),
+        body: JSON.stringify(request),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));

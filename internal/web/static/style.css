@@ -72,6 +72,12 @@
   --modal-overlay: rgba(15, 23, 42, 0.45);
 }
 
+/* The UA's [hidden]{display:none} loses to any author display rule, so every
+ * class with a display of its own silently stops honouring the attribute. This
+ * has bitten .term-panel, .term-ctrl-menu and .new-cwd-field; one rule ends
+ * the category. */
+[hidden] { display: none !important; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   margin: 0;
@@ -939,6 +945,7 @@ td.cwd { font-size: 0.82rem; }
   box-sizing: border-box;
 }
 .settings-item:hover { background: var(--bg-hover); }
+.settings-item.active { background: var(--bg-accent); color: var(--accent); }
 .settings-item.settings-danger { color: var(--danger-text); }
 
 /* `pre.raw-markdown` (not just `.raw-markdown`) — equal specificity to
@@ -1187,15 +1194,6 @@ pre.raw-markdown {
 .backend-mark--pi { color: var(--pi); }
 .archived-row .backend-mark { opacity: 0.5; }
 
-.send-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-top: 0.4rem;
-  /* Indent so "cwd" lines up roughly with the backend text inside the composer
-   * below: composer-bar pad (0.4) + segment pad (0.55) ≈ 0.95rem. */
-  padding-left: 0.95rem;
-}
 /* Secondary controls — ghost style (no border/fill) so they recede beside the
  * accent send button. State shows via text color: muted off, amber when
  * auto-approve is armed, accent for an open terminal. */
@@ -1236,9 +1234,6 @@ pre.raw-markdown {
   margin-bottom: 0.5rem;
   position: relative;  /* anchor for the ctrl-chord popover */
 }
-/* The class's display:flex outranks the UA's [hidden]{display:none}, so the
- * panel won't collapse without this — restore hiding when toggled off. */
-.term-panel[hidden] { display: none; }
 /* detail.js replaces this fallback height with the measured row count. */
 .term-screen {
   height: 11rem;
@@ -1291,7 +1286,6 @@ pre.raw-markdown {
   border-radius: 8px;
   box-shadow: 0 4px 12px var(--shadow-modal);
 }
-.term-ctrl-menu[hidden] { display: none; }
 .term-ctrl-menu button {
   padding: 0.35rem 0.9rem;
   border: none;
@@ -1375,20 +1369,6 @@ pre.raw-markdown {
   border-color: var(--border-strong);
 }
 
-#modal { position: fixed; inset: 0; z-index: 1000; }
-#modal .overlay { position: absolute; inset: 0; background: var(--modal-overlay); }
-#modal .dialog {
-  position: relative;
-  max-width: 560px;
-  margin: 4rem auto 0;
-  background: var(--bg-chrome);
-  border-radius: 8px;
-  padding: 1rem 1.25rem 1.25rem;
-  box-shadow: 0 12px 32px var(--shadow-modal);
-  max-height: 80vh;
-  overflow-y: auto;
-}
-#modal h3 { margin: 0 0 0.75rem 0; font-size: 1rem; }
 .session-permission {
   margin-top: 0.5rem;
   padding: 0.65rem 0.75rem;
@@ -1552,7 +1532,7 @@ pre.raw-markdown {
  * Font stays 1rem: a <select> triggers iOS focus-zoom below 16px (unlike the
  * <button> toggles). appearance:none drops the native arrow — no caret at all;
  * the backend-colored text carries the affordance. */
-.composer-model-pickers { display: inline-flex; align-items: center; }
+.composer-config-wrap { position: relative; display: inline-flex; align-items: center; }
 .composer-picker {
   appearance: none;
   -webkit-appearance: none;
@@ -1564,22 +1544,84 @@ pre.raw-markdown {
   padding: 0.3rem 0.55rem;
   border-radius: 4px;
   cursor: pointer;
-  /* Both segments wear the backend color (like the sidebar backend marks);
+  /* The button wears the backend color (like the sidebar backend marks);
    * JS mirrors the choice onto the wrapper's data-backend. */
   color: var(--claude);
 }
-.composer-model-pickers[data-backend="codex"] .composer-picker { color: var(--codex); }
-.composer-model-pickers[data-backend="pi"] .composer-picker { color: var(--pi); }
-.composer-backend { min-width: 5rem; /* fits "Claude", the longest backend */ }
-.picker-divider { width: 1px; height: 1.05em; background: var(--border); }
+.composer-config-wrap[data-backend="codex"] .composer-picker { color: var(--codex); }
+.composer-config-wrap[data-backend="pi"] .composer-picker { color: var(--pi); }
 /* Translucent gray tint: reads against the white composer in light mode and
  * still lifts the segment in dark, with no per-scheme override. */
 .composer-picker:hover { background: rgba(110, 118, 129, 0.12); }
 .composer-picker:focus { outline: none; }
 .composer-picker:focus-visible { box-shadow: 0 0 0 2px var(--accent-border); }
+/* Positioning shell only — overflow stays visible so the side submenu can
+ * hang outside it. It also carries the open animation: the body inside is
+ * rebuilt on every toggle and would replay it. */
+.composer-config-menu {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 30;
+  animation: config-pop 120ms ease-out;
+}
+.config-menu-body,
+.config-submenu {
+  min-width: 11rem;
+  max-width: calc(100vw - 2rem);
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 0.25rem;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px var(--shadow-modal);
+}
+.config-menu-body { min-width: 13rem; }
+/* Beside the menu, bottoms aligned — next to the fold rows that open it. A
+ * fresh node each time it opens, so its mount animation is the transition. */
+.config-submenu {
+  position: absolute;
+  left: calc(100% + 0.3rem);
+  bottom: 0;
+  animation: config-pop 120ms ease-out;
+}
+@media (max-width: 720px) {
+  /* No side room on phones: stack above the menu instead. */
+  .config-submenu { left: 0; bottom: calc(100% + 0.3rem); }
+}
+.config-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0.6rem;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  font-family: inherit; /* buttons don't inherit the body font on their own */
+  font-size: 0.95rem;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.config-row:hover { background: var(--bg-hover); }
+.config-fold.open { background: var(--bg-hover); }
+.config-check { min-width: 1em; text-align: right; color: var(--accent); }
+.config-sep { height: 1px; margin: 0.25rem 0; background: var(--border-muted); }
+.config-fold-name {
+  font-size: 0.85rem;
+  text-transform: capitalize;
+  color: var(--text-muted);
+}
+@keyframes config-pop {
+  from { opacity: 0; transform: translateY(0.25rem); }
+}
 .new-cwd-field input {
-  width: 18rem;
-  max-width: 100%;  font-size: 1rem;
+  max-width: 100%;
+  font-size: 1rem;
   padding: 0.25rem 0.5rem;
   border: none;
   border-radius: 4px;
@@ -1587,15 +1629,395 @@ pre.raw-markdown {
   color: var(--text);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
+.new-cwd-field input { width: 18rem; }
+
+.send-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+  /* Indent so "cwd" lines up roughly with the backend text inside the composer
+   * below: composer-bar pad (0.4) + segment pad (0.55) ≈ 0.95rem. */
+  padding-left: 0.95rem;
+}
 /* Ghost field (no border/fill); focus shows a fill since there's no border
  * left to highlight. --bg-hover (not --bg-subtle) so it reads against the
  * near-white canvas in light mode. */
 .new-cwd-field input:focus { outline: none; background: var(--bg-hover); }
-/* Phones: cwd (a path) wants the whole row, so stack the two fields rather
- * than cram them side by side. (send-controls is the new-session view only.) */
 @media (max-width: 720px) {
-  .send-controls { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+  /* cwd is a path: give it the row instead of the desktop's fixed 18rem. */
+  .send-controls { align-items: stretch; }
   .new-cwd-field input { flex: 1; width: auto; min-width: 0; }
+}
+
+/* ----- Settings dialog -------------------------------------------------- */
+/* Native <dialog>: showModal() brings the focus trap, Esc, inert background,
+ * and focus restore, so only geometry lives here. It reads as a panel floating
+ * over the app — dimmed backdrop, inset from the viewport, elevated — rather
+ * than as a page you navigated to. */
+.settings-dialog {
+  width: min(72rem, 92vw);
+  height: min(42rem, 88vh);
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: var(--bg-canvas);
+  color: var(--text);
+  box-shadow: 0 12px 32px var(--shadow-modal);
+  overflow: hidden;
+}
+.settings-dialog::backdrop { background: var(--modal-overlay); }
+.settings-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1rem 0 1.25rem;
+  height: 52px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border-muted);
+  background: var(--bg-chrome);
+}
+.settings-dialog-header h1 { margin: 0; font-size: 1rem; font-weight: 600; }
+/* Both titles and the back link ship in the markup; the media query below
+ * picks which apply, so nothing here depends on measuring the viewport. */
+.settings-back,
+.settings-title-pane { display: none; }
+.settings-back {
+  width: 2rem;
+  height: 2rem;
+  margin-left: -0.5rem;
+  border-radius: 5px;
+  color: var(--text-muted);
+  text-decoration: none;
+  align-items: center;
+  justify-content: center;
+}
+.settings-back:hover { color: var(--text); background: var(--bg-hover); }
+.settings-dialog-header h1 { flex: 1; }
+.settings-close {
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.settings-close:hover { color: var(--text); background: var(--bg-hover); }
+/* Section nav | pane. Two columns, never three — a pane owns its own layout
+ * and must not add a second list column beside this one. */
+.settings-dialog-body {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  height: calc(100% - 52px);
+  min-height: 0;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem;
+  border-right: 1px solid var(--border-muted);
+  overflow-y: auto;
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 5px;
+  color: var(--text);
+  text-decoration: none;
+}
+.settings-nav-chevron { display: none; flex-shrink: 0; color: var(--text-faint); }
+.settings-nav-item:hover { background: var(--bg-hover); }
+.settings-nav-item.active { background: var(--bg-accent); color: var(--accent); }
+.settings-pane { overflow-y: auto; min-width: 0; }
+
+/* ----- Generic pane content --------------------------------------------- */
+.settings-section { padding: 1.25rem 1.5rem; }
+.settings-section h2 {
+  margin: 0 0 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* A flat hairline-separated list, not boxed cards: with one control a card
+ * reads as a lonely island in the dialog's spare height. */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* action hugs the pane edge, not the text */
+  gap: 1.5rem;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+.settings-row:last-child { border-bottom: 0; }
+/* Capped so hint lines stay readable now that the row itself is full-width. */
+.settings-row-text { flex: 1; min-width: 0; max-width: 36rem; }
+.settings-row-label { display: block; }
+.settings-row-hint {
+  margin: 0.2rem 0 0;
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.settings-row-action {
+  flex-shrink: 0;
+  /* Fits the longest label ("Disable notifications") so toggling doesn't
+   * change the button's width. */
+  min-width: 11.5rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-chrome);
+  color: var(--text);
+  padding: 0.4rem 0.65rem;
+  font: inherit;
+  cursor: pointer;
+}
+.settings-row-action:hover:not(:disabled) { background: var(--bg-hover); }
+.settings-row-action:disabled { color: var(--text-faint); cursor: default; }
+/* push.js hides the button when the browser or server can't do push; the note
+ * takes its place rather than leaving a row with nothing on the right. */
+.settings-row-note { display: none; flex-shrink: 0; font-size: 0.85rem; }
+.settings-row:has(> .settings-row-action[hidden]) .settings-row-note { display: block; }
+
+/* ----- Agents pane ------------------------------------------------------ */
+.agent-pane {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  align-items: stretch;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+.agent-pane-list {
+  border-right: 1px solid var(--border-muted);
+  padding-right: 1rem;
+}
+/* Caption for the list column, shown whether or not any rows exist. */
+.agent-intro {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.agent-pane-editor { display: flex; min-height: 0; }
+/* Caption left, "+ new" hard right. Top-aligned because the caption wraps in
+ * this column, and a centred button would drift away from its first line. */
+.agent-pane-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.agent-pane-heading button { flex-shrink: 0; }
+.agent-pane-heading button,
+.agent-form-actions button {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-chrome);
+  color: var(--text);
+  padding: 0.4rem 0.65rem;
+  font: inherit;
+  cursor: pointer;
+}
+.agent-pane-heading button:hover,
+.agent-form-actions button:hover { background: var(--bg-hover); }
+.agent-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.agent-row:hover { background: var(--bg-hover); }
+.agent-row.active { background: var(--bg-accent); color: var(--accent); }
+.agent-row-name { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.agent-row small {
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-form { display: flex; flex-direction: column; gap: 1rem; flex: 1; min-height: 0; }
+/* Three groups — identity, routing, behavior — so the eye has somewhere to
+ * land instead of five evenly spaced fields. */
+.agent-form-group { margin-top: 0.75rem; }
+.agent-form label { display: flex; flex-direction: column; gap: 0.35rem; }
+.agent-form label > span {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.agent-form input,
+.agent-form select,
+.agent-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-chrome);
+  color: var(--text);
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+  font-size: 1rem;
+}
+.agent-form input[name="name"] { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+/* Fixed at its rows=: between the model row and the pinned actions, a
+ * draggable height would only move the gap around. Long prompts scroll. */
+.agent-form textarea {
+  resize: none;
+  line-height: 1.45;
+}
+.agent-field-hint {
+  color: var(--text-faint);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.agent-field-hint code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.95em;
+}
+.agent-form-pair {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr;
+  gap: 0.75rem;
+}
+/* Flex, not grid: the create form has one button and the edit form three, and
+ * a fixed column template would park the submit under a different column in
+ * each. margin-left keeps it right-aligned either way. */
+.agent-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  /* Bottom of the pane, not trailing the last field: nothing above stretches,
+   * so the row would otherwise float mid-dialog. Collapses to 0 when the form
+   * is tall enough to scroll. */
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-muted);
+}
+.agent-form-actions button[type="submit"] { margin-left: auto; }
+.agent-form-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+/* Keeps the shared button box — in a row of peers, dropping the border reads
+ * as a rendering fault rather than as lower priority. Colour carries the
+ * warning, and the border picks it up on hover. */
+.agent-form-actions button.danger { color: var(--danger-text); }
+.agent-form-actions button.danger:hover {
+  border-color: var(--danger-text);
+  background: var(--bg-hover);
+}
+
+/* Three columns (sections | agents | editor) only pay off while the editor
+ * keeps ~30rem. Below that the agent list stacks above it and the pane is two
+ * columns again. */
+@media (max-width: 1100px) {
+  .agent-pane {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .agent-pane-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-muted);
+    padding: 0 0 1rem;
+  }
+}
+
+@media (max-width: 720px) {
+  /* Floating in looks only: the dialog still fills the screen — a truly
+   * centred panel drifts under the on-screen keyboard, since its height is
+   * laid out against a viewport the keyboard doesn't shrink. Instead it goes
+   * transparent and inset, so ::backdrop shows through the gap and the header
+   * plus body read as one rounded card.
+   *
+   * pointer-events keeps that gap inert: it belongs to the dialog, so a tap
+   * there would otherwise count as a backdrop click and discard an unsaved
+   * form — far too easy to trigger by brushing the edge while scrolling. */
+  .settings-dialog {
+    width: 100vw;
+    height: 100dvh;
+    box-sizing: border-box;
+    padding: 0.75rem;
+    background: transparent;
+    border-radius: 0;
+    box-shadow: none;
+    pointer-events: none;
+  }
+  .settings-dialog-header,
+  .settings-dialog-body { pointer-events: auto; }
+  .settings-dialog-header { border-radius: 10px 10px 0 0; }
+  .settings-dialog-body {
+    border-radius: 0 0 10px 10px;
+    background: var(--bg-canvas);
+    overflow: hidden;
+  }
+  /* Drill-down: one level occupies the screen at a time, the way phone
+   * settings work. Which one is decided by .at-pane, set from the hash. */
+  .settings-dialog-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  /* Edge-to-edge rows on their own surface, separated by hairlines: the
+   * phone-list idiom that says "tap me". A bare label with a chevron half a
+   * screen away reads as two unrelated things. */
+  /* The list surface runs to the bottom of the sheet. Rows on their own fill
+   * leave a hard colour break under the last one, which reads as a half-loaded
+   * screen rather than a short list. */
+  .settings-nav {
+    border-right: 0;
+    padding: 0;
+    overflow-y: auto;
+    background: var(--bg-chrome);
+  }
+  .settings-nav-item {
+    padding: 1rem 1.25rem;
+    border-radius: 0;
+    border-bottom: 1px solid var(--border-muted);
+  }
+  .settings-nav-item:hover,
+  .settings-nav-item:active { background: var(--bg-hover); }
+  .settings-nav-chevron { display: block; }
+  /* Nothing is open at the list level, so the section that would open first
+   * must not already look selected. */
+  .settings-dialog:not(.at-pane) .settings-nav-item.active {
+    background: transparent;
+    color: var(--text);
+  }
+  .settings-dialog:not(.at-pane) .settings-pane { display: none; }
+  .settings-dialog.at-pane .settings-nav { display: none; }
+  .settings-dialog.at-pane .settings-back { display: inline-flex; }
+  .settings-dialog.at-pane .settings-title-all { display: none; }
+  .settings-dialog.at-pane .settings-title-pane { display: inline; }
+  .settings-section { padding: 1rem; }
+  /* Stacked: a short button hanging under the text reads as an orphan, so it
+   * takes the row's width. */
+  .settings-row { align-items: stretch; flex-direction: column; gap: 0.75rem; }
+  .settings-row-action { width: 100%; padding: 0.6rem; }
+  .agent-pane { padding: 1rem; gap: 0.75rem; }
+  .agent-pane-list { padding-bottom: 0.75rem; }
+  .agent-form-pair { grid-template-columns: 1fr; }
 }
 
 /* ----- Dark mode -------------------------------------------------------- */

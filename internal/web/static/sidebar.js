@@ -211,6 +211,10 @@ export function updateSidebarActive() {
   document.querySelectorAll('.sidebar-new:not(.cwd-new)').forEach(a => {
     a.classList.toggle('active', hash === '#/new');
   });
+  document.querySelectorAll('.settings-item[href^="#/settings"]').forEach(a => {
+    // Stays lit while drilled into a section, not just on the list itself.
+    a.classList.toggle('active', hash.startsWith(a.getAttribute('href')));
+  });
   let sessionKey = '';
   if (hash.startsWith('#/s/')) {
     sessionKey = 's:' + decodeURIComponent(hash.slice(4));
@@ -491,6 +495,9 @@ const settingsMenu = document.getElementById('settings-menu');
 if (settingsBtn && settingsMenu) {
   settingsBtn.addEventListener('click', () => {
     settingsMenu.hidden = !settingsMenu.hidden;
+  });
+  settingsMenu.addEventListener('click', (e) => {
+    if (e.target.closest('a')) settingsMenu.hidden = true;
   });
   document.addEventListener('click', (e) => {
     if (!settingsMenu.hidden && !e.target.closest('.sidebar-footer')) {
