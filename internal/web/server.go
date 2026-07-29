@@ -44,6 +44,7 @@ import (
 	"github.com/nexustar/usher/internal/pluginapi"
 	"github.com/nexustar/usher/internal/push"
 	"github.com/nexustar/usher/internal/router"
+	"github.com/nexustar/usher/internal/schedule"
 	"github.com/nexustar/usher/internal/terminal"
 )
 
@@ -81,6 +82,7 @@ type Server struct {
 	uiDir     string
 	themePath string
 	agents    *agentprofile.Store
+	schedules *schedule.Runner
 
 	// Main-chat delivery. The user message is persisted in the POST handler
 	// (202 means durable); the agent turn then runs on the chat's single
@@ -108,6 +110,7 @@ func NewServer(
 	uiDir string,
 	themePath string,
 	agents *agentprofile.Store,
+	schedules *schedule.Runner,
 	logger *slog.Logger,
 ) *Server {
 	if logger == nil {
@@ -127,6 +130,7 @@ func NewServer(
 		uiDir:          uiDir,
 		themePath:      themePath,
 		agents:         agents,
+		schedules:      schedules,
 		chatSubs:       map[string]map[chan chatFrame]func(){},
 		chatQueues:     map[string]chan mainchat.Message{},
 		chatPending:    map[string]int{},
@@ -200,6 +204,12 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("GET /api/mainchats/{id}/messages", s.handleListMainChatMessages)
 	webMux.HandleFunc("GET /api/mainchats/{id}/events", s.handleMainChatEvents)
 	webMux.HandleFunc("POST /api/mainchats/{id}/send", s.handleMainChatSend)
+
+	webMux.HandleFunc("GET /api/schedules", s.handleSchedules)
+	webMux.HandleFunc("POST /api/schedules", s.handleCreateSchedule)
+	webMux.HandleFunc("PUT /api/schedules/{id}", s.handleUpdateSchedule)
+	webMux.HandleFunc("DELETE /api/schedules/{id}", s.handleDeleteSchedule)
+	webMux.HandleFunc("POST /api/schedules/{id}/run", s.handleRunSchedule)
 
 	webMux.HandleFunc("GET /api/interactions", s.handleListInteractions)
 	webMux.HandleFunc("POST /api/interactions/{id}/respond", s.handleRespondInteraction)
@@ -555,6 +565,97 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// scheduleDTO adds the next due time, which the server derives and a write
+// never carries.
+type scheduleDTO struct {
+	schedule.Task
+	NextRun time.Time `json:"next_run,omitzero"`
+}
+
+// validateScheduleTarget rejects a task that could not create a session. The
+// agent is re-resolved at fire time, so this is a courtesy, not a guarantee —
+// but it catches typos that would otherwise surface at 3am as a failed run.
+func (s *Server) validateScheduleTarget(task schedule.Task) error {
+	opts, err := s.agents.Resolve(task.Agent, task.Cwd, task.Backend, task.Model)
+	if err != nil {
+		return err
+	}
+	if opts.Cwd == "" {
+		return errors.New("cwd is required (set one here or on the agent)")
+	}
+	return nil
+}
+
+func (s *Server) handleSchedules(w http.ResponseWriter, _ *http.Request) {
+	now := time.Now()
+	tasks := s.schedules.Store().List()
+	out := make([]scheduleDTO, 0, len(tasks))
+	for _, task := range tasks {
+		out = append(out, scheduleDTO{Task: task, NextRun: task.NextRun(now)})
+	}
+	// The zone rides with the list, not /api/config: it is only meaningful next
+	// to these timestamps, and the pane cannot render one before knowing it.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"schedules": out,
+		"timezone":  schedule.LocalZone(now),
+	})
+}
+
+func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
+	var task schedule.Task
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if err := s.validateScheduleTarget(task); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	created, err := s.schedules.Store().Create(task)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, scheduleDTO{Task: created, NextRun: created.NextRun(time.Now())})
+}
+
+func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	var task schedule.Task
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if err := s.validateScheduleTarget(task); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	updated, err := s.schedules.Store().Update(r.PathValue("id"), task)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, scheduleDTO{Task: updated, NextRun: updated.NextRun(time.Now())})
+}
+
+func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
+	if err := s.schedules.Store().Delete(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRunSchedule starts a task's session now, answering once the id is
+// known (like POST /api/sessions) since the caller is testing the task.
+func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
+	id, err := s.schedules.RunNow(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
 }
 
 // handleConfig exposes the few server-side settings the SPA needs to render

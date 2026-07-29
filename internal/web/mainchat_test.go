@@ -74,7 +74,7 @@ func newChatTestServer(t *testing.T, agent usheragent.Agent) *Server {
 	}
 	r := router.New(d, map[string]backend.Backend{}, "claude", broker.New(),
 		hook.New(filepath.Join(dir, "auto.json")), sessionmeta.New(filepath.Join(dir, "sessions.json"), 0), nil)
-	return NewServer("", "", "", nil, r, store, agent, nil, "", "", "", nil, slog.Default())
+	return NewServer("", "", "", nil, r, store, agent, nil, "", "", "", nil, nil, slog.Default())
 }
 
 func chatMux(s *Server) *http.ServeMux {

@@ -26,6 +26,7 @@ const titlePane = document.getElementById('settings-title-pane');
 const PANES = [
   {id: 'general', label: 'General', render: renderGeneralPane},
   {id: 'agents', label: 'Agents', render: renderAgentsPane},
+  {id: 'scheduled', label: 'Scheduled', render: renderScheduledPane},
 ];
 
 // Matches the app's other inline icons (16px box, 1.5 stroke) so the drill-in
@@ -135,9 +136,9 @@ function renderList() {
   const list = document.getElementById('agent-list');
   if (!list) return;
   list.innerHTML = agents.map(agent => `
-    <button type="button" class="agent-row${agent.name === selectedName ? ' active' : ''}"
+    <button type="button" class="cfg-row${agent.name === selectedName ? ' active' : ''}"
             data-agent-name="${esc(agent.name)}">
-      <span class="agent-row-name">${esc(agent.name)}</span>
+      <span class="cfg-row-name">${esc(agent.name)}</span>
       <small>${esc(agentSummary(agent))}</small>
     </button>`).join('');
   list.querySelectorAll('[data-agent-name]').forEach(button => {
@@ -148,6 +149,24 @@ function renderList() {
       renderForm(agents.find(agent => agent.name === selectedName));
     });
   });
+}
+
+function optionsHTML(rows, selected) {
+  return rows.map(row =>
+    `<option value="${esc(row.value)}"${row.value === selected ? ' selected' : ''}>${esc(row.label)}</option>`
+  ).join('');
+}
+
+// No "unspecified" row, here or in the model list: the forms always write a
+// concrete backend and model, as the composer does. An empty field is still
+// legal over the API and in a hand-edited file, where it means "inherit", but
+// offering that as a picker row invents a third state nothing else has.
+function backendOptions(selected) {
+  const rows = backends.map(name => ({value: name, label: name.charAt(0).toUpperCase() + name.slice(1)}));
+  if (selected && !backends.includes(selected)) {
+    rows.push({value: selected, label: selected + ' (unavailable)'});
+  }
+  return optionsHTML(rows, selected);
 }
 
 // A backend whose catalog usher can't read still needs one choice, and
@@ -169,36 +188,27 @@ function renderForm(agent, copy = false) {
   const creating = !agent || copy;
   const value = agent || {name: '', cwd: '', backend: '', model: '', append_system_prompt: ''};
   const name = copy ? value.name + '-copy' : value.name;
-  const backendOptions = backends.map(backendName =>
-    ({value: backendName, label: backendName.charAt(0).toUpperCase() + backendName.slice(1)}));
-  if (value.backend && !backends.includes(value.backend)) {
-    backendOptions.push({value: value.backend, label: value.backend + ' (unavailable)'});
-  }
-  // No "unspecified" row, so a profile that omits its backend — the API and
-  // agents.json allow it — shows, and on save takes, the first installed one.
   const selectedBackend = value.backend || backends[0] || '';
   host.innerHTML = `
-    <form class="agent-form">
+    <form class="cfg-form">
       <label>
         <span>Name</span>
-        <input name="name" value="${esc(name)}" required autocapitalize="off" autocorrect="off" spellcheck="false">
-        <small class="agent-field-hint">No spaces or <code>/</code></small>
+        <input name="name" class="mono" value="${esc(name)}" required autocapitalize="off" autocorrect="off" spellcheck="false">
+        <small class="cfg-field-hint">No spaces or <code>/</code></small>
       </label>
-      <label class="agent-form-group"><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
+      <label class="cfg-form-group"><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
         list="agent-cwd-list" autocomplete="off" placeholder="/absolute/path or ~"></label>
       <datalist id="agent-cwd-list">${[...new Set(getLastSessions().map(s => s.cwd).filter(Boolean))].sort()
         .map(cwd => `<option value="${esc(cwd)}"></option>`).join('')}</datalist>
-      <div class="agent-form-pair">
-        <label><span>Backend</span><select name="backend">${backendOptions.map(option =>
-          `<option value="${esc(option.value)}"${option.value === selectedBackend ? ' selected' : ''}>${esc(option.label)}</option>`
-        ).join('')}</select></label>
+      <div class="cfg-form-pair">
+        <label><span>Backend</span><select name="backend">${backendOptions(selectedBackend)}</select></label>
         <label><span>Model</span><select name="model">${modelOptions(selectedBackend, value.model || '')}</select></label>
       </div>
-      <label class="agent-form-group"><span>Append system prompt</span>
+      <label class="cfg-form-group"><span>Append system prompt</span>
         <textarea name="append_system_prompt" rows="6" placeholder="Additional instructions for sessions created with this agent…">${esc(value.append_system_prompt || '')}</textarea>
       </label>
-      <div class="agent-form-error err" hidden></div>
-      <div class="agent-form-actions">
+      <div class="cfg-form-error err" hidden></div>
+      <div class="cfg-form-actions">
         ${creating ? '' : '<button type="button" class="danger agent-delete">Delete</button><button type="button" class="agent-copy">Duplicate</button>'}
         <button type="submit" class="primary agent-save">${creating ? 'Create agent' : 'Save'}</button>
       </div>
@@ -212,7 +222,7 @@ function renderForm(agent, copy = false) {
     modelEl.innerHTML = modelOptions(backendEl.value, '');
   });
   const showError = message => {
-    const error = form.querySelector('.agent-form-error');
+    const error = form.querySelector('.cfg-form-error');
     error.textContent = message;
     error.hidden = false;
   };
@@ -271,10 +281,23 @@ function renderForm(agent, copy = false) {
   });
 }
 
-async function loadAgents() {
+// Both panes need the installed backends and their model catalogs; both fetch
+// on open rather than caching, since a backend can be enabled under usher.
+async function loadCatalogs() {
+  const response = await fetch('/api/models');
+  const data = response.ok ? await response.json() : {};
+  backends = data.backends || [];
+  catalogs = data.models || {};
+}
+
+async function loadAgentList() {
   const response = await fetch('/api/agents');
   const data = response.ok ? await response.json() : {agents: []};
   agents = data.agents || [];
+}
+
+async function loadAgents() {
+  await loadAgentList();
   if (selectedName && !agents.some(agent => agent.name === selectedName)) selectedName = '';
   if (!selectedName && agents.length) selectedName = agents[0].name;
   renderList();
@@ -283,30 +306,328 @@ async function loadAgents() {
 
 async function renderAgentsPane(host) {
   host.innerHTML = `
-    <div class="agent-pane">
-      <div class="agent-pane-list">
-        <div class="agent-pane-heading">
-          <p class="agent-intro">Reusable defaults for new sessions.</p>
+    <div class="cfg-pane">
+      <div class="cfg-pane-list">
+        <div class="cfg-pane-heading">
+          <p class="cfg-intro">Reusable defaults for new sessions.</p>
           <button id="agent-new" type="button">+ new</button>
         </div>
         <div id="agent-list"></div>
       </div>
-      <div id="agent-editor" class="agent-pane-editor"></div>
+      <div id="agent-editor" class="cfg-pane-editor"></div>
     </div>`;
   document.getElementById('agent-new').addEventListener('click', () => {
     if (!confirmDiscard()) return;
     selectedName = '';
     renderList();
     renderForm(null);
-    host.querySelector('.agent-form input[name="name"]')?.focus();
+    host.querySelector('.cfg-form input[name="name"]')?.focus();
   });
   try {
-    const response = await fetch('/api/models');
-    const data = response.ok ? await response.json() : {};
-    backends = data.backends || [];
-    catalogs = data.models || {};
+    await loadCatalogs();
     await loadAgents();
   } catch (error) {
     document.getElementById('agent-editor').innerHTML = `<p class="err">${esc(error.message || error)}</p>`;
+  }
+}
+
+// ----- scheduled pane ------------------------------------------------------
+// Same list-beside-editor shape as Agents, over /api/schedules. A task's
+// fields are the composer's, plus when to fire.
+
+let schedules = [];
+let selectedScheduleID = '';
+let scheduleDirty = false;
+// The zone name the server reads cron expressions on, from /api/schedules.
+let serverZone = '';
+
+// Two clocks meet in this pane: the server reads cron expressions on its own,
+// while timestamps render in the browser's. So the cron field is labelled with
+// the server's zone, and each timestamp carries its own.
+function fmtZoned(iso) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (isNaN(date)) return '';
+  return date.toLocaleString(undefined, {
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  });
+}
+
+// Shortcuts, not a picker — the field still takes any cron expression. They
+// are buttons rather than the input's datalist because nothing hints a
+// datalist is there: an autocomplete list no one can see is a feature no one
+// finds, and the people typing `0 9 * * 1-5` on a phone need it most.
+const CRON_PRESETS = [
+  ['0 9 * * mon-fri', 'Weekdays 9am'],
+  ['0 3 * * *', 'Nightly 3am'],
+  ['0 * * * *', 'Hourly'],
+  ['0 */6 * * *', 'Every 6 hours'],
+];
+
+function confirmScheduleDiscard() {
+  return !scheduleDirty || confirm('Discard unsaved changes to this schedule?');
+}
+
+// "None" is a real choice — a task may name no agent — unlike the backend and
+// model lists, which never offer one.
+function agentOptions(selected) {
+  const rows = [{value: '', label: 'None'}, ...agents.map(a => ({value: a.name, label: a.name}))];
+  if (selected && !agents.some(a => a.name === selected)) {
+    rows.push({value: selected, label: selected + ' (unavailable)'});
+  }
+  return optionsHTML(rows, selected);
+}
+
+function renderScheduleList() {
+  const list = document.getElementById('sched-list');
+  if (!list) return;
+  list.innerHTML = schedules.map(task => `
+    <div class="sched-row">
+      <button type="button" class="cfg-row${task.id === selectedScheduleID ? ' active' : ''}"
+              data-sched-id="${esc(task.id)}">
+        <span class="${task.enabled ? '' : 'sched-paused'}">${esc(task.name)}</span>
+        <small>${esc(task.cron)}</small>
+      </button>
+      <label class="sched-toggle" title="Enabled">
+        <input type="checkbox" data-toggle-id="${esc(task.id)}"${task.enabled ? ' checked' : ''}>
+      </label>
+    </div>`).join('');
+  list.querySelectorAll('[data-sched-id]').forEach(button => {
+    button.addEventListener('click', () => {
+      if (button.dataset.schedId === selectedScheduleID || !confirmScheduleDiscard()) return;
+      selectedScheduleID = button.dataset.schedId;
+      renderScheduleList();
+      renderScheduleForm(schedules.find(task => task.id === selectedScheduleID));
+    });
+  });
+  list.querySelectorAll('[data-toggle-id]').forEach(box => {
+    box.addEventListener('change', () => toggleSchedule(box.dataset.toggleId, box.checked));
+  });
+}
+
+// The switch saves on the spot — being one click is the whole reason it is out
+// here — and writes the answer back into the task object the editor is holding,
+// so a form open on this task does not submit a stale enabled later.
+async function toggleSchedule(id, enabled) {
+  const task = schedules.find(entry => entry.id === id);
+  if (!task) return;
+  const response = await fetch('/api/schedules/' + encodeURIComponent(id), {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({...task, enabled}),
+  }).catch(() => ({ok: false, json: async () => ({})}));
+  if (!response.ok) {
+    await loadSchedules(); // the server's answer, whatever it is
+    return;
+  }
+  Object.assign(task, await response.json().catch(() => ({})));
+  renderScheduleList();
+  if (id === selectedScheduleID) {
+    // Only the status block: the fields may hold edits in progress.
+    const status = document.querySelector('#sched-editor .sched-status');
+    if (status) status.innerHTML = scheduleStatusHTML(task);
+  }
+}
+
+// When the runner will start this task next — its own cron reading, not a
+// second implementation in the browser. Nothing here says what earlier runs
+// did. "Overdue" is the one place a stopped runner becomes visible.
+function scheduleStatusHTML(task) {
+  if (!task) return '';
+  let when = task.enabled ? 'never' : 'paused';
+  if (task.next_run) {
+    const overdue = new Date(task.next_run) < new Date();
+    when = esc(fmtZoned(task.next_run) + (overdue ? ' (overdue, runs shortly)' : ''));
+  }
+  return `<span><span class="sched-status-label">Next run</span>${when}</span>`;
+}
+
+function renderScheduleForm(task) {
+  const host = document.getElementById('sched-editor');
+  if (!host) return;
+  const creating = !task;
+  const value = task || {
+    name: '', enabled: true, cron: CRON_PRESETS[0][0],
+    agent: '', cwd: '', backend: '', model: '', prompt: '',
+  };
+  const selectedBackend = value.backend || backends[0] || '';
+  host.innerHTML = `
+    <form class="cfg-form">
+      <label><span>Name</span>
+        <input name="name" value="${esc(value.name || '')}" required placeholder="Nightly test run"></label>
+      <label class="cfg-form-group">
+        <span>Cron${serverZone ? ` (${esc(serverZone)})` : ''}</span>
+        <input name="cron" class="mono" value="${esc(value.cron || '')}"
+               autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <div class="sched-presets">${CRON_PRESETS.map(
+        ([expr, label]) => `<button type="button" class="sched-preset" data-cron="${esc(expr)}">${esc(label)}</button>`
+      ).join('')}</div>
+      <small class="cfg-field-hint"><code>minute hour day month weekday</code></small>
+      <label class="cfg-form-group"><span>Agent</span><select name="agent">${
+        agentOptions(value.agent || '')
+      }</select></label>
+      <label><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
+        list="sched-cwd-list" autocomplete="off" placeholder="/absolute/path or ~"></label>
+      <datalist id="sched-cwd-list">${[...new Set(getLastSessions().map(s => s.cwd).filter(Boolean))].sort()
+        .map(cwd => `<option value="${esc(cwd)}"></option>`).join('')}</datalist>
+      <div class="cfg-form-pair">
+        <label><span>Backend</span><select name="backend">${backendOptions(selectedBackend)}</select></label>
+        <label><span>Model</span><select name="model">${
+          modelOptions(selectedBackend, value.model || '')
+        }</select></label>
+      </div>
+      <label class="cfg-form-group"><span>Prompt</span>
+        <textarea name="prompt" rows="6" required
+          placeholder="The message each run starts its session with…">${esc(value.prompt || '')}</textarea>
+      </label>
+      ${task ? `<div class="sched-status">${scheduleStatusHTML(task)}</div>` : ''}
+      <div class="cfg-form-error err" hidden></div>
+      <div class="cfg-form-actions">
+        ${creating ? '' : `<button type="button" class="danger sched-delete">Delete</button>
+          <button type="button" class="sched-run">Run now</button>`}
+        <button type="submit" class="primary sched-save">${creating ? 'Create schedule' : 'Save'}</button>
+      </div>
+    </form>`;
+
+  scheduleDirty = false;
+  const form = host.querySelector('form');
+  const showError = message => {
+    const error = form.querySelector('.cfg-form-error');
+    error.textContent = message;
+    error.hidden = false;
+  };
+  // Fill the field rather than submit: a preset is a starting point, and the
+  // dispatched event runs the same dirty-tracking the keyboard path does.
+  form.querySelectorAll('.sched-preset').forEach(button => {
+    button.addEventListener('click', () => {
+      form.elements.cron.value = button.dataset.cron;
+      form.elements.cron.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+  });
+  const backendEl = form.elements.backend;
+  backendEl.addEventListener('change', () => {
+    form.elements.model.innerHTML = modelOptions(backendEl.value, '');
+  });
+  // Picking an agent fills the fields it has an opinion about and leaves them
+  // editable, exactly as the composer does — so what the task stores is always
+  // the concrete configuration it will run with.
+  form.elements.agent.addEventListener('change', () => {
+    const profile = agents.find(a => a.name === form.elements.agent.value);
+    if (!profile) return;
+    if (profile.cwd) form.elements.cwd.value = profile.cwd;
+    if (profile.backend) backendEl.value = profile.backend;
+    form.elements.model.innerHTML = modelOptions(backendEl.value, profile.model || '');
+  });
+  form.addEventListener('input', () => {
+    scheduleDirty = true;
+    const save = form.querySelector('.sched-save');
+    if (save.textContent === 'Saved') save.textContent = 'Save';
+  });
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const payload = {
+      name: form.elements.name.value,
+      enabled: value.enabled, // owned by the list's switch, not by this form
+      cron: form.elements.cron.value,
+      agent: form.elements.agent.value,
+      cwd: form.elements.cwd.value,
+      backend: form.elements.backend.value,
+      model: form.elements.model.value,
+      prompt: form.elements.prompt.value,
+    };
+    const response = await fetch(creating ? '/api/schedules' : '/api/schedules/' + encodeURIComponent(value.id), {
+      method: creating ? 'POST' : 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    }).catch(error => ({ok: false, json: async () => ({error: error.message})}));
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showError(body.error || ('HTTP ' + response.status));
+      return;
+    }
+    scheduleDirty = false;
+    selectedScheduleID = body.id;
+    schedules = creating
+      ? [...schedules, body]
+      : schedules.map(task => (task.id === value.id ? body : task));
+    renderScheduleList();
+    if (creating) {
+      // Switch into edit mode: grow the delete/run buttons and start issuing
+      // PUTs against the id the server just assigned.
+      renderScheduleForm(body);
+    } else {
+      // Keep the fields as typed (caret, scroll), but next_run has just moved.
+      form.querySelector('.sched-status').innerHTML = scheduleStatusHTML(body);
+    }
+    const save = document.querySelector('#sched-editor .sched-save');
+    if (save) save.textContent = 'Saved';
+  });
+
+  host.querySelector('.sched-run')?.addEventListener('click', async event => {
+    if (scheduleDirty && !confirm('Run the saved version? Unsaved changes here are not used.')) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Starting…';
+    const response = await fetch('/api/schedules/' + encodeURIComponent(value.id) + '/run', {method: 'POST'})
+      .catch(error => ({ok: false, json: async () => ({error: error.message})}));
+    const body = await response.json().catch(() => ({}));
+    button.disabled = false;
+    button.textContent = 'Run now';
+    // Nothing on the task changes when it runs, so there is nothing to reload.
+    if (!response.ok) showError(body.error || ('HTTP ' + response.status));
+  });
+
+  host.querySelector('.sched-delete')?.addEventListener('click', async () => {
+    if (!confirm(`Delete schedule “${value.name}”? Sessions it already created are not affected.`)) return;
+    const response = await fetch('/api/schedules/' + encodeURIComponent(value.id), {method: 'DELETE'});
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      showError(body.error || ('HTTP ' + response.status));
+      return;
+    }
+    scheduleDirty = false;
+    selectedScheduleID = '';
+    await loadSchedules();
+  });
+}
+
+async function loadSchedules() {
+  const response = await fetch('/api/schedules');
+  const data = response.ok ? await response.json().catch(() => ({})) : {};
+  schedules = data.schedules || [];
+  serverZone = data.timezone || '';
+  if (selectedScheduleID && !schedules.some(task => task.id === selectedScheduleID)) selectedScheduleID = '';
+  if (!selectedScheduleID && schedules.length) selectedScheduleID = schedules[0].id;
+  renderScheduleList();
+  renderScheduleForm(schedules.find(task => task.id === selectedScheduleID));
+}
+
+async function renderScheduledPane(host) {
+  host.innerHTML = `
+    <div class="cfg-pane">
+      <div class="cfg-pane-list">
+        <div class="cfg-pane-heading">
+          <p class="cfg-intro">Scheduled tasks.</p>
+          <button id="sched-new" type="button">+ new</button>
+        </div>
+        <div id="sched-list"></div>
+      </div>
+      <div id="sched-editor" class="cfg-pane-editor"></div>
+    </div>`;
+  document.getElementById('sched-new').addEventListener('click', () => {
+    if (!confirmScheduleDiscard()) return;
+    selectedScheduleID = '';
+    renderScheduleList();
+    renderScheduleForm(null);
+    host.querySelector('.cfg-form input[name="name"]')?.focus();
+  });
+  try {
+    await loadCatalogs();
+    await loadAgentList();
+    await loadSchedules();
+  } catch (error) {
+    document.getElementById('sched-editor').innerHTML = `<p class="err">${esc(error.message || error)}</p>`;
   }
 }

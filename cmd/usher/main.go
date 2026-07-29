@@ -28,6 +28,7 @@ import (
 	"github.com/nexustar/usher/internal/pluginapi"
 	"github.com/nexustar/usher/internal/push"
 	"github.com/nexustar/usher/internal/router"
+	"github.com/nexustar/usher/internal/schedule"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
 	"github.com/nexustar/usher/internal/telegram"
@@ -169,6 +170,10 @@ func serve(args []string) error {
 		return fmt.Errorf("load auth: %w", err)
 	}
 	agents, err := agentprofile.Load(filepath.Join(*dataDir, "agents.json"))
+	if err != nil {
+		return err
+	}
+	schedules, err := schedule.Load(filepath.Join(*dataDir, "schedules.json"))
 	if err != nil {
 		return err
 	}
@@ -314,8 +319,13 @@ func serve(args []string) error {
 		}
 	}()
 
+	// Scheduled tasks: each due task creates a session, so the runner needs
+	// only the two seams the composer uses. Inert until a task is saved.
+	scheduleRunner := schedule.NewRunner(schedules, r, agents, logger)
+	go scheduleRunner.Run(ctx)
+
 	themePath := filepath.Join(*dataDir, "theme.css")
-	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, mainStore, agent, pushMgr, *editorURL, *uiDir, themePath, agents, logger)
+	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, mainStore, agent, pushMgr, *editorURL, *uiDir, themePath, agents, scheduleRunner, logger)
 
 	// Foreign-turn watcher: turns usher didn't start (background workflow
 	// continuations, pane-typed prompts) get relayed to the chats that
