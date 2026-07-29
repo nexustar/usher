@@ -3,22 +3,22 @@ package router
 import (
 	"testing"
 
-	"github.com/nexustar/usher/internal/jsonl"
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/transcript"
 )
 
 // The assistant text lives in Parts, not Content — the pre-fix mapping dropped
 // it. flattenTurnText must recover it, and inline tool parts only when asked.
 func TestFlattenTurnText(t *testing.T) {
-	assistant := jsonl.Turn{
+	assistant := core.Turn{
 		Role: "assistant",
-		Parts: []jsonl.TurnPart{
+		Parts: []core.TurnPart{
 			{Type: "text", Content: "let me check the config"},
 			{Type: "tool", ToolName: "Read", ToolTarget: "config.go"},
 			{Type: "text", Content: "found it"},
 		},
 	}
-	user := jsonl.Turn{Role: "user", Content: "what does config.go do?"}
+	user := core.Turn{Role: "user", Content: "what does config.go do?"}
 
 	if got := flattenTurnText(user, true); got != "what does config.go do?" {
 		t.Errorf("user turn: got %q", got)
@@ -77,11 +77,11 @@ func TestFoldFindAll(t *testing.T) {
 }
 
 func TestScanTurnsForQuery(t *testing.T) {
-	turns := []jsonl.Turn{
+	turns := []core.Turn{
 		{Role: "user", Content: "deploy the auth service"},
-		{Role: "assistant", Parts: []jsonl.TurnPart{{Type: "text", Content: "AUTH done"}}},
+		{Role: "assistant", Parts: []core.TurnPart{{Type: "text", Content: "AUTH done"}}},
 		{Role: "user", Content: "unrelated"},
-		{Role: "assistant", Parts: []jsonl.TurnPart{
+		{Role: "assistant", Parts: []core.TurnPart{
 			{Type: "tool", ToolName: "Bash", ToolTarget: "auth.sh"}, // tool part must NOT match
 		}},
 	}

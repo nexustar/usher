@@ -8,6 +8,7 @@ import (
 
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // RuleAgent is the v0.1 main-chat agent: a small dispatcher over slash
@@ -105,7 +106,7 @@ func (a *RuleAgent) list() string {
 			suffix = "  [" + strings.Join(flags, ",") + "]"
 		}
 		lines = append(lines, fmt.Sprintf("%s  %s  %s%s",
-			shortID(s.ID), padRight(truncate(titleOr(s), 40), 40), s.Cwd, suffix))
+			textutil.ShortID(s.ID), padRight(textutil.Truncate(titleOr(s), 40), 40), s.Cwd, suffix))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -121,7 +122,7 @@ func (a *RuleAgent) resolveSession(prefix string) (core.Session, string) {
 	if len(matches) > 1 {
 		var lines []string
 		for _, m := range matches {
-			lines = append(lines, fmt.Sprintf("  %s  %s", shortID(m.ID), titleOr(m)))
+			lines = append(lines, fmt.Sprintf("  %s  %s", textutil.ShortID(m.ID), titleOr(m)))
 		}
 		return core.Session{}, "ambiguous; matches:\n" + strings.Join(lines, "\n")
 	}
@@ -137,7 +138,7 @@ func (a *RuleAgent) focus(prefix string) (string, string) {
 	if errMsg != "" {
 		return errMsg, ""
 	}
-	return fmt.Sprintf("focused %s (%s)", shortID(sess.ID), titleOr(sess)), sess.ID
+	return fmt.Sprintf("focused %s (%s)", textutil.ShortID(sess.ID), titleOr(sess)), sess.ID
 }
 
 func (a *RuleAgent) send(args string, relay RelaySink) (string, string) {
@@ -154,12 +155,12 @@ func (a *RuleAgent) send(args string, relay RelaySink) (string, string) {
 		if err := a.api.SendToSession(sess.ID, text); err != nil {
 			return "send failed: " + err.Error(), ""
 		}
-		return fmt.Sprintf("sent to %s (%s)", shortID(sess.ID), titleOr(sess)), sess.ID
+		return fmt.Sprintf("sent to %s (%s)", textutil.ShortID(sess.ID), titleOr(sess)), sess.ID
 	}
 	if err := a.api.SendToSessionRelayed(sess.ID, text, relay); err != nil {
 		return "send failed: " + err.Error(), ""
 	}
-	return fmt.Sprintf("sent to %s (%s)", shortID(sess.ID), titleOr(sess)), sess.ID
+	return fmt.Sprintf("sent to %s (%s)", textutil.ShortID(sess.ID), titleOr(sess)), sess.ID
 }
 
 func (a *RuleAgent) read(args string) (string, string) {
@@ -197,7 +198,7 @@ func (a *RuleAgent) read(args string) (string, string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "turns %d-%d of %d\n", start, start+len(turns)-1, total)
 	for _, tn := range turns {
-		fmt.Fprintf(&b, "%s: %s\n", tn.Role, truncate(strings.TrimSpace(tn.Content), 500))
+		fmt.Fprintf(&b, "%s: %s\n", tn.Role, textutil.Truncate(strings.TrimSpace(tn.Content), 500))
 	}
 	return strings.TrimRight(b.String(), "\n"), sess.ID
 }
@@ -226,7 +227,7 @@ func (a *RuleAgent) search(args string) (string, string) {
 		}
 		var b strings.Builder
 		for _, h := range hits {
-			fmt.Fprintf(&b, "#%d %s: %s\n", h.TurnIndex, h.Role, truncate(strings.TrimSpace(h.Snippet), 500))
+			fmt.Fprintf(&b, "#%d %s: %s\n", h.TurnIndex, h.Role, textutil.Truncate(strings.TrimSpace(h.Snippet), 500))
 		}
 		if truncated {
 			b.WriteString("(more matches not shown)")
@@ -242,7 +243,7 @@ func (a *RuleAgent) search(args string) (string, string) {
 	}
 	var b strings.Builder
 	for _, result := range results {
-		fmt.Fprintf(&b, "%s  %s  (%d hits)\n", shortID(result.SessionID), truncate(result.Title, 50), result.HitCount)
+		fmt.Fprintf(&b, "%s  %s  (%d hits)\n", textutil.ShortID(result.SessionID), textutil.Truncate(result.Title, 50), result.HitCount)
 	}
 	if truncated {
 		b.WriteString("(more matches not shown)")
@@ -260,14 +261,14 @@ func (a *RuleAgent) create(ctx context.Context, args string) (string, string) {
 		core.CreateOptions{Cwd: cwd, InitialMessage: initial}, defaultCreateTimeout)
 	if err != nil {
 		if newID != "" {
-			return fmt.Sprintf("created %s but: %s", shortID(newID), err.Error()), newID
+			return fmt.Sprintf("created %s but: %s", textutil.ShortID(newID), err.Error()), newID
 		}
 		return "create failed: " + err.Error(), ""
 	}
 	if strings.TrimSpace(reply) == "" {
 		reply = "(no text response)"
 	}
-	return fmt.Sprintf("created session %s\n%s", shortID(newID), reply), newID
+	return fmt.Sprintf("created session %s\n%s", textutil.ShortID(newID), reply), newID
 }
 
 func (a *RuleAgent) setArchived(prefix string, archived bool) string {
@@ -285,10 +286,10 @@ func (a *RuleAgent) setArchived(prefix string, archived bool) string {
 	}
 	if archived {
 		a.api.Archive(sess.ID)
-		return fmt.Sprintf("archived %s (%s)", shortID(sess.ID), titleOr(sess))
+		return fmt.Sprintf("archived %s (%s)", textutil.ShortID(sess.ID), titleOr(sess))
 	}
 	a.api.Unarchive(sess.ID)
-	return fmt.Sprintf("unarchived %s (%s)", shortID(sess.ID), titleOr(sess))
+	return fmt.Sprintf("unarchived %s (%s)", textutil.ShortID(sess.ID), titleOr(sess))
 }
 
 func (a *RuleAgent) autoApprove(args string) string {
@@ -303,7 +304,7 @@ func (a *RuleAgent) autoApprove(args string) string {
 	}
 	enabled := mode == "on"
 	a.api.SetAutoApprove(sess.ID, enabled)
-	return fmt.Sprintf("auto-approve %s for %s (%s)", mode, shortID(sess.ID), titleOr(sess))
+	return fmt.Sprintf("auto-approve %s for %s (%s)", mode, textutil.ShortID(sess.ID), titleOr(sess))
 }
 
 func (a *RuleAgent) pending() string {
@@ -314,7 +315,7 @@ func (a *RuleAgent) pending() string {
 	var lines []string
 	for _, p := range list {
 		lines = append(lines, fmt.Sprintf("%s  %s  in session %s",
-			shortID(p.ID), p.ToolName, shortID(p.SessionID)))
+			textutil.ShortID(p.ID), p.ToolName, textutil.ShortID(p.SessionID)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -345,7 +346,7 @@ func (a *RuleAgent) respond(prefix, behavior string) string {
 	if behavior == "deny" {
 		verb = "denied"
 	}
-	return fmt.Sprintf("%s %s", verb, shortID(matches[0].ID))
+	return fmt.Sprintf("%s %s", verb, textutil.ShortID(matches[0].ID))
 }
 
 // --- helpers -------------------------------------------------------------
@@ -369,26 +370,11 @@ func matchSessions(all []core.Session, q string) []core.Session {
 	return out
 }
 
-func shortID(id string) string {
-	if len(id) >= 8 {
-		return id[:8]
-	}
-	return id
-}
-
 func titleOr(s core.Session) string {
 	if s.Title == "" {
 		return "(untitled)"
 	}
 	return s.Title
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }
 
 func padRight(s string, n int) string {

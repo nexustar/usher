@@ -150,15 +150,6 @@ func TestStorePersistence(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	if got := truncate("hello", 10); got != "hello" {
-		t.Errorf("no-cut: %q", got)
-	}
-	if got := truncate("hello world", 5); got != "hello…" {
-		t.Errorf("cut: %q", got)
-	}
-}
-
 // randReader is a deterministic-enough reader for tests that only need
 // well-formed keys, avoiding a crypto/rand import here.
 type randReader struct{}

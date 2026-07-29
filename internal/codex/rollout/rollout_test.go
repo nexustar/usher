@@ -1,4 +1,4 @@
-package codexrollout
+package rollout
 
 import (
 	"os"
@@ -60,13 +60,6 @@ func TestRenameSessionUsesCodexIndex(t *testing.T) {
 	if err := RenameSession(path, "thread-1", "Latest"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ReadThreadName(path, "thread-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "Latest" {
-		t.Fatalf("name = %q, want Latest", got)
-	}
 	names, err := ReadThreadNames(path)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +82,25 @@ func TestReadSessionMetaSubagent(t *testing.T) {
 	}
 	if !meta.IsSubagent || meta.ParentID != "019f5228-434c-76d1-8459-4279b2d87ba3" || meta.AgentName != "Archimedes" {
 		t.Fatalf("subagent meta = %+v", meta)
+	}
+}
+
+// The prompt doubles as the session title (codex has no ai-title), so trailing
+// whitespace must not eat into the 60-rune budget and add a bogus ellipsis.
+func TestReadSessionMeta_PromptIsTrimmed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout-2026-07-13T00-00-00-019f5723-e850-7c71-b2e5-7735abe145fb.jsonl")
+	raw := `{"timestamp":"2026-07-13T00:00:00Z","type":"session_meta","payload":{"id":"019f5723-e850-7c71-b2e5-7735abe145fb","cwd":"/tmp/project"}}` + "\n" +
+		`{"timestamp":"2026-07-13T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"  padded prompt\n\n"}}` + "\n"
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Prompt != "padded prompt" {
+		t.Errorf("Prompt = %q", meta.Prompt)
 	}
 }
 
@@ -270,34 +282,6 @@ func TestIsTurnComplete(t *testing.T) {
 	} {
 		if IsTurnComplete([]byte(neg)) {
 			t.Errorf("false positive on %q", neg)
-		}
-	}
-}
-
-func TestIsTurnActivity(t *testing.T) {
-	for _, tc := range []struct {
-		line string
-		want bool
-	}{
-		// Submit-time records: written whether or not the model ever runs.
-		{`{"type":"turn_context","payload":{"model":"gpt-5"}}`, false},
-		{`{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}`, false},
-		{`{"type":"response_item","payload":{"type":"message","role":"user"}}`, false},
-		// task_complete is completion, not activity — turnComplete's job.
-		{`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"x"}}`, false},
-		{`not json`, false},
-		// Model output: proof a real turn is in flight.
-		{`{"type":"event_msg","payload":{"type":"task_started"}}`, true},
-		{`{"type":"event_msg","payload":{"type":"turn_started"}}`, true}, // announced v2 rename
-		{`{"type":"event_msg","payload":{"type":"agent_message","message":"hello"}}`, true},
-		{`{"type":"event_msg","payload":{"type":"agent_reasoning","text":"…"}}`, true},
-		{`{"type":"response_item","payload":{"type":"message","role":"assistant"}}`, true},
-		{`{"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"c1"}}`, true},
-		{`{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1"}}`, true},
-		{`{"type":"response_item","payload":{"type":"reasoning"}}`, true},
-	} {
-		if got := IsTurnActivity([]byte(tc.line)); got != tc.want {
-			t.Errorf("IsTurnActivity(%s) = %v, want %v", tc.line, got, tc.want)
 		}
 	}
 }

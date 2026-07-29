@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 type Message struct {
@@ -175,16 +177,8 @@ func (s *Store) firstUserContent(id string) (string, error) {
 	}
 	for _, m := range msgs {
 		if m.Role == "user" {
-			return truncate(m.Content, 60), nil
+			return textutil.Truncate(m.Content, 60), nil
 		}
 	}
 	return "", nil
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }

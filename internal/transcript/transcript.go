@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
-	"github.com/nexustar/usher/internal/codexrollout"
+	"github.com/nexustar/usher/internal/claude/jsonl"
+	"github.com/nexustar/usher/internal/codex/rollout"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/jsonl"
 )
 
 type Claude struct{}
@@ -27,11 +27,11 @@ func (Claude) IsTurnAborted([]byte) bool       { return false }
 type Codex struct{}
 
 func (Codex) ReadTurns(path string, limit int) ([]core.Turn, int, error) {
-	return codexrollout.ReadTurns(path, limit)
+	return rollout.ReadTurns(path, limit)
 }
-func (Codex) NewAssembler() backend.Assembler { return codexrollout.NewAssembler() }
-func (Codex) IsTurnComplete(raw []byte) bool  { return codexrollout.IsTurnComplete(raw) }
-func (Codex) IsTurnAborted(raw []byte) bool   { return codexrollout.IsTurnAborted(raw) }
+func (Codex) NewAssembler() backend.Assembler { return rollout.NewAssembler() }
+func (Codex) IsTurnComplete(raw []byte) bool  { return rollout.IsTurnComplete(raw) }
+func (Codex) IsTurnAborted(raw []byte) bool   { return rollout.IsTurnAborted(raw) }
 
 type ClaudeForker struct{}
 
@@ -45,8 +45,8 @@ type CodexForker struct{}
 
 func (CodexForker) Fork(_ context.Context, sourceID, path, afterID string) (string, string, error) {
 	id := newSessionID()
-	dst := filepath.Join(filepath.Dir(path), codexrollout.RolloutFilename(id, time.Now()))
-	return id, dst, codexrollout.ForkCopy(path, dst, afterID, id, sourceID)
+	dst := filepath.Join(filepath.Dir(path), rollout.RolloutFilename(id, time.Now()))
+	return id, dst, rollout.ForkCopy(path, dst, afterID, id, sourceID)
 }
 
 func newSessionID() string {

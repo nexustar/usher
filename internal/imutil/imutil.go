@@ -158,14 +158,6 @@ func CompactInput(raw json.RawMessage) string {
 	return string(compact)
 }
 
-// ShortID returns the first 8 characters of a session id.
-func ShortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
-}
-
 // SplitMessage breaks text into chunks of at most max runes, preferring to cut
 // at a newline boundary so code/paragraphs stay intact. A non-positive max is
 // nonsense from a miscomputed limit; return the text whole rather than loop.

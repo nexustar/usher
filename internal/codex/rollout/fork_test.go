@@ -1,4 +1,4 @@
-package codexrollout
+package rollout
 
 import (
 	"encoding/json"

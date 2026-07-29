@@ -25,6 +25,7 @@ import (
 	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
+	"github.com/nexustar/usher/internal/textutil"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -631,8 +632,8 @@ func (h *Hub) refreshTitle(ctx context.Context, sessionID string) {
 // sessionCardInfo resolves the root card's fields: the session's display
 // title (short id fallback), its cwd, and a backend/short-id metadata line.
 func (h *Hub) sessionCardInfo(sessionID string) (title, cwd, meta string) {
-	title = imutil.ShortID(sessionID)
-	meta = imutil.ShortID(sessionID)
+	title = textutil.ShortID(sessionID)
+	meta = textutil.ShortID(sessionID)
 	if sess, ok := h.router.GetSession(sessionID); ok {
 		if strings.TrimSpace(sess.Title) != "" {
 			title = sess.Title
@@ -798,7 +799,7 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	}
 	h.recordSent(sessionID, initial)
 	h.ack(ctx, msg.id)
-	status := "▷ session " + imutil.ShortID(sessionID)
+	status := "▷ session " + textutil.ShortID(sessionID)
 	if agent != "" {
 		status += " · agent " + agent
 	} else {

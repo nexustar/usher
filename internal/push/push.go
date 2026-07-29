@@ -26,6 +26,7 @@ import (
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // vapidSubscriber is the VAPID "sub" claim: a contact URL the push service can
@@ -193,13 +194,13 @@ type notification struct {
 func (m *Manager) sessionLabel(sessionID string) string {
 	if info, ok := m.lookup(sessionID); ok {
 		if info.Title != "" {
-			return truncate(oneLine(info.Title), 60)
+			return textutil.Truncate(oneLine(info.Title), 60)
 		}
 		if info.Cwd != "" {
 			return filepath.Base(info.Cwd) // last path segment, not the whole path
 		}
 	}
-	return shortID(sessionID)
+	return textutil.ShortID(sessionID)
 }
 
 func (m *Manager) notifyTurnDone(sessionID string) {
@@ -330,26 +331,10 @@ func ttlFor(urgency string) string {
 	return "3600" // 1 hour
 }
 
-func shortID(id string) string {
-	if len(id) >= 8 {
-		return id[:8]
-	}
-	return id
-}
-
 // oneLine collapses whitespace (including newlines) to single spaces so a
 // multi-line title renders as one tidy notification line.
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
-}
-
-// truncate caps a string to n runes, adding an ellipsis when it had to cut.
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }
 
 // endpointHost is the push service host, for logs that shouldn't echo the full

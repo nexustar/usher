@@ -1,5 +1,5 @@
-// Package claudestream manages long-running Claude Code stream-json children.
-package claudestream
+// Package claude manages long-running Claude Code stream-json children.
+package claude
 
 import (
 	"bufio"

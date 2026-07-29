@@ -1,4 +1,4 @@
-package codexrollout
+package rollout
 
 import (
 	"bytes"
@@ -24,7 +24,7 @@ func RolloutFilename(id string, ts time.Time) string {
 // rollout lines (response_item / event_msg) don't embed the session id, so only
 // the header changes. `codex resume <newID>` then continues from the fork point.
 //
-// This mirrors jsonl.ForkCopy (Claude) for the Codex rollout schema. It is a
+// This mirrors jsonl.ForkCopy for the Codex rollout schema. It is a
 // pure file operation: no process is spawned, and the fork is resumed lazily on
 // its first send like any idle session.
 func ForkCopy(srcPath, dstPath, throughTurnID, newID, srcID string) error {

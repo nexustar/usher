@@ -27,7 +27,7 @@ import (
 
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
-	"github.com/nexustar/usher/internal/jsonl"
+	"github.com/nexustar/usher/internal/core"
 )
 
 // ForeignTurnHandler receives the flattened assistant text of a completed
@@ -152,7 +152,7 @@ func (r *Router) checkForeignTurn(id string) {
 	}
 }
 
-func (r *Router) publishForeignTurnEvents(sessionID string, turns []jsonl.Turn) {
+func (r *Router) publishForeignTurnEvents(sessionID string, turns []core.Turn) {
 	for _, tn := range turns {
 		switch tn.Role {
 		case "user":
@@ -178,7 +178,7 @@ func (r *Router) publishForeignTurnEvents(sessionID string, turns []jsonl.Turn) 
 // live path uses. base always sits at a line boundary in practice (it is
 // captured at turn ends / first sight); if a write ever races the capture,
 // the torn first line fails to parse and is skipped, never mis-grouped.
-func foreignTurnsBetweenWith(path string, asm backend.Assembler, base, size int64) []jsonl.Turn {
+func foreignTurnsBetweenWith(path string, asm backend.Assembler, base, size int64) []core.Turn {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -188,7 +188,7 @@ func foreignTurnsBetweenWith(path string, asm backend.Assembler, base, size int6
 	if _, err := f.ReadAt(buf, base); err != nil && err != io.EOF {
 		return nil
 	}
-	var out []jsonl.Turn
+	var out []core.Turn
 	for _, line := range bytes.Split(buf, []byte("\n")) {
 		line = bytes.TrimRight(line, "\r")
 		if len(line) == 0 {

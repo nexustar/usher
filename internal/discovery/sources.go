@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nexustar/usher/internal/codexrollout"
+	"github.com/nexustar/usher/internal/claude/jsonl"
+	"github.com/nexustar/usher/internal/codex/rollout"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/jsonl"
 	piagent "github.com/nexustar/usher/internal/pi"
 )
 
@@ -135,15 +135,15 @@ func (s *CodexSource) IsSessionFile(path string) bool {
 	base := filepath.Base(path)
 	return strings.HasPrefix(base, "rollout-") &&
 		strings.HasSuffix(base, ".jsonl") &&
-		codexrollout.SessionIDFromPath(base) != ""
+		rollout.SessionIDFromPath(base) != ""
 }
 
 func (s *CodexSource) SessionID(path string) string {
-	return codexrollout.SessionIDFromPath(path)
+	return rollout.SessionIDFromPath(path)
 }
 
 func (s *CodexSource) ReadMeta(path string) (core.SessionMeta, error) {
-	meta, err := codexrollout.ReadSessionMeta(path)
+	meta, err := rollout.ReadSessionMeta(path)
 	if err != nil {
 		return meta, err
 	}
@@ -165,7 +165,7 @@ func (s *CodexSource) threadNames(refresh bool) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.names == nil || refresh {
-		names, err := codexrollout.ReadThreadNames(s.indexPath)
+		names, err := rollout.ReadThreadNames(s.indexPath)
 		if err != nil {
 			return nil, err
 		}

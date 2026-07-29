@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 var sessionNameNewlines = regexp.MustCompile(`[\r\n]+`)
@@ -111,7 +112,7 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 		if m.Role == "user" {
 			text := contentText(m.Content)
 			if meta.Prompt == "" {
-				meta.Prompt = truncate(text, 60)
+				meta.Prompt = textutil.Truncate(strings.TrimSpace(text), 60)
 			}
 			meta.LastInputAt = entryTime(e, m)
 		}
@@ -220,13 +221,4 @@ func contentText(raw json.RawMessage) string {
 		}
 	}
 	return strings.Join(out, "\n")
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }

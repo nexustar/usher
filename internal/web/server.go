@@ -38,7 +38,6 @@ import (
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/hook"
-	"github.com/nexustar/usher/internal/jsonl"
 	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
@@ -896,7 +895,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, router.ErrSessionNotFound) {
 		if _, ok := s.router.GetSession(id); ok {
 			w.Header().Set("X-Transcript-Total", "0")
-			writeJSON(w, http.StatusOK, []jsonl.Turn{})
+			writeJSON(w, http.StatusOK, []core.Turn{})
 			return
 		}
 		writeErr(w, http.StatusNotFound, "session not found")
@@ -907,7 +906,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if turns == nil {
-		turns = []jsonl.Turn{}
+		turns = []core.Turn{}
 	}
 	// Total turn count before the limit trim, so the client knows whether
 	// older turns exist beyond the window (to offer "load earlier").

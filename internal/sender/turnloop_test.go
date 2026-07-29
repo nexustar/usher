@@ -174,7 +174,7 @@ func TestMergeLoggedTurn_MarkerBeforeDoneSkipsQuiet(t *testing.T) {
 func TestMergeLoggedTurn_CancelMarkerBeforeResultSkipsQuiet(t *testing.T) {
 	oldQuiet, oldGrace := finalDrainQuiet, cancelGrace
 	finalDrainQuiet = 10 * time.Second // a quiet-based stop would blow the deadline
-	cancelGrace = 10 * time.Second      // so the wait ends on the result, not grace
+	cancelGrace = 10 * time.Second     // so the wait ends on the result, not grace
 	t.Cleanup(func() { finalDrainQuiet = oldQuiet; cancelGrace = oldGrace })
 
 	path := filepath.Join(t.TempDir(), "s.jsonl")

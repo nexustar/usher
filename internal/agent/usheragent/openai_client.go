@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // ChatClient is a minimal Chat Completions client. It speaks the OpenAI
@@ -312,7 +314,7 @@ func (c *ChatClient) doChatCompletion(ctx context.Context, req ChatRequest) (Cha
 		if err := json.Unmarshal(raw, &e); err == nil && e.Error.Message != "" {
 			msg = e.Error.Message
 		} else {
-			msg = truncate(string(raw), 500)
+			msg = textutil.Truncate(string(raw), 500)
 		}
 		return ChatResponse{}, &APIError{
 			StatusCode: httpResp.StatusCode,

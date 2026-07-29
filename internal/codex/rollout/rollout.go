@@ -1,4 +1,4 @@
-// Package codexrollout parses OpenAI Codex CLI "rollout" session logs into the
+// Package rollout parses OpenAI Codex CLI "rollout" session logs into the
 // the backend-neutral core display model consumed by router, web, and agents.
 //
 // A rollout lives at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl,
@@ -12,7 +12,7 @@
 //
 // Shared display and metadata types live in package core; this package owns
 // only the Codex wire format and its projection into that contract.
-package codexrollout
+package rollout
 
 import (
 	"bufio"
@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // line is the uniform envelope of every rollout record.
@@ -96,44 +97,6 @@ func IsTurnAborted(raw []byte) bool {
 	default:
 		return false
 	}
-}
-
-// IsTurnActivity reports whether a rollout line is model output — proof a real
-// turn is in flight. The records codex logs at submit time (turn_context, the
-// user's own message) don't count: they appear whether or not the model runs.
-func IsTurnActivity(raw []byte) bool {
-	var l envelope
-	if err := json.Unmarshal(raw, &l); err != nil {
-		return false
-	}
-	switch l.Type {
-	case "event_msg":
-		var p struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(l.Payload, &p); err != nil {
-			return false
-		}
-		// task_started (v1 wire name; turn_started its announced v2 rename) is
-		// persisted at submit time, so the latch arms as soon as a turn begins.
-		return p.Type == "task_started" || p.Type == "turn_started" ||
-			strings.HasPrefix(p.Type, "agent_")
-	case "response_item":
-		var p struct {
-			Type string `json:"type"`
-			Role string `json:"role"`
-		}
-		if err := json.Unmarshal(l.Payload, &p); err != nil {
-			return false
-		}
-		switch p.Type {
-		case "message":
-			return p.Role == "assistant"
-		case "reasoning", "function_call", "function_call_output", "local_shell_call", "web_search_call", "custom_tool_call":
-			return true
-		}
-	}
-	return false
 }
 
 // ReadSessionMeta reads the lightweight descriptor: id/cwd/start from the
@@ -224,15 +187,9 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 		}
 	}
 	if firstPrompt != "" {
-		meta.Prompt = truncate(firstPrompt, 60)
+		meta.Prompt = textutil.Truncate(strings.TrimSpace(firstPrompt), 60)
 	}
 	return meta, sc.Err()
-}
-
-// ReadThreadName reads the latest name from Codex's append-only index.
-func ReadThreadName(indexPath, id string) (string, error) {
-	names, err := ReadThreadNames(indexPath)
-	return names[id], err
 }
 
 // ReadThreadNames reads the latest name for every indexed thread.
@@ -458,7 +415,7 @@ func (a *Assembler) appendTool(ts time.Time, name, target, body string) *core.Tu
 	a.ensureTurn(ts)
 	tp := core.TurnPart{Type: "tool", ToolName: name, ToolTarget: target}
 	if body != "" {
-		tp.Content = fence(clampBody(body))
+		tp.Content = textutil.Fence("", textutil.ClampBody(body))
 	}
 	a.cur.Parts = append(a.cur.Parts, tp)
 	return &tp
@@ -620,7 +577,7 @@ func (a *Assembler) mcpToolPart(l line) *core.TurnPart {
 	a.ensureTurn(l.Timestamp)
 	tp := core.TurnPart{Type: "tool", ToolName: name, ToolTarget: target}
 	if len(texts) > 0 {
-		tp.Content = fence(clampBody(strings.Join(texts, "\n")))
+		tp.Content = textutil.Fence("", textutil.ClampBody(strings.Join(texts, "\n")))
 	}
 	a.cur.Parts = append(a.cur.Parts, tp)
 	return &tp
@@ -684,7 +641,7 @@ func (a *Assembler) appendMCPPart(ts time.Time, server, tool string, arguments m
 	a.ensureTurn(ts)
 	tp := core.TurnPart{Type: "tool", ToolName: name, ToolTarget: toolTargetMap(arguments)}
 	if len(texts) > 0 {
-		tp.Content = fence(clampBody(strings.Join(texts, "\n")))
+		tp.Content = textutil.Fence("", textutil.ClampBody(strings.Join(texts, "\n")))
 	}
 	a.cur.Parts = append(a.cur.Parts, tp)
 	return &tp
@@ -814,7 +771,7 @@ func toolTargetMap(m map[string]json.RawMessage) string {
 		if raw, ok := m[key]; ok {
 			var s string
 			if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-				return firstLine(s)
+				return textutil.FirstLine(s)
 			}
 		}
 	}
@@ -829,9 +786,9 @@ func renderOutput(output json.RawMessage) string {
 	}
 	var s string
 	if err := json.Unmarshal(output, &s); err == nil {
-		return fence(clampBody(s))
+		return textutil.Fence("", textutil.ClampBody(s))
 	}
-	return fence(clampBody(string(output)))
+	return textutil.Fence("", textutil.ClampBody(string(output)))
 }
 
 func renderOutputBody(output json.RawMessage) string {
@@ -868,7 +825,7 @@ func customExecTarget(input string) string {
 	if json.Unmarshal([]byte(m[1]), &command) != nil {
 		return ""
 	}
-	return firstLine(command)
+	return textutil.FirstLine(command)
 }
 
 func customCallHasCanonicalEvent(name, input string) bool {
@@ -903,50 +860,4 @@ func newScanner(f *os.File) *bufio.Scanner {
 	// session_meta (base_instructions) and large tool outputs blow past 64K.
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	return sc
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return strings.TrimSpace(s)
-}
-
-// fence wraps body in a markdown code fence widened past any backtick run inside
-// body, so a payload containing ``` cannot close the block early.
-func fence(body string) string {
-	longest, run := 0, 0
-	for _, r := range body {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-		} else {
-			run = 0
-		}
-	}
-	ticks := strings.Repeat("`", max(3, longest+1))
-	return ticks + "\n" + body + "\n" + ticks
-}
-
-// clampBody caps a tool body so one huge output cannot bloat the transcript.
-func clampBody(s string) string {
-	const maxBytes = 32 * 1024
-	const maxLines = 400
-	if len(s) > maxBytes {
-		s = s[:maxBytes] + "\n… (truncated)"
-	}
-	if lines := strings.Split(s, "\n"); len(lines) > maxLines {
-		s = strings.Join(append(lines[:maxLines], "… (truncated)"), "\n")
-	}
-	return s
 }

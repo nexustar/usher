@@ -20,6 +20,7 @@ import (
 	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/pathutil"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // RouterAPI is the strict subset of router.Router the hub consumes — the same
@@ -686,7 +687,7 @@ func (h *Hub) topicFor(ctx context.Context, sessionID string) (int64, error) {
 // topicName derives a human-friendly topic title from the session's title,
 // falling back to a short id. Telegram caps topic names at 128 chars.
 func (h *Hub) topicName(sessionID string) string {
-	name := imutil.ShortID(sessionID)
+	name := textutil.ShortID(sessionID)
 	if sess, ok := h.router.GetSession(sessionID); ok && strings.TrimSpace(sess.Title) != "" {
 		name = sess.Title
 	}

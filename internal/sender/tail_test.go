@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexustar/usher/internal/codexrollout"
+	"github.com/nexustar/usher/internal/codex/rollout"
 )
 
 func types(evs []StreamEvent) []string {
@@ -181,7 +181,7 @@ func TestTailTurn_CodexAbortTerminatesAfterActivityLatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := tailConfig{poll: 10 * time.Millisecond, appearWait: 2 * time.Second,
-		turnComplete: codexrollout.IsTurnComplete, turnAborted: codexrollout.IsTurnAborted}
+		turnComplete: rollout.IsTurnComplete, turnAborted: rollout.IsTurnAborted}
 	go appendLines(path, 5*time.Millisecond,
 		`{"type":"event_msg","payload":{"type":"task_started"}}`,
 		`{"type":"event_msg","payload":{"type":"turn_aborted"}}`,

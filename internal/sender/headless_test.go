@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexustar/usher/internal/appserver"
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/codex"
 )
 
 func TestNewCodexKeepsConfiguredIndexPath(t *testing.T) {
@@ -159,7 +159,7 @@ func TestCodexSlashCommandSyntax(t *testing.T) {
 }
 
 func TestCodexSlashSkillPrompt(t *testing.T) {
-	skills := []appserver.Skill{
+	skills := []codex.Skill{
 		{Name: "imagegen", Enabled: true},
 		{Name: "disabled", Enabled: false},
 	}

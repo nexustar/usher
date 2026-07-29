@@ -8,6 +8,7 @@ import (
 
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 type Transcript struct{}
@@ -211,7 +212,7 @@ func renderToolResult(name, body string) string {
 	if body == "" || !terminalOutputTool(name) {
 		return body
 	}
-	return fence(clampBody(body))
+	return textutil.Fence("", textutil.ClampBody(body))
 }
 
 func terminalOutputTool(name string) bool {
@@ -221,34 +222,6 @@ func terminalOutputTool(name string) bool {
 	default:
 		return false
 	}
-}
-
-func fence(body string) string {
-	longest, run := 0, 0
-	for _, r := range body {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-		} else {
-			run = 0
-		}
-	}
-	ticks := strings.Repeat("`", max(3, longest+1))
-	return ticks + "\n" + body + "\n" + ticks
-}
-
-func clampBody(s string) string {
-	const maxBytes = 32 * 1024
-	const maxLines = 400
-	if len(s) > maxBytes {
-		s = s[:maxBytes] + "\n… (truncated)"
-	}
-	if lines := strings.Split(s, "\n"); len(lines) > maxLines {
-		s = strings.Join(append(lines[:maxLines], "… (truncated)"), "\n")
-	}
-	return s
 }
 
 func toolTarget(name string, args json.RawMessage) string {

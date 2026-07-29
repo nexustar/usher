@@ -23,6 +23,7 @@ import (
 	"github.com/nexustar/usher/internal/agent/usheragent"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/mainchat"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // chatFrame is one SSE frame on /api/mainchats/{id}/events. Event is the SSE
@@ -129,7 +130,7 @@ func (s *Server) renderStateBlock(focusID string) string {
 	if focusID != "" {
 		if sess, ok := s.router.GetSession(focusID); ok {
 			fmt.Fprintf(&b, "focus: %s (cwd %s, title %q)\n",
-				focusID, sess.Cwd, truncateRunes(sess.Title, 60))
+				focusID, sess.Cwd, textutil.Truncate(sess.Title, 60))
 		} else {
 			fmt.Fprintf(&b, "focus: %s (no longer in discovery)\n", focusID)
 		}
@@ -151,11 +152,11 @@ func (s *Server) renderStateBlock(focusID string) string {
 		// is the tell that background work produced something.
 		fmt.Fprintf(&b, "  %s  %-30s  %-7s  %-9s  %-9s  %s%s\n",
 			sess.ID,
-			truncateRunes(sess.Cwd, 30),
+			textutil.Truncate(sess.Cwd, 30),
 			string(sess.Status),
 			humanizeAge(now, sess.LastInputAt),
 			humanizeAge(now, sess.LastEventAt),
-			truncateRunes(sess.Title, 50),
+			textutil.Truncate(sess.Title, 50),
 			mark)
 	}
 	if len(sessions) > len(rows) {
@@ -210,21 +211,6 @@ func humanizeAge(now, last time.Time) string {
 	}
 }
 
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
-}
-
-func shortID(id string) string {
-	if len(id) >= 8 {
-		return id[:8]
-	}
-	return id
-}
-
 // focusSwitchBanner returns a one-line clickable banner when `touched` (the
 // session this turn acted on) differs from prevFocus, or "" if focus didn't
 // change. The link is the SPA's session route, rendered in the chat bubble.
@@ -238,7 +224,7 @@ func focusSwitchBanner(prevFocus, touched, title string) string {
 	}
 	label := title
 	if label == "" {
-		label = shortID(touched)
+		label = textutil.ShortID(touched)
 	}
 	return fmt.Sprintf("↪ %s [%s](#/s/%s)\n\n", verb, label, touched)
 }
@@ -572,7 +558,7 @@ func deriveHistoryMessage(m mainchat.Message) usheragent.HistoryMessage {
 			CallID: m.Tool.CallID, Name: m.Tool.Name, Arguments: m.Tool.Arguments, Result: m.Tool.Result,
 		}}
 	case "relay":
-		sid := shortID(m.SourceSession)
+		sid := textutil.ShortID(m.SourceSession)
 		return usheragent.HistoryMessage{Role: "user", Content: usheragent.RelayTag(sid) + relayBirthForm(m.Content, sid)}
 	case "summary":
 		return usheragent.HistoryMessage{Role: "user", Content: usheragent.SummaryTag + m.Content}

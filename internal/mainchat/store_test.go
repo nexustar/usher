@@ -11,7 +11,12 @@ func TestStore_AppendAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	must := func(err error) { t.Helper(); if err != nil { t.Fatal(err) } }
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	must(s.Append("default", Message{Role: "user", Content: "hello"}))
 	must(s.Append("default", Message{Role: "agent", Content: "hi back"}))
 

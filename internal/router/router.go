@@ -24,10 +24,10 @@ import (
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
 	"github.com/nexustar/usher/internal/hook"
-	"github.com/nexustar/usher/internal/jsonl"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
 	"github.com/nexustar/usher/internal/terminal"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // ErrSessionNotFound is returned when an operation targets a session with no
@@ -317,7 +317,7 @@ func (r *Router) readTurnsForBackend(path, name string, limit int) ([]core.Turn,
 // ReadTurns resolves a session's log path and backend and returns its grouped
 // display turns (and the pre-trim total). Returns ErrSessionNotFound when the
 // session has no log on disk.
-func (r *Router) ReadTurns(id string, limit int) ([]jsonl.Turn, int, error) {
+func (r *Router) ReadTurns(id string, limit int) ([]core.Turn, int, error) {
 	path, ok := r.discovery.Path(id)
 	if !ok {
 		return nil, 0, ErrSessionNotFound
@@ -751,7 +751,7 @@ func lineTimestamp(raw json.RawMessage) time.Time {
 	return o.Timestamp
 }
 
-func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev sender.StreamEvent, started time.Time) []*jsonl.TurnPart {
+func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev sender.StreamEvent, started time.Time) []*core.TurnPart {
 	if ev.Type == backendpkg.EventRuntime {
 		var runtime core.SessionRuntime
 		if json.Unmarshal(ev.Raw, &runtime) == nil {
@@ -857,7 +857,7 @@ func (r *Router) enrichExitWithTurnTimestamps(sessionID string, raw json.RawMess
 // applyTurnTimestamps stamps payload with the trailing user→assistant
 // exchange's timestamps plus the assistant uuid (the fork anchor). Shared by
 // the live exit enrichment above and the foreign watcher's synthetic exit.
-func applyTurnTimestamps(payload map[string]any, turns []jsonl.Turn) {
+func applyTurnTimestamps(payload map[string]any, turns []core.Turn) {
 	last := len(turns) - 1
 	if last < 0 {
 		return
@@ -1186,13 +1186,13 @@ func pageBounds(offset, limit, total int) (start, end int) {
 	return start, end
 }
 
-// flattenTurnText renders a jsonl.Turn to plain text. User turns carry their
+// flattenTurnText renders a core.Turn to plain text. User turns carry their
 // text in Content; assistant turns carry it in Parts (text blocks interleaved
 // with tool annotations). When includeTools is set, tool parts are inlined as
 // `[tool: Name target]` markers — matching what read_session_transcript
 // advertises. Search passes includeTools=false so it only matches the
 // user/assistant prose, not tool names or command/file targets.
-func flattenTurnText(t jsonl.Turn, includeTools bool) string {
+func flattenTurnText(t core.Turn, includeTools bool) string {
 	if t.Role != "assistant" {
 		return t.Content
 	}
@@ -1302,7 +1302,7 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 // in the user/assistant prose (tool annotations excluded), returning up to
 // maxHits located snippets and the total count of matching turns. Shared by
 // the single-session and cross-session searches.
-func scanTurnsForQuery(turns []jsonl.Turn, q []rune, maxHits, contextChars int) (hits []core.TranscriptSearchHit, matched int) {
+func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (hits []core.TranscriptSearchHit, matched int) {
 	for i, t := range turns {
 		text := []rune(flattenTurnText(t, false))
 		first, count := foldFindAll(text, q)
@@ -1559,7 +1559,7 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 	r.sendMu.Lock()
 	r.activeSend[id] = tok
 	r.creating[id] = core.Session{
-		ID: id, Title: truncateRunes(o.InitialMessage, 60), Cwd: o.Cwd,
+		ID: id, Title: textutil.Truncate(o.InitialMessage, 60), Cwd: o.Cwd,
 		Status: core.StatusRunning, StartedAt: now, LastEventAt: now,
 		LastInputAt: now, Backend: o.Backend,
 	}
@@ -1599,14 +1599,6 @@ func validateCreateInputs(cwd, initialMsg string) (string, error) {
 		cwd = resolved
 	}
 	return cwd, nil
-}
-
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }
 
 // CreateSession spawns a brand-new session on the default backend and waits for

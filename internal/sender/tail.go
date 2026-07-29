@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
-	"github.com/nexustar/usher/internal/jsonl"
+	"github.com/nexustar/usher/internal/claude/jsonl"
 )
 
 // tailConfig tunes the turn tailer. Zero values fall back to sane defaults

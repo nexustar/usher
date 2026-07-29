@@ -1,6 +1,5 @@
-// Package appserver implements the newline-delimited JSON-RPC transport used
-// by `codex app-server`.
-package appserver
+// Package codex drives Codex CLI sessions over `codex app-server`.
+package codex
 
 import (
 	"bufio"

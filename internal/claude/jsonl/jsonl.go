@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 // Event is one line of a session jsonl. Common fields are extracted; the full
@@ -130,7 +131,7 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 	}
 
 	if firstUserPrompt != "" {
-		meta.Prompt = truncate(firstUserPrompt, 60)
+		meta.Prompt = textutil.Truncate(strings.TrimSpace(firstUserPrompt), 60)
 	}
 	if customTitle != "" {
 		meta.Title = customTitle
@@ -232,23 +233,12 @@ func extractUserContent(msg json.RawMessage) string {
 	return ""
 }
 
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
-}
-
-// ---------- Turn (grouped, display-ready projection) ----------
+// ---------- Turn assembly (grouped, display-ready projection) ----------
 
 type toolInfo struct {
 	name   string
 	target string
 }
-
-type TurnPart = core.TurnPart
-type Turn = core.Turn
 
 // IsTurnComplete reports Claude Code's persisted end-of-turn marker.
 func IsTurnComplete(raw []byte) bool {
@@ -266,7 +256,7 @@ func IsTurnComplete(raw []byte) bool {
 // later from /transcript can never disagree on grouping or rendering.
 type Assembler struct {
 	toolMap map[string]toolInfo
-	cur     *Turn
+	cur     *core.Turn
 }
 
 func NewAssembler() *Assembler {
@@ -279,12 +269,12 @@ func NewAssembler() *Assembler {
 // to the in-progress assistant turn — the per-event increment a live stream
 // publishes (it is a copy; later Feeds don't mutate it). Events that are not
 // user/assistant lines are ignored.
-func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
+func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) {
 	if ev.Type == "system" && ev.Subtype == "compact_boundary" {
 		if t := a.Flush(); t != nil {
 			completed = append(completed, *t)
 		}
-		return append(completed, Turn{
+		return append(completed, core.Turn{
 			Role:    "system",
 			Content: "Context compacted",
 			Time:    ev.Timestamp,
@@ -300,7 +290,7 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 			completed = append(completed, *t)
 		}
 		if text := extractUserText(ev.Message); text != "" {
-			completed = append(completed, Turn{
+			completed = append(completed, core.Turn{
 				Role:    "user",
 				Content: compactTaskNotification(text),
 				Time:    ev.Timestamp,
@@ -317,7 +307,7 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 			return nil, nil
 		}
 		if a.cur == nil {
-			a.cur = &Turn{Role: "assistant", Time: ev.Timestamp}
+			a.cur = &core.Turn{Role: "assistant", Time: ev.Timestamp}
 		}
 		if ev.UUID != "" {
 			a.cur.UUID = ev.UUID
@@ -332,7 +322,7 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 			}
 		}
 		ti := a.toolMap[ev.SourceToolUseID]
-		p := TurnPart{
+		p := core.TurnPart{
 			Type:       "tool",
 			Content:    text,
 			ToolName:   ti.name,
@@ -346,7 +336,7 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 	// Start a new assistant turn if needed (tool_result lines carry no model;
 	// messageModel simply yields "" for them).
 	if a.cur == nil {
-		a.cur = &Turn{
+		a.cur = &core.Turn{
 			Role:  "assistant",
 			Time:  ev.Timestamp,
 			Model: messageModel(ev.Message),
@@ -366,7 +356,7 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 		collectToolUses(ev.Message, a.toolMap)
 		// Append a text part (skip tool_use/thinking-only messages).
 		if text := extractAssistantText(ev.Message); text != "" {
-			p := TurnPart{Type: "text", Content: text}
+			p := core.TurnPart{Type: "text", Content: text}
 			a.cur.Parts = append(a.cur.Parts, p)
 			return nil, &p
 		}
@@ -379,7 +369,7 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 		return nil, nil
 	}
 	ti, tuID := matchToolInfo(ev.Message, a.toolMap)
-	p := TurnPart{
+	p := core.TurnPart{
 		Type:       "tool",
 		Content:    content,
 		ToolName:   ti.name,
@@ -392,7 +382,7 @@ func (a *Assembler) Feed(ev Event) (completed []Turn, part *TurnPart) {
 
 // FeedLine parses one raw jsonl line and feeds it, the uniform entry point
 // shared with other backends' assemblers (a malformed line is ignored).
-func (a *Assembler) FeedLine(raw []byte) (completed []Turn, part *TurnPart) {
+func (a *Assembler) FeedLine(raw []byte) (completed []core.Turn, part *core.TurnPart) {
 	ev, err := ParseLine(raw)
 	if err != nil {
 		return nil, nil
@@ -411,7 +401,7 @@ func (a *Assembler) Model() string {
 // Flush commits and returns the in-progress assistant turn, or nil when there
 // is none (or it gathered no parts). Call at end-of-input; a real user prompt
 // flushes implicitly via Feed.
-func (a *Assembler) Flush() *Turn {
+func (a *Assembler) Flush() *core.Turn {
 	t := a.cur
 	a.cur = nil
 	if t == nil || len(t.Parts) == 0 {
@@ -425,7 +415,7 @@ func (a *Assembler) Flush() *Turn {
 // interleaved with tool call/result pairs). limit > 0 keeps only the most
 // recent N turns. total is the turn count before that trim, so callers can
 // tell whether older turns exist beyond the window.
-func ReadTurns(path string, limit int) (turns []Turn, total int, err error) {
+func ReadTurns(path string, limit int) (turns []core.Turn, total int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
@@ -634,7 +624,7 @@ func renderToolResult(ev Event) string {
 	if body := tur.render(); body != "" {
 		return body
 	}
-	return clampBody(flattenToolResult(firstToolResultContent(ev.Message)))
+	return textutil.ClampBody(flattenToolResult(firstToolResultContent(ev.Message)))
 }
 
 // firstToolResultContent returns the raw content of the first tool_result block
@@ -713,9 +703,9 @@ type toolUseResultData struct {
 func (t toolUseResultData) render() string {
 	switch {
 	case len(t.StructuredPatch) > 0:
-		return fence("diff", clampBody(patchBody(t.StructuredPatch)))
+		return textutil.Fence("diff", textutil.ClampBody(patchBody(t.StructuredPatch)))
 	case t.File != nil && t.File.Content != "":
-		return fence("", clampBody(t.File.Content))
+		return textutil.Fence("", textutil.ClampBody(t.File.Content))
 	case t.Stdout != "" || t.Stderr != "":
 		out := t.Stdout
 		if t.Stderr != "" {
@@ -724,7 +714,7 @@ func (t toolUseResultData) render() string {
 			}
 			out += t.Stderr
 		}
-		return fence("", clampBody(out))
+		return textutil.Fence("", textutil.ClampBody(out))
 	}
 	return ""
 }
@@ -752,7 +742,7 @@ func toolTarget(input json.RawMessage) string {
 		return p
 	}
 	if cmd := inputString(input, "command"); cmd != "" {
-		return firstLine(cmd)
+		return textutil.FirstLine(cmd)
 	}
 	if pat := inputString(input, "pattern"); pat != "" {
 		return pat
@@ -772,45 +762,6 @@ func inputString(input json.RawMessage, key string) string {
 	var s string
 	if err := json.Unmarshal(m[key], &s); err != nil {
 		return ""
-	}
-	return s
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return s
-}
-
-// fence wraps body in a markdown code fence whose backtick run is widened past
-// any run inside body, so a payload containing ``` cannot close the block early.
-func fence(lang, body string) string {
-	longest, run := 0, 0
-	for _, r := range body {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-		} else {
-			run = 0
-		}
-	}
-	ticks := strings.Repeat("`", max(3, longest+1))
-	return ticks + lang + "\n" + body + "\n" + ticks
-}
-
-// clampBody caps a tool body so one huge file or output cannot bloat the
-// transcript payload. Generous, because the block is collapsed by default.
-func clampBody(s string) string {
-	const maxBytes = 32 * 1024
-	const maxLines = 400
-	if len(s) > maxBytes {
-		s = s[:maxBytes] + "\n… (truncated)"
-	}
-	if lines := strings.Split(s, "\n"); len(lines) > maxLines {
-		s = strings.Join(append(lines[:maxLines], "… (truncated)"), "\n")
 	}
 	return s
 }

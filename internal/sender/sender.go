@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nexustar/usher/internal/appserver"
 	"github.com/nexustar/usher/internal/backend"
-	"github.com/nexustar/usher/internal/claudestream"
-	"github.com/nexustar/usher/internal/codexrollout"
+	"github.com/nexustar/usher/internal/claude"
+	"github.com/nexustar/usher/internal/claude/jsonl"
+	"github.com/nexustar/usher/internal/codex"
+	"github.com/nexustar/usher/internal/codex/rollout"
 	"github.com/nexustar/usher/internal/hook"
-	"github.com/nexustar/usher/internal/jsonl"
 )
 
 // StreamEvent is one event for a turn. Type is the jsonl line's "type"
@@ -36,8 +36,8 @@ type StreamEvent = backend.Event
 type timing struct{ confirm, poll time.Duration }
 
 type Sender struct {
-	app          *appserver.Manager // non-nil for the headless Codex backend
-	claude       *claudestream.Manager
+	app          *codex.Manager // non-nil for the headless Codex backend
+	claude       *claude.Manager
 	locateFn     func(string) string
 	indexPath    string
 	logger       *slog.Logger
@@ -54,7 +54,7 @@ func (s *Sender) Rename(ctx context.Context, id, path, title string) error {
 		if live, err := s.app.RenameIfLive(ctx, id, title); live || err != nil {
 			return err
 		}
-		return codexrollout.RenameSession(s.indexPath, id, title)
+		return rollout.RenameSession(s.indexPath, id, title)
 	}
 	if s.claude != nil {
 		return jsonl.RenameSession(path, id, title)
@@ -117,7 +117,7 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	}
 	t := timing{confirm: 8 * time.Second, poll: 150 * time.Millisecond}
 	return &Sender{
-		claude:   claudestream.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, hooks, logger),
+		claude:   claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, hooks, logger),
 		locateFn: func(id string) string { return locateClaude(projectsDir, id) },
 		logger:   logger,
 		t:        t,
@@ -206,14 +206,14 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 		config[k] = v
 	}
 	return &Sender{
-		app:       appserver.NewManager(codexCmd, hooks, sandbox, config, env, maxLive, logger),
+		app:       codex.NewManager(codexCmd, hooks, sandbox, config, env, maxLive, logger),
 		locateFn:  func(id string) string { return locateCodex(sessionsDir, id) },
 		indexPath: filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
 		logger:    logger,
 		t:         t,
 		tail: tailConfig{
 			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
-			contentOnly: true, turnComplete: codexrollout.IsTurnComplete, turnAborted: codexrollout.IsTurnAborted,
+			contentOnly: true, turnComplete: rollout.IsTurnComplete, turnAborted: rollout.IsTurnAborted,
 		},
 	}
 }
@@ -276,11 +276,11 @@ func (s *Sender) codexPrompt(ctx context.Context, sessionID, prompt, cwd string,
 		if args != "" {
 			return nil, errors.New("usage: /compact")
 		}
-		return s.appOperation(ctx, sessionID, cwd, func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error) {
+		return s.appOperation(ctx, sessionID, cwd, func() (<-chan codex.TurnResult, <-chan codex.Delta, error) {
 			return s.app.Compact(ctx, sessionID, cwd)
 		})
 	case "/review":
-		return s.appOperation(ctx, sessionID, cwd, func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error) {
+		return s.appOperation(ctx, sessionID, cwd, func() (<-chan codex.TurnResult, <-chan codex.Delta, error) {
 			return s.app.Review(ctx, sessionID, cwd, args)
 		})
 	case "/rename":
@@ -308,7 +308,7 @@ func (s *Sender) codexPrompt(ctx context.Context, sessionID, prompt, cwd string,
 // exactly (core-skills injection matches the mention against skill.name as a
 // plain string), and its slash commands are case-sensitive too — accepting
 // /ImageGen here would invent a spelling that works in usher and nowhere else.
-func codexSlashSkillPrompt(command, args string, skills []appserver.Skill) (string, bool) {
+func codexSlashSkillPrompt(command, args string, skills []codex.Skill) (string, bool) {
 	name := strings.TrimPrefix(command, "/")
 	for _, skill := range skills {
 		if !skill.Enabled || skill.Name != name {
@@ -504,12 +504,12 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendS
 	}
 	tail := s.tail
 	tail.skipCompletions = queuedAhead
-	return mergeLoggedTurn(ctx, loggedTurnConfig[claudestream.Result, claudestream.Delta]{
+	return mergeLoggedTurn(ctx, loggedTurnConfig[claude.Result, claude.Delta]{
 		backend: "claude", idKey: "session_id", id: id, cwd: cwd, fresh: fresh,
 		path: path, offset: offset, locate: func() string { return s.locateWait(ctx, id, s.t.confirm) },
 		tail: tail, done: done, deltas: deltas, logger: s.logger,
-		delta: func(d claudestream.Delta) (string, string, bool) { return "text", d.Text, true },
-		result: func(ctx context.Context, out chan<- StreamEvent, result claudestream.Result) {
+		delta: func(d claude.Delta) (string, string, bool) { return "text", d.Text, true },
+		result: func(ctx context.Context, out chan<- StreamEvent, result claude.Result) {
 			if result.Subtype != "cancelled" {
 				if result.Error != "" {
 					emitError(ctx, out, result.Error)
@@ -522,7 +522,7 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendS
 	}), nil
 }
 
-func emitClaudeRuntime(ctx context.Context, out chan<- StreamEvent, result claudestream.Result) bool {
+func emitClaudeRuntime(ctx context.Context, out chan<- StreamEvent, result claude.Result) bool {
 	if result.ContextWindow <= 0 {
 		return true
 	}
@@ -536,16 +536,16 @@ func emitClaudeRuntime(ctx context.Context, out chan<- StreamEvent, result claud
 // appTurn keeps rollout jsonl as the content plane while app-server supplies
 // the driving and terminal lifecycle signal.
 func (s *Sender) appTurn(ctx context.Context, id, prompt, cwd string, fresh bool) (<-chan StreamEvent, error) {
-	return s.appLoggedTurn(ctx, id, cwd, fresh, func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error) {
+	return s.appLoggedTurn(ctx, id, cwd, fresh, func() (<-chan codex.TurnResult, <-chan codex.Delta, error) {
 		return s.app.StartTurn(ctx, id, prompt, cwd)
 	})
 }
 
-func (s *Sender) appOperation(ctx context.Context, id, cwd string, start func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error)) (<-chan StreamEvent, error) {
+func (s *Sender) appOperation(ctx context.Context, id, cwd string, start func() (<-chan codex.TurnResult, <-chan codex.Delta, error)) (<-chan StreamEvent, error) {
 	return s.appLoggedTurn(ctx, id, cwd, false, start)
 }
 
-func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, start func() (<-chan appserver.TurnResult, <-chan appserver.Delta, error)) (<-chan StreamEvent, error) {
+func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, start func() (<-chan codex.TurnResult, <-chan codex.Delta, error)) (<-chan StreamEvent, error) {
 	path := s.locate(id)
 	var offset int64
 	if path != "" {
@@ -558,18 +558,18 @@ func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, 
 		return nil, err
 	}
 	lastKind := ""
-	return mergeLoggedTurn(ctx, loggedTurnConfig[appserver.TurnResult, appserver.Delta]{
+	return mergeLoggedTurn(ctx, loggedTurnConfig[codex.TurnResult, codex.Delta]{
 		backend: "codex", idKey: "thread_id", id: id, cwd: cwd, fresh: fresh,
 		path: path, offset: offset, locate: func() string { return s.locateWait(ctx, id, s.t.confirm) },
 		tail: s.tail, done: done, deltas: deltas, logger: s.logger,
-		delta: func(d appserver.Delta) (string, string, bool) {
+		delta: func(d codex.Delta) (string, string, bool) {
 			if d.Kind == "reasoning" && lastKind == "reasoning" {
 				return "", "", false
 			}
 			lastKind = d.Kind
 			return d.Kind, d.Text, true
 		},
-		result: func(ctx context.Context, out chan<- StreamEvent, result appserver.TurnResult) {
+		result: func(ctx context.Context, out chan<- StreamEvent, result codex.TurnResult) {
 			if result.Error != "" {
 				emitError(ctx, out, result.Error)
 			} else if result.Status == "failed" {

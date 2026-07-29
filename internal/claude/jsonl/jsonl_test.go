@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nexustar/usher/internal/core"
 )
 
 func TestParseLine_User(t *testing.T) {
@@ -93,6 +95,23 @@ func TestReadSessionMeta_TitleFallback(t *testing.T) {
 	}
 }
 
+// The prompt doubles as the session title until an ai-title lands, so trailing
+// whitespace must not eat into the 60-rune budget and add a bogus ellipsis.
+func TestReadSessionMeta_PromptIsTrimmed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	body := `{"type":"user","timestamp":"2026-07-24T00:00:00Z","message":{"role":"user","content":"  padded prompt\n\n"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Prompt != "padded prompt" {
+		t.Errorf("Prompt = %q", meta.Prompt)
+	}
+}
+
 func TestRenameSessionUsesClaudeCustomTitle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	body := `{"type":"user","timestamp":"2026-07-24T00:00:00Z","message":{"role":"user","content":"first prompt"}}` + "\n" +
@@ -172,19 +191,6 @@ func TestReadSessionMeta_LastInputAt(t *testing.T) {
 	// confirming the two clocks diverge exactly where it matters.
 	if !meta.LastEventAt.After(meta.LastInputAt) {
 		t.Errorf("LastEventAt %v should be after LastInputAt %v", meta.LastEventAt, meta.LastInputAt)
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	if got := truncate("abc", 10); got != "abc" {
-		t.Errorf("short: got %q", got)
-	}
-	if got := truncate("abcdefghij", 5); got != "abcde…" {
-		t.Errorf("long: got %q", got)
-	}
-	// rune-aware: each Chinese char is one rune
-	if got := truncate("一二三四五六七八九十", 3); got != "一二三…" {
-		t.Errorf("rune: got %q", got)
 	}
 }
 
@@ -291,7 +297,7 @@ func TestReadTurns_RichToolResults(t *testing.T) {
 	if at.Role != "assistant" {
 		t.Fatalf("Role = %q", at.Role)
 	}
-	var tools []TurnPart
+	var tools []core.TurnPart
 	for _, p := range at.Parts {
 		if p.Type == "tool" {
 			tools = append(tools, p)
@@ -338,14 +344,6 @@ func TestRenderToolResult_FallbackUnknownShape(t *testing.T) {
 	ev, _ := ParseLine([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"g1","content":"match.go\nother.go"}]},"toolUseResult":{"mode":"files_with_matches","numFiles":2}}`))
 	if body := renderToolResult(ev); !strings.Contains(body, "match.go") {
 		t.Errorf("fallback body = %q", body)
-	}
-}
-
-func TestFence_WidensPastBackticks(t *testing.T) {
-	// Body containing a ``` run must be wrapped in a longer fence.
-	out := fence("", "a\n```\nb")
-	if !strings.HasPrefix(out, "````\n") || !strings.HasSuffix(out, "\n````") {
-		t.Errorf("fence did not widen: %q", out)
 	}
 }
 
@@ -452,8 +450,8 @@ func TestAssembler_MatchesReadTurns(t *testing.T) {
 			t.Fatalf("%s: read: %v", fixture, err)
 		}
 		asm := NewAssembler()
-		var stream []Turn
-		var parts []TurnPart
+		var stream []core.Turn
+		var parts []core.TurnPart
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.TrimSpace(line) == "" {
 				continue
@@ -492,7 +490,7 @@ func TestAssembler_MatchesReadTurns(t *testing.T) {
 
 		// Every part emitted during streaming must appear in some assistant
 		// turn, in order — concat(parts of assistant turns) == emitted parts.
-		var want []TurnPart
+		var want []core.TurnPart
 		for _, tu := range batch {
 			want = append(want, tu.Parts...)
 		}
