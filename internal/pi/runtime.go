@@ -735,6 +735,19 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 			raw, _ := json.Marshal(payload)
 			out <- backend.Event{Type: backend.EventProcessExit, Raw: raw}
 		}
+		// Pi persists an interrupted response as a stopReason "aborted" record
+		// that often carries no content at all. Emitted after the final tail so
+		// it lands below whatever text did stream before the interrupt. The exit
+		// reason stays empty: a cancelled pi turn still reconciles as a normal
+		// end, unlike Claude's and Codex's "turn_aborted".
+		cancelled := false
+		emitAborted := func() {
+			if !cancelled {
+				return
+			}
+			raw, _ := json.Marshal(backend.ErrorPayload{Message: backend.AbortedTurnMessage})
+			out <- backend.Event{Type: backend.EventError, Raw: raw}
+		}
 		// Drain through agent_settled so its final records and shared event do
 		// not leak into the next turn.
 		done := ctx.Done()
@@ -742,12 +755,14 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 		for {
 			select {
 			case <-done:
+				cancelled = true
 				timer := time.NewTimer(cancelGrace)
 				defer timer.Stop()
 				done, grace, tailCtx = nil, timer.C, context.WithoutCancel(ctx)
 			case <-grace:
 				r.logger.Warn("pi cancelled turn finalized without agent_settled", "session", id)
 				emitTail()
+				emitAborted()
 				emitExit("")
 				return
 			case <-ticker.C:
@@ -795,6 +810,7 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 						r.logger.Warn("pi runtime snapshot", "session", id, "err", err)
 					}
 					emitRuntime(out, runtime)
+					emitAborted()
 					emitExit("")
 					return
 				case "extension_error":

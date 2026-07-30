@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
 )
 
@@ -337,6 +338,65 @@ func TestAssemblerProjectsContextCompacted(t *testing.T) {
 	}
 	if completed[1].Content != "Context compacted" {
 		t.Fatalf("system content = %q", completed[1].Content)
+	}
+}
+
+func TestAssemblerProjectsAbortedTurn(t *testing.T) {
+	// Real interrupt payload: turn_aborted carries a reason but no message, and
+	// no task_complete follows it. The text streamed before the interrupt must
+	// survive as its own turn, with the marker after it.
+	for _, event := range []string{"task_aborted", "turn_aborted", "task_cancelled", "turn_cancelled"} {
+		t.Run(event, func(t *testing.T) {
+			a := NewAssembler()
+			a.Feed([]byte(`{"timestamp":"2026-07-18T06:20:29Z","type":"event_msg","payload":{"type":"agent_message","message":"partial answer"}}`))
+			line := `{"timestamp":"2026-07-18T06:21:03Z","type":"event_msg","payload":{"type":"` + event +
+				`","turn_id":"019f73e2-289e-7632-9b69-887028bb6dec","reason":"interrupted","duration_ms":33809}}`
+			completed, _ := a.Feed([]byte(line))
+			if len(completed) != 2 || completed[0].Role != "assistant" || completed[1].Role != "error" {
+				t.Fatalf("aborted completed = %+v", completed)
+			}
+			if len(completed[0].Parts) != 1 || completed[0].Parts[0].Content != "partial answer" {
+				t.Fatalf("partial text lost: %+v", completed[0])
+			}
+			if completed[1].Content != backend.AbortedTurnMessage+" (interrupted)" {
+				t.Fatalf("marker content = %q", completed[1].Content)
+			}
+			if !IsTurnAborted([]byte(line)) {
+				t.Errorf("IsTurnAborted did not match its own assembler event")
+			}
+		})
+	}
+}
+
+func TestAssemblerAbortedTurnCarriesReason(t *testing.T) {
+	// reason is a required field on turn_aborted, but the older task_* spellings
+	// predate it — those degrade to the bare message rather than an empty "()".
+	cases := []struct{ reason, want string }{
+		{"interrupted", backend.AbortedTurnMessage + " (interrupted)"},
+		{"budget_limited", backend.AbortedTurnMessage + " (budget_limited)"},
+		{"review_ended", backend.AbortedTurnMessage + " (review_ended)"},
+		{"", backend.AbortedTurnMessage},
+	}
+	for _, tc := range cases {
+		name := tc.reason
+		if name == "" {
+			name = "absent"
+		}
+		t.Run(name, func(t *testing.T) {
+			payload := `{"type":"turn_aborted","turn_id":"t1"`
+			if tc.reason != "" {
+				payload += `,"reason":"` + tc.reason + `"`
+			}
+			payload += `}`
+			a := NewAssembler()
+			completed, _ := a.Feed([]byte(`{"timestamp":"2026-07-18T06:21:03Z","type":"event_msg","payload":` + payload + `}`))
+			if len(completed) != 1 || completed[0].Role != "error" {
+				t.Fatalf("completed = %+v", completed)
+			}
+			if completed[0].Content != tc.want {
+				t.Errorf("content = %q, want %q", completed[0].Content, tc.want)
+			}
+		})
 	}
 }
 

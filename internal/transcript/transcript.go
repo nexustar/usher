@@ -22,7 +22,6 @@ func (Claude) ReadTurns(path string, limit int) ([]core.Turn, int, error) {
 }
 func (Claude) NewAssembler() backend.Assembler { return jsonl.NewAssembler() }
 func (Claude) IsTurnComplete(raw []byte) bool  { return jsonl.IsTurnComplete(raw) }
-func (Claude) IsTurnAborted([]byte) bool       { return false }
 
 type Codex struct{}
 
@@ -31,7 +30,6 @@ func (Codex) ReadTurns(path string, limit int) ([]core.Turn, int, error) {
 }
 func (Codex) NewAssembler() backend.Assembler { return rollout.NewAssembler() }
 func (Codex) IsTurnComplete(raw []byte) bool  { return rollout.IsTurnComplete(raw) }
-func (Codex) IsTurnAborted(raw []byte) bool   { return rollout.IsTurnAborted(raw) }
 
 type ClaudeForker struct{}
 

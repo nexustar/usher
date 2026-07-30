@@ -34,8 +34,46 @@ func (Transcript) ReadTurns(path string, limit int) ([]core.Turn, int, error) {
 	return turns, total, nil
 }
 func (Transcript) NewAssembler() backend.Assembler { return NewAssembler() }
-func (Transcript) IsTurnComplete([]byte) bool      { return false }
-func (Transcript) IsTurnAborted([]byte) bool       { return false }
+
+// IsTurnComplete reports pi's end-of-turn marker. The agent loop keeps running
+// through assistant records whose stopReason is "toolUse", so only a final stop
+// ends the turn — plus a "length" cutoff that carries no tool call: pi fails
+// truncated tool calls and keeps looping (agent-loop terminate:false), so a
+// length record with tool calls is still mid-turn and more records follow.
+func (Transcript) IsTurnComplete(raw []byte) bool {
+	var e entry
+	if json.Unmarshal(raw, &e) != nil || e.Type != "message" {
+		return false
+	}
+	var m message
+	if json.Unmarshal(e.Message, &m) != nil || m.Role != "assistant" {
+		return false
+	}
+	switch m.StopReason {
+	case "stop":
+		return true
+	case "length":
+		return !hasToolCall(m.Content)
+	default:
+		return false
+	}
+}
+
+// hasToolCall reports whether an assistant record carries a tool call. Content
+// that does not parse counts as one: an unreadable record must not be mistaken
+// for the end of a turn.
+func hasToolCall(content json.RawMessage) bool {
+	var blocks []block
+	if json.Unmarshal(content, &blocks) != nil {
+		return true
+	}
+	for _, b := range blocks {
+		if b.Type == "toolCall" {
+			return true
+		}
+	}
+	return false
+}
 
 // activeEntries selects the branch ending at the last entry. Pi appends the
 // current branch, so the final entry is the active leaf in persisted sessions.
@@ -167,10 +205,12 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 			cp := p
 			parts = append(parts, &cp)
 		}
-		// A failed model response is persisted as an assistant record with
-		// stopReason "error" and usually no content. Emit one error turn per
-		// record so a reload shows the failure instead of ending silently.
-		if m.StopReason == "error" && m.ErrorMessage != "" {
+		// Failed and interrupted responses are persisted as an assistant record
+		// with stopReason "error"/"aborted", often with no content at all. Emit
+		// one error turn per record: otherwise the turn ends silently, or — when
+		// the record does carry the text streamed before an interrupt — passes
+		// for a finished answer.
+		if (m.StopReason == "error" || m.StopReason == "aborted") && m.ErrorMessage != "" {
 			var done []core.Turn
 			if t := a.Flush(); t != nil {
 				done = append(done, *t)

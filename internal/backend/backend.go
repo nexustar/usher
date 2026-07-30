@@ -37,6 +37,13 @@ const (
 	EventPart           = "part"
 )
 
+// AbortedTurnMessage is the live wording for a turn that ended without
+// completing. Only the live path shares it. Persisted markers deliberately keep
+// whatever the backend itself recorded — pi's own errorMessage, codex's abort
+// reason — so one interrupt can read differently before and after a reload.
+// Claude uses neither side: it writes its own user-visible record instead.
+const AbortedTurnMessage = "turn aborted before completion"
+
 // Stable payloads for synthesized events. Persisted backend records remain raw
 // because their schemas belong to the concrete transcript implementation.
 type ProcessStartedPayload struct {
@@ -86,7 +93,6 @@ type Transcript interface {
 	ReadTurns(path string, limit int) ([]core.Turn, int, error)
 	NewAssembler() Assembler
 	IsTurnComplete(raw []byte) bool
-	IsTurnAborted(raw []byte) bool
 }
 
 // StartRequest describes the first turn of a new backend session.

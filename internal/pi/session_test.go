@@ -242,6 +242,75 @@ func TestTranscriptSurfacesPersistedError(t *testing.T) {
 	}
 }
 
+func TestTranscriptSurfacesAbortedTurn(t *testing.T) {
+	// An interrupt persists as stopReason "aborted", either with the text that
+	// streamed before it or with no content at all. Both must be visible as an
+	// interruption rather than passing for a finished answer.
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-23T15:46:13Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-23T15:46:14Z","message":{"role":"user","content":"write an essay"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-23T15:46:20Z","message":{"role":"assistant","content":[{"type":"text","text":"Zero began as an absence"}],"stopReason":"aborted","errorMessage":"Request was aborted"}}
+{"type":"message","id":"u2","parentId":"a1","timestamp":"2026-07-23T15:47:00Z","message":{"role":"user","content":"again"}}
+{"type":"message","id":"a2","parentId":"u2","timestamp":"2026-07-23T15:47:05Z","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"Request was aborted"}}
+`)
+	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 5 {
+		t.Fatalf("len(turns) = %d, want 5: %+v", len(turns), turns)
+	}
+	// The partial text survives as its own turn, followed by the marker.
+	if turns[1].Role != "assistant" || len(turns[1].Parts) != 1 ||
+		turns[1].Parts[0].Content != "Zero began as an absence" {
+		t.Fatalf("partial assistant turn = %+v", turns[1])
+	}
+	for _, i := range []int{2, 4} {
+		if turns[i].Role != "error" || turns[i].Content != "Request was aborted" {
+			t.Fatalf("turns[%d] = %+v, want an aborted marker", i, turns[i])
+		}
+	}
+	// A content-free abort must not leave an empty assistant shell behind.
+	if turns[4].UUID != "a2" {
+		t.Fatalf("turns[4].UUID = %q, want a2", turns[4].UUID)
+	}
+}
+
+func TestIsTurnComplete(t *testing.T) {
+	// "toolUse" is the agent loop continuing, not the turn ending — treating it
+	// as complete would relay a foreign turn mid-tool-call.
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"stop", `{"type":"message","id":"a1","message":{"role":"assistant","content":[],"stopReason":"stop"}}`, true},
+		{"stop with text", `{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}`, true},
+		// A truncated response whose tool calls pi will fail and retry is still
+		// mid-turn: toolResult and further assistant records follow it.
+		{"length with tool call", `{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"read"}],"stopReason":"length"}}`, false},
+		{"length without tool call", `{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"cut off"}],"stopReason":"length"}}`, true},
+		{"length empty content", `{"type":"message","id":"a1","message":{"role":"assistant","content":[],"stopReason":"length"}}`, true},
+		// Unparseable content must not be mistaken for a finished turn.
+		{"length unparseable content", `{"type":"message","id":"a1","message":{"role":"assistant","content":"oops","stopReason":"length"}}`, false},
+		{"tool use", `{"type":"message","id":"a1","message":{"role":"assistant","content":[],"stopReason":"toolUse"}}`, false},
+		{"aborted", `{"type":"message","id":"a1","message":{"role":"assistant","content":[],"stopReason":"aborted"}}`, false},
+		{"error", `{"type":"message","id":"a1","message":{"role":"assistant","content":[],"stopReason":"error"}}`, false},
+		{"user", `{"type":"message","id":"u1","message":{"role":"user","content":"hi"}}`, false},
+		{"tool result", `{"type":"message","id":"t1","message":{"role":"toolResult","content":"ok"}}`, false},
+		{"compaction", `{"type":"compaction","id":"c1","summary":"s"}`, false},
+		{"thinking level change", `{"type":"thinking_level_change","id":"k1","thinkingLevel":"high"}`, false},
+		{"session header", `{"type":"session","id":"sess-1","cwd":"/work"}`, false},
+		{"garbage", `not json`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Transcript{}).IsTurnComplete([]byte(tc.line)); got != tc.want {
+				t.Errorf("IsTurnComplete = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRenameSessionUsesPiSessionInfo(t *testing.T) {
 	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
 {"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello pi"}}

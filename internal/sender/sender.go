@@ -570,13 +570,27 @@ func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, 
 			return d.Kind, d.Text, true
 		},
 		result: func(ctx context.Context, out chan<- StreamEvent, result codex.TurnResult) {
-			if result.Error != "" {
-				emitError(ctx, out, result.Error)
-			} else if result.Status == "failed" {
-				emitError(ctx, out, "codex turn failed")
+			if msg := codexTurnError(result); msg != "" {
+				emitError(ctx, out, msg)
 			}
 		},
 	}), nil
+}
+
+// codexTurnError maps a terminal turn result to the message to surface, or ""
+// when the turn ended cleanly. "interrupted" needs one because codex persists
+// the text streamed before an interrupt and no completion marker, leaving the
+// turn otherwise indistinguishable from a finished one.
+func codexTurnError(result codex.TurnResult) string {
+	switch {
+	case result.Error != "":
+		return result.Error
+	case result.Status == "failed":
+		return "codex turn failed"
+	case result.Status == "interrupted":
+		return backend.AbortedTurnMessage
+	}
+	return ""
 }
 
 func emitLiveDelta(ctx context.Context, out chan<- StreamEvent, kind, delta string) bool {

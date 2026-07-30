@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/textutil"
 )
@@ -91,7 +92,11 @@ func IsTurnAborted(raw []byte) bool {
 	if err := json.Unmarshal(l.Payload, &p); err != nil {
 		return false
 	}
-	switch p.Type {
+	return isTurnAbortedType(p.Type)
+}
+
+func isTurnAbortedType(t string) bool {
+	switch t {
 	case "task_aborted", "turn_aborted", "task_cancelled", "turn_cancelled":
 		return true
 	default:
@@ -342,6 +347,7 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 		Type    string `json:"type"`
 		Message string `json:"message"`
 		TurnID  string `json:"turn_id"`
+		Reason  string `json:"reason"`
 	}
 	if err := json.Unmarshal(l.Payload, &p); err != nil {
 		return nil, nil
@@ -407,8 +413,32 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 			completed = append(completed, *t)
 		}
 		return completed, nil
+	default:
+		if !isTurnAbortedType(p.Type) {
+			return nil, nil
+		}
+		// No completion marker follows an abort, so the assistant turn it cut
+		// short is flushed here. Without the marker an interrupted turn is
+		// indistinguishable from a finished one: codex persists whatever text
+		// streamed before the interrupt and nothing else.
+		//
+		// reason distinguishes a deliberate interrupt from budget_limited or
+		// review_ended, which the user did not ask for. It is carried through
+		// verbatim rather than reworded — the older task_* spellings predate
+		// the field and leave it empty.
+		if t := a.Flush(); t != nil {
+			completed = append(completed, *t)
+		}
+		message := backend.AbortedTurnMessage
+		if p.Reason != "" {
+			message += " (" + p.Reason + ")"
+		}
+		return append(completed, core.Turn{
+			Role:    "error",
+			Content: message,
+			Time:    l.Timestamp,
+		}), nil
 	}
-	return nil, nil
 }
 
 func (a *Assembler) appendTool(ts time.Time, name, target, body string) *core.TurnPart {

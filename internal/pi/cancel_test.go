@@ -83,7 +83,7 @@ func TestPromptCancelDrainsUntilAgentSettled(t *testing.T) {
 	}()
 
 	evs := collectPi(t, ch, 5*time.Second)
-	var exits, messages int
+	var exits, messages, aborts int
 	for _, ev := range evs {
 		switch ev.Type {
 		case backend.EventProcessExit:
@@ -92,12 +92,18 @@ func TestPromptCancelDrainsUntilAgentSettled(t *testing.T) {
 			if reason := exitReason(t, ev); reason != "" {
 				t.Errorf("cancelled turn exited with reason %q, want none", reason)
 			}
+		case backend.EventError:
+			aborts++
 		case "message":
 			messages++
 		}
 	}
 	if exits != 1 {
 		t.Errorf("subprocess.exit count = %d, want 1", exits)
+	}
+	// Without this the interrupt leaves no trace in the UI at all.
+	if aborts != 1 {
+		t.Errorf("abort notice count = %d, want 1", aborts)
 	}
 	if messages != 1 {
 		t.Errorf("records persisted after cancel reached the stream: %d, want 1", messages)
@@ -120,14 +126,21 @@ func TestPromptCancelFinalizesWithoutAgentSettled(t *testing.T) {
 	}
 	cancel()
 	evs := collectPi(t, ch, 5*time.Second)
-	exits := 0
+	exits, aborts := 0, 0
 	for _, ev := range evs {
-		if ev.Type == backend.EventProcessExit {
+		switch ev.Type {
+		case backend.EventProcessExit:
 			exits++
+		case backend.EventError:
+			aborts++
 		}
 	}
 	if exits != 1 {
 		t.Fatalf("subprocess.exit count = %d, want 1", exits)
+	}
+	// The grace-path finalization must report the interrupt too.
+	if aborts != 1 {
+		t.Errorf("abort notice count = %d, want 1", aborts)
 	}
 }
 

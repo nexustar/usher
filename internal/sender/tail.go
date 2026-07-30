@@ -148,7 +148,7 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 				if !cfg.contentOnly && cfg.turnAborted != nil && cfg.turnAborted(line) {
 					ev := StreamEvent{Type: lineType(line), Raw: append(json.RawMessage(nil), line...)}
 					_ = sendEvent(context.Background(), out, ev)
-					errRaw, _ := json.Marshal(map[string]string{"message": "turn aborted before completion"})
+					errRaw, _ := json.Marshal(backend.ErrorPayload{Message: backend.AbortedTurnMessage})
 					_ = sendEvent(context.Background(), out, StreamEvent{Type: backend.EventError, Raw: errRaw})
 					emitExitReason("turn_aborted")
 					return
