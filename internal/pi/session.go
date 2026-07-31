@@ -50,6 +50,10 @@ type entry struct {
 	Timestamp time.Time       `json:"timestamp"`
 	Message   json.RawMessage `json:"message"`
 	Name      string          `json:"name"`
+	// custom_message fields. Content mirrors a message's content shape.
+	Content       json.RawMessage `json:"content"`
+	Display       bool            `json:"display"`
+	ThinkingLevel string          `json:"thinkingLevel"`
 }
 
 type message struct {
@@ -100,6 +104,14 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 		}
 		if e.Type == "session_info" {
 			meta.Title = e.Name
+			continue
+		}
+		// Pi persists every thinking-level change, so the last one is the
+		// session's current level even when no worker is live. A session that
+		// never changed level has no such record and keeps the model default,
+		// which only the RPC state knows.
+		if e.Type == "thinking_level_change" {
+			meta.Runtime.Effort = e.ThinkingLevel
 			continue
 		}
 		if e.Type != "message" {

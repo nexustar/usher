@@ -209,6 +209,70 @@ func TestTranscriptProjectsCompaction(t *testing.T) {
 	}
 }
 
+// The thinking level is persisted on every change, so a cold session still
+// knows its current level — the last record wins.
+func TestReadSessionMetaThinkingLevel(t *testing.T) {
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello"}}
+{"type":"thinking_level_change","id":"t1","parentId":"u1","timestamp":"2026-07-01T10:00:02Z","thinkingLevel":"high"}
+{"type":"thinking_level_change","id":"t2","parentId":"t1","timestamp":"2026-07-01T10:00:03Z","thinkingLevel":"low"}
+`)
+	meta, err := ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Runtime.Effort != "low" {
+		t.Fatalf("effort = %q, want low", meta.Runtime.Effort)
+	}
+
+	// A session that never changed level records nothing; only RPC state knows
+	// the model default, so meta must not claim one.
+	quiet := writeFixture(t, `{"type":"session","version":3,"id":"sess-2","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello"}}
+`)
+	meta, err = ReadSessionMeta(quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Runtime.Effort != "" {
+		t.Fatalf("effort = %q, want empty", meta.Runtime.Effort)
+	}
+}
+
+func TestTranscriptProjectsCustomMessages(t *testing.T) {
+	// Extension-injected entries: display false is context-only and must stay
+	// out of the transcript; the rest render whether content is a plain string
+	// or the block form.
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T10:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"before"}]}}
+{"type":"custom_message","id":"c1","parentId":"a1","timestamp":"2026-07-01T10:00:03Z","customType":"ext:note","content":"visible note","display":true}
+{"type":"custom_message","id":"c2","parentId":"c1","timestamp":"2026-07-01T10:00:04Z","customType":"ext:state","content":"hidden state","display":false}
+{"type":"custom_message","id":"c3","parentId":"c2","timestamp":"2026-07-01T10:00:05Z","customType":"ext:blocks","content":[{"type":"text","text":"block note"}],"display":true}
+{"type":"message","id":"u2","parentId":"c3","timestamp":"2026-07-01T10:00:06Z","message":{"role":"user","content":"continue"}}
+`)
+	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct{ role, content, uuid string }{
+		{"user", "hello", "u1"},
+		{"assistant", "", "a1"},
+		{"system", "visible note", "c1"},
+		{"system", "block note", "c3"},
+		{"user", "continue", "u2"},
+	}
+	if len(turns) != len(want) {
+		t.Fatalf("len(turns) = %d, want %d: %+v", len(turns), len(want), turns)
+	}
+	for i, w := range want {
+		got := turns[i]
+		if got.Role != w.role || got.UUID != w.uuid || (w.content != "" && got.Content != w.content) {
+			t.Fatalf("turn %d = %+v, want role=%q content=%q uuid=%q", i, got, w.role, w.content, w.uuid)
+		}
+	}
+}
+
 func TestTranscriptSurfacesPersistedError(t *testing.T) {
 	// Each failed model response is its own stopReason "error" record; the
 	// transcript must show one error turn per record, not end silently.

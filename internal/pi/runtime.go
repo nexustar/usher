@@ -182,29 +182,40 @@ func rpcDataCancelled(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &data) == nil && data.Cancelled
 }
 
-func readRuntime(ctx context.Context, c *client) (core.SessionRuntime, error) {
-	var runtime core.SessionRuntime
+// workerState is a worker's usage snapshot plus the session it is currently
+// bound to. The identity matters because pi can rebind a worker mid-flight.
+type workerState struct {
+	runtime   core.SessionRuntime
+	sessionID string
+	file      string
+}
+
+func readState(ctx context.Context, c *client) (workerState, error) {
+	var st workerState
 	stateRaw, err := c.request(ctx, "get_state", nil)
 	if err != nil {
-		return runtime, err
+		return st, err
 	}
 	var state struct {
 		Model *struct {
 			ID string `json:"id"`
 		} `json:"model"`
 		ThinkingLevel string `json:"thinkingLevel"`
+		SessionID     string `json:"sessionId"`
+		SessionFile   string `json:"sessionFile"`
 	}
 	if err := json.Unmarshal(stateRaw, &state); err != nil {
-		return runtime, err
+		return st, err
 	}
 	if state.Model != nil {
-		runtime.Model = state.Model.ID
+		st.runtime.Model = state.Model.ID
 	}
-	runtime.Effort = state.ThinkingLevel
+	st.runtime.Effort = state.ThinkingLevel
+	st.sessionID, st.file = state.SessionID, state.SessionFile
 
 	statsRaw, err := c.request(ctx, "get_session_stats", nil)
 	if err != nil {
-		return runtime, err
+		return st, err
 	}
 	var stats struct {
 		ContextUsage *struct {
@@ -213,15 +224,57 @@ func readRuntime(ctx context.Context, c *client) (core.SessionRuntime, error) {
 		} `json:"contextUsage"`
 	}
 	if err := json.Unmarshal(statsRaw, &stats); err != nil {
-		return runtime, err
+		return st, err
 	}
 	if stats.ContextUsage != nil {
-		runtime.ContextWindow = stats.ContextUsage.ContextWindow
+		st.runtime.ContextWindow = stats.ContextUsage.ContextWindow
 		if stats.ContextUsage.Tokens != nil {
-			runtime.ContextTokens = *stats.ContextUsage.Tokens
+			st.runtime.ContextTokens = *stats.ContextUsage.Tokens
 		}
 	}
-	return runtime, nil
+	return st, nil
+}
+
+// checkBinding reports whether the worker still serves sessionID, dropping it
+// when pi has rebound the process to a different session. Extension commands
+// reach fork/clone/new_session/switch_session/navigateTree, all of which
+// replace the process's session without emitting anything on stdout; a stale
+// binding would write the next prompt into the wrong file while usher tails
+// the old one. An empty id means pi answered without one — not evidence of a
+// switch, so the binding stands.
+func (r *Runtime) checkBinding(id string, w *worker, st workerState) bool {
+	if st.sessionID == "" || st.sessionID == id {
+		return true
+	}
+	r.logger.Warn("pi worker switched sessions; dropping it",
+		"session", id, "now", st.sessionID, "file", st.file)
+	r.mu.Lock()
+	if r.workers[id] == w {
+		delete(r.workers, id)
+	}
+	r.mu.Unlock()
+	go w.c.stop()
+	return false
+}
+
+// finishOperation emits the post-operation usage snapshot, or an error when
+// the worker no longer serves this session. A switched worker's snapshot
+// describes the session pi moved to, so it must never be published as this
+// session's usage.
+func (r *Runtime) finishOperation(ctx context.Context, id string, w *worker, out chan<- backend.Event) {
+	snapCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	st, err := readState(snapCtx, w.c)
+	cancel()
+	switch {
+	case err != nil:
+		r.logger.Warn("pi runtime snapshot", "session", id, "err", err)
+	case !r.checkBinding(id, w, st):
+		raw, _ := json.Marshal(backend.ErrorPayload{Message: "A pi command switched this worker to another session. " +
+			"usher released it; the next message starts a fresh worker for this session."})
+		out <- backend.Event{Type: backend.EventError, Raw: raw}
+	default:
+		emitRuntime(out, st.runtime)
+	}
 }
 
 func emitRuntime(out chan<- backend.Event, runtime core.SessionRuntime) {
@@ -626,13 +679,7 @@ func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ st
 			raw, _ := json.Marshal(backend.ErrorPayload{Message: err.Error()})
 			out <- backend.Event{Type: backend.EventError, Raw: raw}
 		} else {
-			runtimeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-			runtime, err := readRuntime(runtimeCtx, w.c)
-			cancel()
-			if err != nil {
-				r.logger.Warn("pi runtime snapshot", "session", id, "err", err)
-			}
-			emitRuntime(out, runtime)
+			r.finishOperation(ctx, id, w, out)
 		}
 		// RPC events emitted by the operation precede its response on stdout.
 		// They must not leak into the next model turn.
@@ -803,13 +850,7 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 				case "agent_settled":
 					// Read through EOF before finalizing.
 					emitTail()
-					runtimeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-					runtime, err := readRuntime(runtimeCtx, w.c)
-					cancel()
-					if err != nil {
-						r.logger.Warn("pi runtime snapshot", "session", id, "err", err)
-					}
-					emitRuntime(out, runtime)
+					r.finishOperation(ctx, id, w, out)
 					emitAborted()
 					emitExit("")
 					return

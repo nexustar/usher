@@ -168,9 +168,14 @@ func (d *Discovery) upsert(path string) {
 			// it includes the effective max window. Transcript usage is only a
 			// fallback; never let a later fsnotify scan erase a captured window.
 			if existing.Backend == "pi" {
-				// Pi transcript metadata lacks RPC-only effort/context.
+				// Pi transcript metadata lacks RPC-only context usage. Effort is
+				// persisted, but only once changed, so an empty one means
+				// "unknown here", never "cleared".
 				if existing.Runtime.Model == "" {
 					existing.Runtime.Model = meta.Runtime.Model
+				}
+				if meta.Runtime.Effort != "" {
+					existing.Runtime.Effort = meta.Runtime.Effort
 				}
 			} else if existing.Backend != "claude" || existing.Runtime.ContextWindow == 0 {
 				existing.Runtime = meta.Runtime
