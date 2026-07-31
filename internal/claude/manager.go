@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/procutil"
 )
 
@@ -80,25 +80,25 @@ type Command struct {
 }
 
 type Manager struct {
-	bin       string
-	settings  string
-	mcpArgs   []string
-	hookSock  string
-	maxLive   int
-	logger    *slog.Logger
-	hooks     *hook.Manager
-	mu        sync.Mutex
-	processes map[string]*process
+	bin          string
+	settings     string
+	mcpArgs      []string
+	hookSock     string
+	maxLive      int
+	logger       *slog.Logger
+	interactions *interaction.Manager
+	mu           sync.Mutex
+	processes    map[string]*process
 }
 
-func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, hooks *hook.Manager, logger *slog.Logger) *Manager {
+func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, interactions *interaction.Manager, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if maxLive <= 0 {
 		maxLive = 8
 	}
-	return &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, hooks: hooks, logger: logger, processes: map[string]*process{}}
+	return &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, interactions: interactions, logger: logger, processes: map[string]*process{}}
 }
 
 // ensureProcess resolves id's live process, spawning a cold one when needed.
@@ -149,7 +149,7 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 		}
 	}
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--include-partial-messages", "--verbose"}
-	if m.hooks != nil {
+	if m.interactions != nil {
 		args = append(args, "--permission-prompt-tool", "stdio")
 	}
 	if resume {
@@ -651,7 +651,7 @@ func (m *Manager) handleControlRequest(p *process, raw []byte) {
 	if json.Unmarshal(raw, &msg) != nil || msg.RequestID == "" || msg.Request.Subtype != "can_use_tool" {
 		return
 	}
-	if m.hooks == nil {
+	if m.interactions == nil {
 		m.writeControlError(p, msg.RequestID, "permission handler unavailable")
 		return
 	}
@@ -676,10 +676,9 @@ func (m *Manager) handleControlRequest(p *process, raw []byte) {
 			case <-ctx.Done():
 			}
 		}()
-		resp, err := m.hooks.Submit(ctx, hook.Event{
+		resp, err := m.interactions.Submit(ctx, interaction.Request{
 			SessionID:   p.id,
 			ToolUseID:   msg.Request.ToolUseID,
-			Event:       "PermissionRequest",
 			ToolName:    msg.Request.ToolName,
 			ToolInput:   msg.Request.Input,
 			Cwd:         p.cwd,

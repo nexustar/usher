@@ -15,7 +15,7 @@ import (
 	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // fakeRouter implements RouterAPI backed by a broker and hand-fed pendings.
@@ -25,9 +25,9 @@ type fakeRouter struct {
 	mu        sync.Mutex
 	sessions  map[string]core.Session
 	sent      map[string][]string
-	pending   []hook.Pending
-	pendingCh chan hook.Pending
-	responses map[string]hook.Response
+	pending   []interaction.Pending
+	pendingCh chan interaction.Pending
+	responses map[string]interaction.Response
 	startErr  error
 	started   []core.CreateOptions
 }
@@ -37,8 +37,8 @@ func newFakeRouter() *fakeRouter {
 		broker:    broker.New(),
 		sessions:  map[string]core.Session{},
 		sent:      map[string][]string{},
-		pendingCh: make(chan hook.Pending, 8),
-		responses: map[string]hook.Response{},
+		pendingCh: make(chan interaction.Pending, 8),
+		responses: map[string]interaction.Response{},
 	}
 }
 
@@ -75,17 +75,17 @@ func (f *fakeRouter) StartSession(o core.CreateOptions) (string, error) {
 	return id, nil
 }
 
-func (f *fakeRouter) ListPendingInteractions() []hook.Pending {
+func (f *fakeRouter) ListPendingInteractions() []interaction.Pending {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]hook.Pending(nil), f.pending...)
+	return append([]interaction.Pending(nil), f.pending...)
 }
 
-func (f *fakeRouter) SubscribePendingInteractions() (<-chan hook.Pending, func()) {
+func (f *fakeRouter) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
 	return f.pendingCh, func() {}
 }
 
-func (f *fakeRouter) RespondInteraction(id string, resp hook.Response) error {
+func (f *fakeRouter) RespondInteraction(id string, resp interaction.Response) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, done := f.responses[id]; done {
@@ -284,7 +284,7 @@ func TestEventStream(t *testing.T) {
 
 func TestInteractionsSnapshotAndLive(t *testing.T) {
 	f := newFakeRouter()
-	f.pending = []hook.Pending{{ID: "p1", SessionID: "s1", ToolName: "Bash"}}
+	f.pending = []interaction.Pending{{ID: "p1", SessionID: "s1", ToolName: "Bash"}}
 	c := startServer(t, f)
 
 	pending, cancel := c.SubscribePendingInteractions()
@@ -295,16 +295,16 @@ func TestInteractionsSnapshotAndLive(t *testing.T) {
 		t.Fatalf("snapshot pending = %+v", first)
 	}
 
-	f.pendingCh <- hook.Pending{ID: "p2", SessionID: "s1", ToolName: "Edit"}
+	f.pendingCh <- interaction.Pending{ID: "p2", SessionID: "s1", ToolName: "Edit"}
 	second := recvPending(t, pending)
 	if second.ID != "p2" {
 		t.Fatalf("live pending = %+v", second)
 	}
 
-	if err := c.RespondInteraction("p1", hook.Response{Behavior: "allow"}); err != nil {
+	if err := c.RespondInteraction("p1", interaction.Response{Behavior: "allow"}); err != nil {
 		t.Fatalf("respond: %v", err)
 	}
-	if err := c.RespondInteraction("p1", hook.Response{Behavior: "allow"}); err == nil {
+	if err := c.RespondInteraction("p1", interaction.Response{Behavior: "allow"}); err == nil {
 		t.Fatal("second respond should surface the server error")
 	}
 	f.mu.Lock()
@@ -315,14 +315,14 @@ func TestInteractionsSnapshotAndLive(t *testing.T) {
 	}
 }
 
-func recvPending(t *testing.T, ch <-chan hook.Pending) hook.Pending {
+func recvPending(t *testing.T, ch <-chan interaction.Pending) interaction.Pending {
 	t.Helper()
 	select {
 	case p := <-ch:
 		return p
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for pending")
-		return hook.Pending{}
+		return interaction.Pending{}
 	}
 }
 

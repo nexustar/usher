@@ -43,7 +43,11 @@ done
 	}
 	t.Cleanup(c.stop)
 	w := &worker{c: c, cwd: dir, path: path, last: time.Now()}
-	r := &Runtime{workers: map[string]*worker{"s1": w}, max: 1, logger: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	r := &Runtime{workers: map[string]*worker{}, max: 1, logger: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	// Through add(), like every production path, so the event pump runs.
+	if err := r.add("s1", w); err != nil {
+		t.Fatal(err)
+	}
 	return r, w
 }
 

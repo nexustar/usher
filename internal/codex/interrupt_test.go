@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // Interrupt requests must include the running turn ID.
@@ -29,7 +29,7 @@ done
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := New(script, hook.New(""), nil, nil, nil, nil, nil)
+	c := New(script, interaction.New(""), nil, nil, nil, nil, nil)
 	t.Cleanup(c.Shutdown)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

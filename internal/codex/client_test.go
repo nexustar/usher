@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 type testWriteCloser struct{ bytes.Buffer }
@@ -19,7 +19,7 @@ type testWriteCloser struct{ bytes.Buffer }
 func (*testWriteCloser) Close() error { return nil }
 
 func TestThreadParamsCarryPolicySandboxAndNativeMCP(t *testing.T) {
-	c := New("codex", hook.New(""), map[string]any{"sandbox": "workspace-write"}, map[string]any{
+	c := New("codex", interaction.New(""), map[string]any{"sandbox": "workspace-write"}, map[string]any{
 		"mcp_servers.usher.command":                      "/usr/bin/usher",
 		"mcp_servers.usher.args":                         []string{"mcp-stdio"},
 		"mcp_servers.usher.env_vars":                     []string{"USHER_HOOK_SOCK"},
@@ -83,7 +83,7 @@ func TestErrorNotificationSurfacesFinalMessageAtTurnEnd(t *testing.T) {
 }
 
 func TestInterruptStoppedClientIsNoop(t *testing.T) {
-	c := New("definitely-not-a-command", hook.New(""), nil, nil, nil, nil, nil)
+	c := New("definitely-not-a-command", interaction.New(""), nil, nil, nil, nil, nil)
 	if err := c.Interrupt(context.Background(), "missing"); err != nil {
 		t.Fatalf("interrupt stopped client: %v", err)
 	}
@@ -105,7 +105,7 @@ while IFS= read -r line; do :; done
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	c := New(script, hook.New(""), nil, nil, []string{"FAKE_LOG=" + logPath}, nil, nil)
+	c := New(script, interaction.New(""), nil, nil, []string{"FAKE_LOG=" + logPath}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -175,10 +175,10 @@ func TestSupportsAllowAlways(t *testing.T) {
 }
 
 func TestPermissionsApprovalUsesPermissionProfileResponse(t *testing.T) {
-	hooks := hook.New("")
-	hooks.SetAutoApprove("thread-1", true)
+	interactions := interaction.New("")
+	interactions.SetAutoApprove("thread-1", true)
 	out := new(testWriteCloser)
-	c := New("unused", hooks, nil, nil, nil, nil, nil)
+	c := New("unused", interactions, nil, nil, nil, nil, nil)
 	c.in = out
 	c.permissionsApproval(rpcMessage{
 		ID:     json.RawMessage(`7`),
@@ -247,10 +247,10 @@ func TestNewServerRequestsUseTheirOwnResponseShapes(t *testing.T) {
 }
 
 func TestMcpConfirmationElicitationUsesPermissionDecision(t *testing.T) {
-	hooks := hook.New("")
-	hooks.SetAutoApprove("thread-1", true)
+	interactions := interaction.New("")
+	interactions.SetAutoApprove("thread-1", true)
 	out := new(testWriteCloser)
-	c := New("unused", hooks, nil, nil, nil, nil, nil)
+	c := New("unused", interactions, nil, nil, nil, nil, nil)
 	c.in = out
 	c.mcpElicitation(rpcMessage{
 		ID:     json.RawMessage(`10`),
@@ -263,10 +263,10 @@ func TestMcpConfirmationElicitationUsesPermissionDecision(t *testing.T) {
 }
 
 func TestMcpInputFormIsNotAcceptedWithoutAnswers(t *testing.T) {
-	hooks := hook.New("")
-	hooks.SetAutoApprove("thread-1", true)
+	interactions := interaction.New("")
+	interactions.SetAutoApprove("thread-1", true)
 	out := new(testWriteCloser)
-	c := New("unused", hooks, nil, nil, nil, nil, nil)
+	c := New("unused", interactions, nil, nil, nil, nil, nil)
 	c.in = out
 	c.mcpElicitation(rpcMessage{
 		ID:     json.RawMessage(`11`),

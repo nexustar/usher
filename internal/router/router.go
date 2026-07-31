@@ -23,7 +23,7 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
 	"github.com/nexustar/usher/internal/terminal"
@@ -45,7 +45,7 @@ type Router struct {
 	backends       map[string]backendpkg.Backend
 	defaultBackend string
 	broker         *broker.Broker
-	hooks          *hook.Manager
+	interactions   *interaction.Manager
 	meta           *sessionmeta.Store
 	terminal       *terminal.Manager
 	composerMu     sync.Mutex
@@ -100,13 +100,13 @@ type pendingSend struct {
 const maxQueuedSends = 32
 
 // New builds a Router over explicitly assembled backends (at least one).
-func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, defaultBackend string, b *broker.Broker, h *hook.Manager, meta *sessionmeta.Store, term *terminal.Manager) *Router {
+func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, defaultBackend string, b *broker.Broker, h *interaction.Manager, meta *sessionmeta.Store, term *terminal.Manager) *Router {
 	r := &Router{
 		discovery:      d,
 		backends:       backends,
 		defaultBackend: defaultBackend,
 		broker:         b,
-		hooks:          h,
+		interactions:   h,
 		meta:           meta,
 		terminal:       term,
 		activeSend:     map[string]*sendToken{},
@@ -539,7 +539,7 @@ func (r *Router) DeleteSession(id string) error {
 	// racing the fsnotify Remove event (mirror of fork's Upsert).
 	r.discovery.Remove(id)
 	r.meta.Forget(id)
-	r.hooks.SetAutoApprove(id, false)
+	r.interactions.SetAutoApprove(id, false)
 	return nil
 }
 
@@ -1001,8 +1001,8 @@ func (r *Router) SubscribeAllSessions() (<-chan broker.Event, func()) {
 // SubscribePendingInteractions returns a stream of newly-submitted permission
 // requests, so the Telegram hub can push inline allow/deny buttons without
 // polling ListPendingInteractions.
-func (r *Router) SubscribePendingInteractions() (<-chan hook.Pending, func()) {
-	return r.hooks.SubscribePending()
+func (r *Router) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
+	return r.interactions.SubscribePending()
 }
 
 // --- session terminal ----------------------------------------------------
@@ -1080,10 +1080,10 @@ func (r *Router) ResizeTerminal(id string, cols, rows int) error {
 
 // --- hook / interactions -------------------------------------------------
 
-func (r *Router) ListPendingInteractions() []hook.Pending { return r.hooks.List() }
+func (r *Router) ListPendingInteractions() []interaction.Pending { return r.interactions.List() }
 
-func (r *Router) RespondInteraction(id string, resp hook.Response) error {
-	return r.hooks.Respond(id, resp)
+func (r *Router) RespondInteraction(id string, resp interaction.Response) error {
+	return r.interactions.Respond(id, resp)
 }
 
 // HandleHook applies blanket auto-approve first, then blocks for the web UI
@@ -1094,22 +1094,22 @@ func (r *Router) RespondInteraction(id string, resp hook.Response) error {
 // back to the pane; pool membership is the stable signal. It also keeps usher
 // from intercepting the user's own terminal/IDE claude (not in our pool), which
 // on a shared default socket would otherwise reach this same hook server.
-func (r *Router) HandleHook(ctx context.Context, ev hook.Event) (hook.Response, error) {
-	if resp, ok := r.hooks.QuickDecide(ev); ok {
+func (r *Router) HandleHook(ctx context.Context, ev interaction.Request) (interaction.Response, error) {
+	if resp, ok := r.interactions.QuickDecide(ev); ok {
 		return resp, nil
 	}
 	if !r.anyHas(ev.SessionID) {
-		return hook.Response{}, errors.New("session not owned by usher")
+		return interaction.Response{}, errors.New("session not owned by usher")
 	}
-	return r.hooks.Submit(ctx, ev)
+	return r.interactions.Submit(ctx, ev)
 }
 
 func (r *Router) SetAutoApprove(sessionID string, enabled bool) {
-	r.hooks.SetAutoApprove(sessionID, enabled)
+	r.interactions.SetAutoApprove(sessionID, enabled)
 }
 
 func (r *Router) IsAutoApprove(sessionID string) bool {
-	return r.hooks.IsAutoApprove(sessionID)
+	return r.interactions.IsAutoApprove(sessionID)
 }
 
 // --- transcript / blocking send (v0.2 LLM agent helpers) ----------------

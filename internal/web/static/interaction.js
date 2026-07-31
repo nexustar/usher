@@ -1,7 +1,8 @@
-// usher SPA: in-session permission + AskUserQuestion interactions.
+// usher SPA: in-session interactions. The server tags each with a kind;
+// nothing here keys off a backend or tool name.
 
 import {
-  esc, currentDetailId, setPendingInteractionCounts,
+  esc, currentDetailId, setPendingInteractionCounts, growPrompt,
 } from './state.js';
 
 // --- interaction-private state ---
@@ -26,14 +27,10 @@ function sameInteractions(a, b) {
   return true;
 }
 
-// AskUserQuestion surfaces as a pending interaction whose tool_input carries
-// the questions + options. We render it as a choice picker (single-select per
-// question) instead of allow/deny; the picked labels go back as `answers`,
-// which the server feeds into the tool's updatedInput so claude resolves it
-// without ever rendering its pane TUI selector. (multiSelect / free-text are
-// not handled yet — only the listed options.)
-function isAskQuestion(p) {
-  return p.tool_name === 'AskUserQuestion'
+// Answered by picking or typing rather than allow/deny; the answers go back as
+// `answers`. `text` is the same control with no options offered.
+function isQuestion(p) {
+  return (p.kind === 'choice' || p.kind === 'text')
     && p.tool_input && Array.isArray(p.tool_input.questions) && p.tool_input.questions.length > 0;
 }
 
@@ -44,7 +41,18 @@ function previewBlock(preview) {
   return preview ? `<span class="qopt-preview">${esc(preview)}</span>` : '';
 }
 
-function renderAskQuestion(p, sid) {
+// The free-text field doubles as "Other" beside options and as the only control
+// when none are offered. Multiline (pi's editor dialog) gets a textarea.
+function freeTextControl(q, qi) {
+  const hasOptions = (q.options || []).length > 0;
+  const ph = q.placeholder || (hasOptions ? 'or type your own answer…' : '');
+  if (q.multiline) {
+    return `<textarea class="qother" data-qi="${qi}" rows="3" placeholder="${esc(ph)}">${esc(q.prefill || '')}</textarea>`;
+  }
+  return `<input class="qother" data-qi="${qi}" type="text" placeholder="${esc(ph)}" value="${esc(q.prefill || '')}">`;
+}
+
+function renderQuestions(p, sid) {
   const blocks = p.tool_input.questions.map((q, qi) => {
     const opts = (q.options || []).map((o, oi) => `
       <button class="qopt" data-qi="${qi}" data-oi="${oi}">
@@ -56,8 +64,8 @@ function renderAskQuestion(p, sid) {
       <div class="question" data-qi="${qi}"${qi ? ' hidden' : ''}>
         ${q.header ? `<div class="q-header">${esc(q.header)}</div>` : ''}
         <div class="q-text">${esc(q.question || '')}${q.multiSelect ? ' <span class="q-multi">(select all that apply)</span>' : ''}</div>
-        <div class="q-options">${opts}</div>
-        <input class="qother" data-qi="${qi}" type="text" placeholder="or type your own answer…">
+        ${opts ? `<div class="q-options">${opts}</div>` : ''}
+        ${freeTextControl(q, qi)}
       </div>`;
   }).join('');
   return `
@@ -86,7 +94,7 @@ function renderPermission(p, position, total) {
   return `
     <div class="interaction" data-id="${esc(p.id)}">
       <div class="meta">
-        <strong>${esc(p.tool_name || p.event)}</strong>
+        <strong>${esc(p.tool_name || p.kind)}</strong>
         ${total > 1 ? `<span class="muted">${position} of ${total}</span>` : ''}
       </div>
       <pre class="tool-input">${esc(inputJSON)}</pre>
@@ -98,7 +106,7 @@ function renderPermission(p, position, total) {
     </div>`;
 }
 
-// wireAskQuestion drives the choice picker. Each question takes an answer that
+// wireQuestions drives the choice picker. Each question takes an answer that
 // is one of: a listed option, several options (when multiSelect), or free text
 // (the always-available "Other", matching the native tool) — picking options
 // clears the free text and vice-versa. multiSelect picks are joined with ", "
@@ -106,7 +114,7 @@ function renderPermission(p, position, total) {
 // question has an answer; "ignore" denies the tool, which claude treats as
 // "skip the question, continue in chat". Answers go back as question -> string
 // in one response.
-function wireAskQuestion(node, id) {
+function wireQuestions(node, id) {
   const p = pendingInteractions.find(x => x.id === id);
   if (!p) return;
   const qs = p.tool_input.questions;
@@ -147,7 +155,10 @@ function wireAskQuestion(node, id) {
     });
   });
   node.querySelectorAll('.qother').forEach(inp => {
+    const grow = inp.tagName === 'TEXTAREA' ? () => growPrompt(inp) : () => {};
+    grow(); // fit the prefill before the user touches it
     inp.addEventListener('input', () => {
+      grow();
       if (inp.value.trim()) { // typing clears the radio selection for that question
         node.querySelectorAll(`.qopt[data-qi="${inp.dataset.qi}"]`).forEach(b => b.classList.remove('selected'));
       }
@@ -169,7 +180,7 @@ function wireAskQuestion(node, id) {
 }
 
 function renderInteractions() {
-  const permissions = pendingInteractions.filter(p => !isAskQuestion(p));
+  const permissions = pendingInteractions.filter(p => !isQuestion(p));
   const counts = new Map();
   for (const p of pendingInteractions) {
     if (p.session_id) counts.set(p.session_id, (counts.get(p.session_id) || 0) + 1);
@@ -195,7 +206,7 @@ function renderInteractions() {
 
   // Questions belong to the session that raised them, just like permissions.
   // Preserve an unchanged card so polling does not clear choices or typed text.
-  const asks = pendingInteractions.filter(p => isAskQuestion(p) && p.session_id === currentDetailId);
+  const asks = pendingInteractions.filter(p => isQuestion(p) && p.session_id === currentDetailId);
   const existingQuestions = document.getElementById('session-questions');
   // Show one queued question at a time. Key only by the visible interaction so
   // a newly queued question does not reset an answer already in progress.
@@ -212,11 +223,11 @@ function renderInteractions() {
   questions.dataset.interactions = askKey;
   const current = asks[0];
   const sid = (current.session_id || '').slice(0, 8) || '(unknown)';
-  questions.innerHTML = renderAskQuestion(current, sid);
+  questions.innerHTML = renderQuestions(current, sid);
   composer.before(questions);
   questions.querySelectorAll('.interaction').forEach(node => {
     const id = node.dataset.id;
-    wireAskQuestion(node, id);
+    wireQuestions(node, id);
   });
 }
 
@@ -245,9 +256,8 @@ async function respond(id, behavior, scope, reason) {
   pollInteractions();
 }
 
-// respondAnswers resolves an AskUserQuestion interaction: behavior "allow"
-// plus the chosen labels (question → label), which the server merges into the
-// tool's updatedInput.
+// respondAnswers resolves a question: behavior "allow" plus what the user
+// picked or typed (question → answer).
 async function respondAnswers(id, answers) {
   try {
     await fetch('/api/interactions/' + encodeURIComponent(id) + '/respond', {

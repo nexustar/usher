@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/imutil"
 )
 
@@ -24,7 +24,7 @@ type decisionValue struct {
 	Opt  string `json:"opt,omitempty"`
 }
 
-// decodeDecision maps a card action's value payload to a hook.Response,
+// decodeDecision maps a card action's value payload to a interaction.Response,
 // mirroring telegram's decodeDecision.
 func decodeDecision(v decisionValue) (behavior, scope string, ok bool) {
 	switch v.Kind {
@@ -160,7 +160,7 @@ func mentionMD(openIDs []string) string {
 // card: tool name in the header, its input in a code block, allow/deny
 // buttons. resolved != "" renders the post-decision state instead: the
 // outcome line, no buttons (so a stale card can't be re-tapped).
-func permissionCard(p hook.Pending, mentions []string, resolved string) obj {
+func permissionCard(p interaction.Pending, mentions []string, resolved string) obj {
 	header := "🔐 Permission requested"
 	if p.ToolName != "" {
 		header += ": " + imutil.Truncate(p.ToolName, 80)
@@ -255,7 +255,7 @@ func multiStepCard(pendingID string, mentions []string, resolved string) obj {
 // resolvedCard re-renders the card for a decided interaction: same body, an
 // outcome line, no buttons. Used as the card-callback replacement so a stale
 // card can't be re-tapped.
-func resolvedCard(p hook.Pending, outcome string) obj {
+func resolvedCard(p interaction.Pending, outcome string) obj {
 	if p.ToolName == "AskUserQuestion" {
 		if qs := imutil.ParseQuestions(p.ToolInput); len(qs) == 1 {
 			return askCard(qs[0], p.ID, nil, outcome)

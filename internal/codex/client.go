@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/procutil"
 )
 
@@ -82,32 +82,32 @@ type initState struct {
 // Client to each live root session; derived Codex threads remain internal to
 // that worker.
 type Client struct {
-	bin      string
-	logger   *slog.Logger
-	hooks    *hook.Manager
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	in       io.WriteCloser
-	pending  map[string]chan response
-	turns    map[string]*turnStream
-	active   map[string]string // thread id -> id of the turn app-server is running
-	threads  map[string]string // thread id -> cwd
-	next     atomic.Uint64
-	init     *initState
-	waitDone chan struct{}
-	sandbox  map[string]any
-	config   map[string]any
-	env      []string
-	args     []string
+	bin          string
+	logger       *slog.Logger
+	interactions *interaction.Manager
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	in           io.WriteCloser
+	pending      map[string]chan response
+	turns        map[string]*turnStream
+	active       map[string]string // thread id -> id of the turn app-server is running
+	threads      map[string]string // thread id -> cwd
+	next         atomic.Uint64
+	init         *initState
+	waitDone     chan struct{}
+	sandbox      map[string]any
+	config       map[string]any
+	env          []string
+	args         []string
 }
 
 // New builds a client for one codex app-server process. args are extra binary
 // arguments (config overrides) that must be fixed for the process's lifetime.
-func New(bin string, hooks *hook.Manager, sandbox, config map[string]any, env, args []string, logger *slog.Logger) *Client {
+func New(bin string, interactions *interaction.Manager, sandbox, config map[string]any, env, args []string, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{bin: bin, hooks: hooks, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), args: append([]string(nil), args...), logger: logger, pending: map[string]chan response{}, turns: map[string]*turnStream{}, active: map[string]string{}, threads: map[string]string{}}
+	return &Client{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), args: append([]string(nil), args...), logger: logger, pending: map[string]chan response{}, turns: map[string]*turnStream{}, active: map[string]string{}, threads: map[string]string{}}
 }
 
 func scrubEnv() []string {
@@ -394,7 +394,7 @@ func (c *Client) mcpElicitation(m rpcMessage) {
 	}
 
 	c.mu.Lock()
-	h := c.hooks
+	h := c.interactions
 	cwd := c.threads[p.ThreadID]
 	c.mu.Unlock()
 
@@ -406,9 +406,8 @@ func (c *Client) mcpElicitation(m rpcMessage) {
 		if p.ServerName != "" {
 			tool += ": " + p.ServerName
 		}
-		r, err := h.Submit(context.Background(), hook.Event{
+		r, err := h.Submit(context.Background(), interaction.Request{
 			SessionID: p.ThreadID,
-			Event:     "PermissionRequest",
 			ToolName:  tool,
 			ToolInput: json.RawMessage(m.Params),
 			Cwd:       cwd,
@@ -442,7 +441,7 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 	}
 
 	c.mu.Lock()
-	h := c.hooks
+	h := c.interactions
 	if p.Cwd == "" {
 		p.Cwd = c.threads[p.ThreadID]
 	}
@@ -450,9 +449,8 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 
 	result := map[string]any{"permissions": map[string]any{}}
 	if h != nil {
-		r, err := h.Submit(context.Background(), hook.Event{
+		r, err := h.Submit(context.Background(), interaction.Request{
 			SessionID:   p.ThreadID,
-			Event:       "PermissionRequest",
 			ToolName:    "Permissions",
 			ToolInput:   json.RawMessage(m.Params),
 			Cwd:         p.Cwd,
@@ -485,7 +483,7 @@ func (c *Client) approval(m rpcMessage) {
 		tool = "Edit"
 	}
 	c.mu.Lock()
-	h := c.hooks
+	h := c.interactions
 	if cwd == "" {
 		cwd = c.threads[sid]
 	}
@@ -497,7 +495,7 @@ func (c *Client) approval(m rpcMessage) {
 	decision := "decline"
 	if h != nil {
 		allowAlways := supportsAllowAlways(m.Method, p["availableDecisions"])
-		if r, err := h.Submit(context.Background(), hook.Event{SessionID: sid, Event: "PermissionRequest", ToolName: tool, ToolInput: input, Cwd: cwd, AllowAlways: allowAlways}); err == nil && r.Behavior == "allow" {
+		if r, err := h.Submit(context.Background(), interaction.Request{SessionID: sid, ToolName: tool, ToolInput: input, Cwd: cwd, AllowAlways: allowAlways}); err == nil && r.Behavior == "allow" {
 			if r.Scope == "session" && allowAlways {
 				decision = "acceptForSession"
 			} else {

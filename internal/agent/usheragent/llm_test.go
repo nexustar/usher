@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // mockChatServer returns a series of canned responses in order. Each call
@@ -52,9 +52,9 @@ func newMockChatServer(t *testing.T, responses []ChatResponse) (*httptest.Server
 
 type fakeAgentAPI struct {
 	sessions []core.Session
-	pending  []hook.Pending
+	pending  []interaction.Pending
 	sent     []sendCall
-	resolved []hook.Response
+	resolved []interaction.Response
 
 	transcripts map[string][]core.TranscriptTurn
 	waitReplies map[string]string
@@ -82,13 +82,13 @@ func newFakeAgentAPI() *fakeAgentAPI {
 	}
 }
 
-func (f *fakeAgentAPI) ListSessions() []core.Session            { return f.sessions }
-func (f *fakeAgentAPI) ListPendingInteractions() []hook.Pending { return f.pending }
+func (f *fakeAgentAPI) ListSessions() []core.Session                   { return f.sessions }
+func (f *fakeAgentAPI) ListPendingInteractions() []interaction.Pending { return f.pending }
 func (f *fakeAgentAPI) SendToSession(id, text string) error {
 	f.sent = append(f.sent, sendCall{id, text})
 	return nil
 }
-func (f *fakeAgentAPI) RespondInteraction(id string, r hook.Response) error {
+func (f *fakeAgentAPI) RespondInteraction(id string, r interaction.Response) error {
 	f.resolved = append(f.resolved, r)
 	return nil
 }
@@ -439,7 +439,7 @@ func TestTranscriptToolRoutesPureNavigationToFocus(t *testing.T) {
 
 func TestLLMAgent_RespondToolDispatchDoesNotSetFocus(t *testing.T) {
 	api := newFakeAgentAPI()
-	api.pending = []hook.Pending{{ID: "iact1", ToolName: "Bash"}}
+	api.pending = []interaction.Pending{{ID: "iact1", ToolName: "Bash"}}
 	srv, _ := newMockChatServer(t, []ChatResponse{
 		chatToolCallResp("call_a", "respond_to_interaction", `{"id":"iact1","behavior":"allow","reason":"safe"}`),
 		chatTextResp("approved"),

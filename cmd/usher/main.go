@@ -21,7 +21,7 @@ import (
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/discovery"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/modelcatalog"
 	piagent "github.com/nexustar/usher/internal/pi"
@@ -87,7 +87,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "commands:")
 	fmt.Fprintln(os.Stderr, "  serve              start the web server")
-	fmt.Fprintln(os.Stderr, "  setup --remove     remove hooks installed by older usher releases")
+	fmt.Fprintln(os.Stderr, "  setup --remove     remove interactions installed by older usher releases")
 	fmt.Fprintln(os.Stderr, "  set-password       set/change the web UI password (required for non-loopback bind)")
 	fmt.Fprintln(os.Stderr, "  hook <event-name>  invoked by Claude Code; not for direct use")
 	fmt.Fprintln(os.Stderr, "  version            print version")
@@ -190,7 +190,7 @@ func serve(args []string) error {
 	// defaultBackend (new-session/fallback) prefers Claude.
 	sources := []discovery.Source{}
 	backends := map[string]backend.Backend{}
-	h := hook.New(filepath.Join(*dataDir, "auto-approve.json"))
+	h := interaction.New(filepath.Join(*dataDir, "auto-approve.json"))
 	defaultBackend := ""
 
 	if dir := *projectsDir; dir != "" && isDir(dir) {

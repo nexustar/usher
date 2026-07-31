@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/textutil"
 )
 
@@ -326,7 +326,7 @@ func (a *RuleAgent) respond(prefix, behavior string) string {
 		return fmt.Sprintf("usage: /%s <interaction-id-prefix>", behavior)
 	}
 	list := a.api.ListPendingInteractions()
-	var matches []hook.Pending
+	var matches []interaction.Pending
 	for _, p := range list {
 		if strings.HasPrefix(p.ID, prefix) {
 			matches = append(matches, p)
@@ -338,7 +338,7 @@ func (a *RuleAgent) respond(prefix, behavior string) string {
 	if len(matches) > 1 {
 		return "ambiguous; multiple matches"
 	}
-	err := a.api.RespondInteraction(matches[0].ID, hook.Response{Behavior: behavior, Reason: "via main chat"})
+	err := a.api.RespondInteraction(matches[0].ID, interaction.Response{Behavior: behavior, Reason: "via main chat"})
 	if err != nil {
 		return "failed: " + err.Error()
 	}

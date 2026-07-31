@@ -152,9 +152,8 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 			UUID:    e.ID,
 		}), nil
 	}
-	// Extensions inject custom_message entries to add content the model sees.
-	// display false keeps one out of the user's view but not out of the
-	// context; pi's TUI renders the rest through a registered renderer that
+	// Extension-injected content the model sees. display false keeps it out of
+	// the user's view but not out of the context; the TUI's registered renderer
 	// cannot cross the RPC boundary, so usher shows the stored content.
 	if e.Type == "custom_message" {
 		text := contentText(e.Content)

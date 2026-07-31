@@ -37,7 +37,7 @@ import (
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
@@ -1352,7 +1352,7 @@ func (s *Server) handleTerminalControl(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// --- hooks ---------------------------------------------------------------
+// --- interactions ---------------------------------------------------------------
 
 type hookPayload struct {
 	SessionID      string          `json:"session_id"`
@@ -1394,10 +1394,9 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.router.HandleHook(r.Context(), hook.Event{
+	resp, err := s.router.HandleHook(r.Context(), interaction.Request{
 		SessionID:   ev.SessionID,
 		ToolUseID:   ev.ToolUseID,
-		Event:       eventName,
 		ToolName:    ev.ToolName,
 		ToolInput:   ev.ToolInput,
 		Cwd:         ev.Cwd,
@@ -1437,7 +1436,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListInteractions(w http.ResponseWriter, r *http.Request) {
 	list := s.router.ListPendingInteractions()
 	if list == nil {
-		list = []hook.Pending{}
+		list = []interaction.Pending{}
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -1467,7 +1466,7 @@ func (s *Server) handleRespondInteraction(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "scope must be once|session")
 		return
 	}
-	if err := s.router.RespondInteraction(id, hook.Response{
+	if err := s.router.RespondInteraction(id, interaction.Response{
 		Behavior: req.Behavior,
 		Reason:   req.Reason,
 		Scope:    req.Scope,

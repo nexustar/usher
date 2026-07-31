@@ -22,7 +22,7 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/router"
 	"github.com/nexustar/usher/internal/sessionmeta"
@@ -73,7 +73,7 @@ func newChatTestServer(t *testing.T, agent usheragent.Agent) *Server {
 		t.Fatal(err)
 	}
 	r := router.New(d, map[string]backend.Backend{}, "claude", broker.New(),
-		hook.New(filepath.Join(dir, "auto.json")), sessionmeta.New(filepath.Join(dir, "sessions.json"), 0), nil)
+		interaction.New(filepath.Join(dir, "auto.json")), sessionmeta.New(filepath.Join(dir, "sessions.json"), 0), nil)
 	return NewServer("", "", "", nil, r, store, agent, nil, "", "", "", nil, nil, slog.Default())
 }
 

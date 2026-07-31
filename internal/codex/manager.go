@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 type worker struct {
@@ -23,13 +23,13 @@ type worker struct {
 
 // Manager owns one app-server worker per live root Codex session.
 type Manager struct {
-	bin     string
-	hooks   *hook.Manager
-	sandbox map[string]any
-	config  map[string]any
-	env     []string
-	logger  *slog.Logger
-	maxLive int
+	bin          string
+	interactions *interaction.Manager
+	sandbox      map[string]any
+	config       map[string]any
+	env          []string
+	logger       *slog.Logger
+	maxLive      int
 
 	mu           sync.Mutex
 	workers      map[string]*worker
@@ -37,14 +37,14 @@ type Manager struct {
 	systemPrompt func(string) string
 }
 
-func NewManager(bin string, hooks *hook.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
+func NewManager(bin string, interactions *interaction.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if maxLive <= 0 {
 		maxLive = 8
 	}
-	return &Manager{bin: bin, hooks: hooks, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}}
+	return &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}}
 }
 
 func (m *Manager) newClient(instructions string) *Client {
@@ -53,7 +53,7 @@ func (m *Manager) newClient(instructions string) *Client {
 		quoted, _ := json.Marshal(instructions)
 		args = []string{"-c", "developer_instructions=" + string(quoted)}
 	}
-	return New(m.bin, m.hooks, m.sandbox, m.config, m.env, args, m.logger)
+	return New(m.bin, m.interactions, m.sandbox, m.config, m.env, args, m.logger)
 }
 
 func (m *Manager) SetSystemPromptLookup(lookup func(string) string) {

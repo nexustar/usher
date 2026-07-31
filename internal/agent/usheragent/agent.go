@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 type AgentAPI interface {
@@ -31,8 +31,8 @@ type AgentAPI interface {
 	// verbatim without the agent holding its turn open.
 	SendToSessionRelayed(id, text string, onDone func(sessionID, reply string, err error)) error
 
-	ListPendingInteractions() []hook.Pending
-	RespondInteraction(id string, resp hook.Response) error
+	ListPendingInteractions() []interaction.Pending
+	RespondInteraction(id string, resp interaction.Response) error
 
 	// Session housekeeping — the same per-session controls the web sidebar
 	// has: archive a session, or auto-approve its permission prompts. The

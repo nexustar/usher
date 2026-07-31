@@ -9,15 +9,15 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 type fakeAPI struct {
 	sessions   []core.Session
-	pending    []hook.Pending
+	pending    []interaction.Pending
 	sentTo     []string
 	sentText   []string
-	resolved   map[string]hook.Response
+	resolved   map[string]interaction.Response
 	sendErr    error
 	respondErr error
 
@@ -36,7 +36,7 @@ type fakeAPI struct {
 
 func newFakeAPI() *fakeAPI {
 	return &fakeAPI{
-		resolved:    map[string]hook.Response{},
+		resolved:    map[string]interaction.Response{},
 		transcripts: map[string][]core.TranscriptTurn{},
 		waitReplies: map[string]string{},
 		waitErrs:    map[string]error{},
@@ -45,8 +45,8 @@ func newFakeAPI() *fakeAPI {
 	}
 }
 
-func (f *fakeAPI) ListSessions() []core.Session            { return f.sessions }
-func (f *fakeAPI) ListPendingInteractions() []hook.Pending { return f.pending }
+func (f *fakeAPI) ListSessions() []core.Session                   { return f.sessions }
+func (f *fakeAPI) ListPendingInteractions() []interaction.Pending { return f.pending }
 func (f *fakeAPI) SendToSession(id, text string) error {
 	if f.sendErr != nil {
 		return f.sendErr
@@ -55,7 +55,7 @@ func (f *fakeAPI) SendToSession(id, text string) error {
 	f.sentText = append(f.sentText, text)
 	return nil
 }
-func (f *fakeAPI) RespondInteraction(id string, r hook.Response) error {
+func (f *fakeAPI) RespondInteraction(id string, r interaction.Response) error {
 	if f.respondErr != nil {
 		return f.respondErr
 	}
@@ -356,7 +356,7 @@ func TestRule_FocusUsageAndResolutionErrors(t *testing.T) {
 
 func TestRule_PendingAndRespond(t *testing.T) {
 	api := newFakeAPI()
-	api.pending = []hook.Pending{
+	api.pending = []interaction.Pending{
 		{ID: "deadbeefcafef00d", SessionID: "sessabcd", ToolName: "Bash"},
 	}
 	a := NewRule(api)
@@ -375,7 +375,7 @@ func TestRule_PendingAndRespond(t *testing.T) {
 
 func TestRule_DenyAndAmbiguous(t *testing.T) {
 	api := newFakeAPI()
-	api.pending = []hook.Pending{
+	api.pending = []interaction.Pending{
 		{ID: "abc11", ToolName: "Bash"},
 		{ID: "abc22", ToolName: "Read"},
 	}

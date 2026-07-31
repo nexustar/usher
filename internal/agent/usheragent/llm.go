@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 //go:embed prompts/system_prompt.md
@@ -594,7 +594,7 @@ func (a *LLMAgent) executeTool(ctx context.Context, name, argsJSON string, relay
 		if args.ID == "" || (args.Behavior != "allow" && args.Behavior != "deny") {
 			return errResult("id and behavior (allow|deny) are required"), ""
 		}
-		if err := a.api.RespondInteraction(args.ID, hook.Response{
+		if err := a.api.RespondInteraction(args.ID, interaction.Response{
 			Behavior: args.Behavior,
 			Reason:   args.Reason,
 			Scope:    "once",

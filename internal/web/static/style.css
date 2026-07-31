@@ -1485,6 +1485,9 @@ pre.raw-markdown {
   margin-top: 0.4rem;
   width: 100%;
   box-sizing: border-box;
+  resize: none;      /* textarea height tracks content via growPrompt() */
+  max-height: 30vh;  /* a long prefill scrolls; the card caps the rest */
+  overflow-y: auto;
   font: inherit;
   font-size: 1rem; /* >=16px: avoid iOS focus zoom */
   padding: 0.4rem 0.6rem;
@@ -1494,6 +1497,19 @@ pre.raw-markdown {
   color: var(--text);
 }
 .interaction.ask .qother:focus { outline: none; border-color: var(--accent); }
+/* Only the multiline control rests taller than an input — growPrompt() would
+ * otherwise shrink an empty editor down to one line and hide what it is. */
+.interaction.ask textarea.qother { min-height: 4.5rem; }
+/* A question is backend-supplied text: its prompt, its option list and its
+ * editor are all unbounded. Cap the card and pin the buttons, or a long one
+ * pushes them off screen and the dialog can no longer be answered at all. */
+.interaction.ask { max-height: 70vh; overflow-y: auto; }
+.interaction.ask .actions {
+  position: sticky;
+  bottom: 0;
+  padding: 0.4rem 0 0;
+  background: var(--bg-chrome);
+}
 .interaction.ask .actions { justify-content: flex-end; }
 .interaction.ask .qignore {
   background: var(--bg-canvas);

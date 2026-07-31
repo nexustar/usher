@@ -20,7 +20,7 @@ import (
 
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // cancelGrace bounds the wait for agent_settled after cancellation.
@@ -235,13 +235,10 @@ func readState(ctx context.Context, c *client) (workerState, error) {
 	return st, nil
 }
 
-// checkBinding reports whether the worker still serves sessionID, dropping it
-// when pi has rebound the process to a different session. Extension commands
-// reach fork/clone/new_session/switch_session/navigateTree, all of which
-// replace the process's session without emitting anything on stdout; a stale
-// binding would write the next prompt into the wrong file while usher tails
-// the old one. An empty id means pi answered without one — not evidence of a
-// switch, so the binding stands.
+// checkBinding drops the worker when pi has rebound it to another session.
+// Extension commands reach fork/clone/new_session/switch_session/navigateTree,
+// none of which announce the switch on stdout, and a stale binding would write
+// the next prompt into the wrong file. An empty id is not evidence of a switch.
 func (r *Runtime) checkBinding(id string, w *worker, st workerState) bool {
 	if st.sessionID == "" || st.sessionID == id {
 		return true
@@ -431,6 +428,69 @@ type worker struct {
 	last   time.Time
 	cwd    string
 	path   string
+
+	// Event routing. The pump owns c.events for the worker's whole life; an
+	// unread channel would eventually block the RPC reader.
+	recvMu   sync.Mutex
+	recv     chan<- json.RawMessage
+	recvDone chan struct{}
+}
+
+// attach routes pumped events to ch until the returned func runs. One receiver
+// at a time: turns and RPC operations never overlap on a worker. ch must never
+// be closed — deliver can already be committed to a send when detach returns,
+// and closing under it is a panic, not a dropped event. Detaching is enough:
+// the channel goes unreferenced and the send is released.
+func (w *worker) attach(ch chan<- json.RawMessage) func() {
+	done := make(chan struct{})
+	w.recvMu.Lock()
+	w.recv, w.recvDone = ch, done
+	w.recvMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			w.recvMu.Lock()
+			if w.recvDone == done {
+				w.recv, w.recvDone = nil, nil
+			}
+			w.recvMu.Unlock()
+			close(done)
+		})
+	}
+}
+
+// deliver hands one event to the attached receiver. Detaching releases a
+// delivery blocked here, so a finished turn never stalls the pump.
+func (w *worker) deliver(raw json.RawMessage) {
+	w.recvMu.Lock()
+	ch, done := w.recv, w.recvDone
+	w.recvMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- raw:
+	case <-done:
+	}
+}
+
+// pump answers dialogs whenever they arrive — mid-turn, during a /compact, or
+// while idle — and hands everything else to the attached turn. Ends with the
+// process, cancelling any dialog still waiting on a user.
+func (r *Runtime) pump(id string, w *worker) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for raw := range w.c.events {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &head) == nil && head.Type == "extension_ui_request" {
+			// Dialogs block until the user answers; keep the stream moving.
+			go r.handleExtensionUI(ctx, id, w, raw)
+			continue
+		}
+		w.deliver(raw)
+	}
 }
 
 // Runtime owns warm pi RPC processes. Persisted JSONL remains the content
@@ -441,7 +501,7 @@ type Runtime struct {
 	max              int
 	models           Models
 	logger           *slog.Logger
-	hooks            *hook.Manager
+	interactions     *interaction.Manager
 	mu               sync.Mutex
 	workers          map[string]*worker
 	systemPrompt     func(string) string
@@ -458,14 +518,14 @@ func (r *Runtime) Rename(ctx context.Context, id, path, title string) error {
 	return err
 }
 
-func NewRuntime(bin, sessionsDir string, extra []string, max int, models Models, hooks *hook.Manager, logger *slog.Logger) *Runtime {
+func NewRuntime(bin, sessionsDir string, extra []string, max int, models Models, interactions *interaction.Manager, logger *slog.Logger) *Runtime {
 	if max <= 0 {
 		max = 8
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, hooks: hooks, logger: logger, workers: map[string]*worker{}}
+	return &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, interactions: interactions, logger: logger, workers: map[string]*worker{}}
 }
 
 var _ backend.SystemPrompter = (*Runtime)(nil)
@@ -496,11 +556,84 @@ func (r *Runtime) refreshModels(ctx context.Context, c *client) {
 }
 
 type extensionUIRequest struct {
-	Type    string   `json:"type"`
-	ID      string   `json:"id"`
-	Method  string   `json:"method"`
-	Title   string   `json:"title"`
-	Options []string `json:"options"`
+	Type        string   `json:"type"`
+	ID          string   `json:"id"`
+	Method      string   `json:"method"`
+	Title       string   `json:"title"`
+	Message     string   `json:"message"`
+	Options     []string `json:"options"`
+	Placeholder string   `json:"placeholder"`
+	Prefill     string   `json:"prefill"`
+	// Timeout is milliseconds. Pi resolves the dialog itself when it expires
+	// and sends nothing, so usher must expire its own copy on the same deadline.
+	Timeout int `json:"timeout"`
+}
+
+// uiQuestion mirrors what AskUserQuestion already puts in ToolInput, so one
+// frontend control serves both.
+type uiQuestion struct {
+	Question    string     `json:"question"`
+	Options     []uiOption `json:"options,omitempty"`
+	Placeholder string     `json:"placeholder,omitempty"`
+	Prefill     string     `json:"prefill,omitempty"`
+	Multiline   bool       `json:"multiline,omitempty"`
+}
+
+type uiOption struct {
+	Label string `json:"label"`
+}
+
+const (
+	confirmYes = "Yes"
+	confirmNo  = "No"
+)
+
+// dialogEvent maps a pi dialog onto an interaction, reporting false for
+// methods usher cannot render.
+func dialogEvent(sessionID, cwd string, req extensionUIRequest) (interaction.Request, bool) {
+	q := uiQuestion{Question: req.Title}
+	kind := interaction.KindChoice
+	switch req.Method {
+	case "select":
+		for _, o := range req.Options {
+			q.Options = append(q.Options, uiOption{Label: o})
+		}
+	case "confirm":
+		if req.Message != "" {
+			q.Question = req.Title + "\n" + req.Message
+		}
+		q.Options = []uiOption{{Label: confirmYes}, {Label: confirmNo}}
+	case "input":
+		kind, q.Placeholder = interaction.KindText, req.Placeholder
+	case "editor":
+		kind, q.Prefill, q.Multiline = interaction.KindText, req.Prefill, true
+	default:
+		return interaction.Request{}, false
+	}
+	input, err := json.Marshal(map[string]any{"questions": []uiQuestion{q}})
+	if err != nil {
+		return interaction.Request{}, false
+	}
+	return interaction.Request{
+		SessionID: sessionID,
+		ToolUseID: req.ID,
+		Kind:      kind,
+		ToolName:  "pi:" + req.Method,
+		ToolInput: input,
+		Cwd:       cwd,
+	}, true
+}
+
+// dialogReply matches pi's parser: a cancel reads as undefined for
+// select/input/editor but as false for confirm.
+func dialogReply(method string, d interaction.Response) map[string]any {
+	if d.Behavior == "deny" {
+		return map[string]any{"cancelled": true}
+	}
+	if method == "confirm" {
+		return map[string]any{"confirmed": d.Answer() == confirmYes}
+	}
+	return map[string]any{"value": d.Answer()}
 }
 
 var piPermissionSystemOptions = []string{"Allow Once", "Allow Always", "Reject", "Reject with Reason"}
@@ -533,34 +666,54 @@ func (r *Runtime) handleExtensionUI(ctx context.Context, sessionID string, w *wo
 			r.logger.Warn("pi extension UI response failed", "session", sessionID, "err", err)
 		}
 	}
-	if !isPiPermissionSystemRequest(req) || r.hooks == nil {
-		// Unsupported extension dialogs must be resolved, otherwise pi waits
-		// forever for an RPC client response that usher will never render.
+	// Pi keeps no pending id for these and drops whatever comes back.
+	switch req.Method {
+	case "notify", "setStatus", "setWidget", "setTitle", "set_editor_text":
+		return
+	}
+	if r.interactions == nil {
 		respond(map[string]any{"cancelled": true})
 		return
 	}
-	input, _ := json.Marshal(map[string]string{"request": req.Title})
-	decision, err := r.hooks.Submit(ctx, hook.Event{
-		SessionID:   sessionID,
-		ToolUseID:   req.ID,
-		Event:       "PermissionRequest",
-		ToolName:    "pi-permission-system",
-		ToolInput:   input,
-		Cwd:         w.cwd,
-		AllowAlways: true,
-	})
+	// Pi abandons the dialog on its own deadline without telling us.
+	if req.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.Timeout)*time.Millisecond)
+		defer cancel()
+	}
+
+	ev, ok := dialogEvent(sessionID, w.cwd, req)
+	if !ok {
+		// Still has to be resolved, or pi waits forever.
+		r.logger.Warn("pi extension dialog not renderable; cancelled",
+			"session", sessionID, "method", req.Method)
+		respond(map[string]any{"cancelled": true})
+		return
+	}
+	if isPiPermissionSystemRequest(req) {
+		// The only dialog whose options carry allow/deny semantics, so the only
+		// one that can map onto scopes and blanket auto-approve.
+		ev.Kind, ev.ToolName = interaction.KindPermission, "pi-permission-system"
+		ev.ToolInput, _ = json.Marshal(map[string]string{"request": req.Title})
+		ev.AllowAlways = true
+	}
+	decision, err := r.interactions.Submit(ctx, ev)
 	if err != nil {
 		respond(map[string]any{"cancelled": true})
 		return
 	}
-	value := "Reject"
-	if decision.Behavior == "allow" {
-		value = "Allow Once"
-		if decision.Scope == "session" {
-			value = "Allow Always"
+	if ev.Kind == interaction.KindPermission {
+		value := "Reject"
+		if decision.Behavior == "allow" {
+			value = "Allow Once"
+			if decision.Scope == "session" {
+				value = "Allow Always"
+			}
 		}
+		respond(map[string]any{"value": value})
+		return
 	}
-	respond(map[string]any{"value": value})
+	respond(dialogReply(req.Method, decision))
 }
 
 func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, <-chan backend.Event, error) {
@@ -642,9 +795,21 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 				fields["customInstructions"] = args
 			}
 			return r.rpcOperation(ctx, id, w, "compact", fields)
+		default:
+			kind, err := piCommandKind(ctx, w.c, command)
+			if err != nil {
+				return nil, err
+			}
+			// An extension command returns without starting an agent loop, so
+			// no agent_settled ever arrives; its RPC response lands after the
+			// handler (and any dialog it opened) and is the completion signal.
+			// A command that queues a real turn is caught by foreignwatch.
+			if kind == "extension" {
+				return r.rpcOperation(ctx, id, w, "prompt", map[string]any{"message": prompt})
+			}
 		}
 	}
-	return r.prompt(ctx, id, w, prompt, false)
+	return r.startTurn(ctx, id, w, prompt, false)
 }
 
 func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ string, fields map[string]any) (<-chan backend.Event, error) {
@@ -669,6 +834,10 @@ func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ st
 			r.mu.Unlock()
 		}()
 
+		// Nothing attaches for the duration: the operation streams events before
+		// its response lands, and with no receiver the pump drops them, which is
+		// exactly what keeps them out of the next turn. Dialogs it raises still
+		// reach the pump.
 		started, _ := json.Marshal(backend.ProcessStartedPayload{Cwd: w.cwd})
 		out <- backend.Event{Type: backend.EventProcessStarted, Raw: started}
 		if typ == "compact" {
@@ -681,20 +850,7 @@ func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ st
 		} else {
 			r.finishOperation(ctx, id, w, out)
 		}
-		// RPC events emitted by the operation precede its response on stdout.
-		// They must not leak into the next model turn.
-		for {
-			select {
-			case _, ok := <-w.c.events:
-				if !ok {
-					out <- backend.Event{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)}
-					return
-				}
-			default:
-				out <- backend.Event{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)}
-				return
-			}
-		}
+		out <- backend.Event{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)}
 	}()
 	return out, nil
 }
@@ -726,10 +882,16 @@ func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
 	return nil
 }
 
+// prompt validates a leading slash command first. Send resolves commands
+// itself, so only Start arrives here with unvetted text.
 func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string, fresh bool) (<-chan backend.Event, error) {
 	if err := validatePiCommand(ctx, w.c, text); err != nil {
 		return nil, err
 	}
+	return r.startTurn(ctx, id, w, text, fresh)
+}
+
+func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text string, fresh bool) (<-chan backend.Event, error) {
 	r.mu.Lock()
 	if w.busy {
 		r.mu.Unlock()
@@ -742,7 +904,12 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 	if info, err := os.Stat(w.path); err == nil {
 		offset = info.Size()
 	}
+	// Attach before prompting: pi starts streaming as soon as the request lands,
+	// and the pump drops anything with no receiver.
+	evts := make(chan json.RawMessage, 256)
+	detach := w.attach(evts)
 	if _, err := w.c.request(ctx, "prompt", map[string]any{"message": text}); err != nil {
+		detach()
 		r.mu.Lock()
 		w.busy = false
 		r.mu.Unlock()
@@ -751,6 +918,7 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 	out := make(chan backend.Event, 128)
 	go func() {
 		defer close(out)
+		defer detach()
 		defer func() {
 			r.mu.Lock()
 			if r.workers[id] == w {
@@ -814,14 +982,13 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 				return
 			case <-ticker.C:
 				emitTail()
-			case raw, ok := <-w.c.events:
-				if !ok {
-					emitTail()
-					errRaw, _ := json.Marshal(backend.ErrorPayload{Message: "pi RPC process exited before the agent settled"})
-					out <- backend.Event{Type: backend.EventError, Raw: errRaw}
-					emitExit("rpc_exit")
-					return
-				}
+			case <-w.c.done:
+				emitTail()
+				errRaw, _ := json.Marshal(backend.ErrorPayload{Message: "pi RPC process exited before the agent settled"})
+				out <- backend.Event{Type: backend.EventError, Raw: errRaw}
+				emitExit("rpc_exit")
+				return
+			case raw := <-evts:
 				var e struct {
 					Type         string                       `json:"type"`
 					Assistant    struct{ Type, Delta string } `json:"assistantMessageEvent"`
@@ -831,11 +998,6 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 					Success      bool                         `json:"success"`
 				}
 				if json.Unmarshal(raw, &e) != nil {
-					continue
-				}
-				if e.Type == "extension_ui_request" {
-					emitTail()
-					r.handleExtensionUI(ctx, id, w, raw)
 					continue
 				}
 				switch e.Type {
@@ -884,26 +1046,33 @@ func (r *Runtime) prompt(ctx context.Context, id string, w *worker, text string,
 	return out, nil
 }
 
+// piCommandKind resolves a slash command against the backend's own catalog,
+// reporting the kind pi filed it under ("extension", "prompt", "skill").
+func piCommandKind(ctx context.Context, c *client, command string) (string, error) {
+	data, err := c.request(ctx, "get_commands", nil)
+	if err != nil {
+		return "", fmt.Errorf("resolve command %s: %w", command, err)
+	}
+	items, err := composerItemsFromRPC(data)
+	if err != nil {
+		return "", fmt.Errorf("resolve command %s: %w", command, err)
+	}
+	name := strings.TrimPrefix(command, "/")
+	for _, item := range items {
+		if item.Name == name {
+			return item.Kind, nil
+		}
+	}
+	return "", fmt.Errorf("unknown command: %s", command)
+}
+
 func validatePiCommand(ctx context.Context, c *client, text string) error {
 	command, _, ok := backend.ParseSlashCommand(text)
 	if !ok {
 		return nil
 	}
-	data, err := c.request(ctx, "get_commands", nil)
-	if err != nil {
-		return fmt.Errorf("resolve command %s: %w", command, err)
-	}
-	items, err := composerItemsFromRPC(data)
-	if err != nil {
-		return fmt.Errorf("resolve command %s: %w", command, err)
-	}
-	name := strings.TrimPrefix(command, "/")
-	for _, item := range items {
-		if item.Name == name {
-			return nil
-		}
-	}
-	return fmt.Errorf("unknown command: %s", command)
+	_, err := piCommandKind(ctx, c, command)
+	return err
 }
 
 func composerItemsFromRPC(data json.RawMessage) ([]backend.ComposerItem, error) {
@@ -1062,6 +1231,7 @@ func (r *Runtime) add(id string, w *worker) error {
 		go victim.c.stop()
 	}
 	r.workers[id] = w
+	go r.pump(id, w)
 	return nil
 }
 func (r *Runtime) locate(id string) string {

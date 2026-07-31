@@ -3,6 +3,7 @@ package pi
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -439,7 +440,10 @@ done
 	}
 	t.Cleanup(c.stop)
 	w := &worker{c: c, cwd: dir, path: path, last: time.Now()}
-	r := &Runtime{workers: map[string]*worker{"sess-1": w}, max: 1}
+	r := &Runtime{workers: map[string]*worker{}, max: 1, logger: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	if err := r.add("sess-1", w); err != nil {
+		t.Fatal(err)
+	}
 	if err := r.Rename(context.Background(), "sess-1", path, "Live title"); err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +540,10 @@ done
 	}
 	t.Cleanup(c.stop)
 	w := &worker{c: c, cwd: dir, path: path, last: time.Now()}
-	r := &Runtime{workers: map[string]*worker{"s1": w}, max: 1}
+	r := &Runtime{workers: map[string]*worker{}, max: 1, logger: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	if err := r.add("s1", w); err != nil {
+		t.Fatal(err)
+	}
 
 	ch, err := r.Send(context.Background(), "s1", "/compact", dir)
 	if err != nil {
@@ -551,6 +558,8 @@ done
 	}) {
 		t.Fatalf("compact events = %v", types)
 	}
+	// The pump drains the operation's own events into a sink, so nothing is
+	// left buffered for the next turn to misread.
 	if n := len(w.c.events); n != 0 {
 		t.Errorf("%d pre-response events leaked into the next turn, want 0", n)
 	}

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 func fakeClaude(t *testing.T) (string, string) {
@@ -179,7 +179,7 @@ func TestCommandLifecycleCompletesMatchingTurnAndIgnoresResult(t *testing.T) {
 }
 
 func TestCanUseToolControlRequest(t *testing.T) {
-	h := hook.New("")
+	h := interaction.New("")
 	m := New("", "", "", nil, 2, h, nil)
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -202,7 +202,7 @@ func TestCanUseToolControlRequest(t *testing.T) {
 	if len(pending) != 1 || !pending[0].AllowAlways || pending[0].ToolName != "Edit" {
 		t.Fatalf("pending permission = %+v", pending)
 	}
-	if err := h.Respond(pending[0].ID, hook.Response{Behavior: "allow", Scope: "session"}); err != nil {
+	if err := h.Respond(pending[0].ID, interaction.Response{Behavior: "allow", Scope: "session"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -247,7 +247,7 @@ func TestPermissionPromptToolFlagWhenHandlerConfigured(t *testing.T) {
 	bin, log := fakeClaude(t)
 	os.Setenv("FAKE_CLAUDE_LOG", log)
 	defer os.Unsetenv("FAKE_CLAUDE_LOG")
-	m := New(bin, "", "", nil, 4, hook.New(""), nil)
+	m := New(bin, "", "", nil, 4, interaction.New(""), nil)
 	defer m.Shutdown()
 	ch, _, _, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", false)
 	if err != nil {
@@ -278,7 +278,7 @@ func TestClaudePermissionControlE2E(t *testing.T) {
 	id := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		idBytes[0:4], idBytes[4:6], idBytes[6:8], idBytes[8:10], idBytes[10:16])
 
-	h := hook.New("")
+	h := interaction.New("")
 	m := New("claude", "", "", []string{"--permission-mode", "default"}, 1, h, nil)
 	defer m.Shutdown()
 	result, _, _, _, err := m.Send(context.Background(), id,
@@ -294,7 +294,7 @@ func TestClaudePermissionControlE2E(t *testing.T) {
 	if len(pending) != 1 || pending[0].ToolName != "Edit" {
 		t.Fatalf("pending permission = %+v", pending)
 	}
-	if err := h.Respond(pending[0].ID, hook.Response{Behavior: "allow", Scope: "once"}); err != nil {
+	if err := h.Respond(pending[0].ID, interaction.Response{Behavior: "allow", Scope: "once"}); err != nil {
 		t.Fatal(err)
 	}
 	select {

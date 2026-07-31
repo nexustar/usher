@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/imutil"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // askEntry remembers a posted AskUserQuestion awaiting an answer: the question
@@ -24,7 +24,7 @@ type askEntry struct {
 // answered by just typing a reply in the topic (covering multiSelect and
 // free-form "other"). Only a multi-question prompt can't be mapped to one typed
 // reply, so that alone falls back to the web UI.
-func (h *Hub) postAskQuestion(ctx context.Context, thread int64, p hook.Pending) {
+func (h *Hub) postAskQuestion(ctx context.Context, thread int64, p interaction.Pending) {
 	qs := imutil.ParseQuestions(p.ToolInput)
 	if len(qs) != 1 {
 		text := "🔢 Multi-step question — please answer in the web UI."
@@ -106,7 +106,7 @@ func (h *Hub) answerByText(ctx context.Context, thread int64, text string) bool 
 	if !ok {
 		return false
 	}
-	resp := hook.Response{
+	resp := interaction.Response{
 		Behavior: "allow",
 		Reason:   "via telegram",
 		Answers:  map[string]string{entry.question: strings.TrimSpace(text)},
@@ -134,7 +134,7 @@ func (h *Hub) handleAskCallback(ctx context.Context, cb *CallbackQuery) {
 		return
 	}
 	label := entry.labels[idx]
-	resp := hook.Response{
+	resp := interaction.Response{
 		Behavior: "allow",
 		Reason:   "via telegram",
 		Answers:  map[string]string{entry.question: label},

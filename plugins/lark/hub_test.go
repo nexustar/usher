@@ -17,7 +17,7 @@ import (
 
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/pluginapi"
 
@@ -193,8 +193,8 @@ type fakeRouter struct {
 	mu         sync.Mutex
 	sessions   map[string]core.Session
 	sent       map[string][]string
-	pendingCh  chan hook.Pending
-	responses  map[string]hook.Response
+	pendingCh  chan interaction.Pending
+	responses  map[string]interaction.Response
 	respondErr error // forced RespondInteraction failure (transport-style)
 	started    []pluginapi.CreateRequest
 	startErr   error
@@ -206,8 +206,8 @@ func newFakeRouter() *fakeRouter {
 		broker:    broker.New(),
 		sessions:  map[string]core.Session{},
 		sent:      map[string][]string{},
-		pendingCh: make(chan hook.Pending, 8),
-		responses: map[string]hook.Response{},
+		pendingCh: make(chan interaction.Pending, 8),
+		responses: map[string]interaction.Response{},
 		uploaded:  map[string]string{},
 	}
 }
@@ -260,11 +260,11 @@ func (f *fakeRouter) StartSession(req pluginapi.CreateRequest) (string, error) {
 	return id, nil
 }
 
-func (f *fakeRouter) SubscribePendingInteractions() (<-chan hook.Pending, func()) {
+func (f *fakeRouter) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
 	return f.pendingCh, func() {}
 }
 
-func (f *fakeRouter) RespondInteraction(id string, resp hook.Response) error {
+func (f *fakeRouter) RespondInteraction(id string, resp interaction.Response) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.respondErr != nil {
@@ -278,7 +278,7 @@ func (f *fakeRouter) RespondInteraction(id string, resp hook.Response) error {
 	return nil
 }
 
-func (f *fakeRouter) response(id string) (hook.Response, bool) {
+func (f *fakeRouter) response(id string) (interaction.Response, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r, ok := f.responses[id]
@@ -870,7 +870,7 @@ func TestPermissionCardRoundTrip(t *testing.T) {
 	h := newTestHub(t, f, r, testUser)
 	runHub(t, h)
 
-	p := hook.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash", AllowAlways: true,
+	p := interaction.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash", AllowAlways: true,
 		ToolInput: json.RawMessage(`{"command":"rm -rf build"}`)}
 	r.pendingCh <- p
 	waitFor(t, "permission card", func() bool {
@@ -924,8 +924,8 @@ func TestAskQuestionTapAndTypedAnswer(t *testing.T) {
 	h := newTestHub(t, f, r, testUser)
 	runHub(t, h)
 
-	ask := func(id string) hook.Pending {
-		return hook.Pending{ID: id, SessionID: "s1", ToolName: "AskUserQuestion",
+	ask := func(id string) interaction.Pending {
+		return interaction.Pending{ID: id, SessionID: "s1", Kind: interaction.KindChoice, ToolName: "AskUserQuestion",
 			ToolInput: json.RawMessage(`{"questions":[{"question":"Deploy now?","header":"Deploy","options":[{"label":"Yes"},{"label":"No"}]}]}`)}
 	}
 
@@ -967,7 +967,7 @@ func TestMultiQuestionFallsBackToWeb(t *testing.T) {
 	h := newTestHub(t, f, r)
 	runHub(t, h)
 
-	r.pendingCh <- hook.Pending{ID: "m1", SessionID: "s1", ToolName: "AskUserQuestion",
+	r.pendingCh <- interaction.Pending{ID: "m1", SessionID: "s1", Kind: interaction.KindChoice, ToolName: "AskUserQuestion",
 		ToolInput: json.RawMessage(`{"questions":[{"question":"a?"},{"question":"b?"}]}`)}
 	waitFor(t, "multi-step card", func() bool {
 		msgs := f.messages()
@@ -1079,7 +1079,7 @@ func TestFailedPermissionPostIsRetriedOnReplay(t *testing.T) {
 	h := newTestHub(t, f, r)
 	runHub(t, h)
 
-	p := hook.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash"}
+	p := interaction.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash"}
 	r.pendingCh <- p
 	waitFor(t, "failed post unclaimed", func() bool {
 		h.postedMu.Lock()
@@ -1106,12 +1106,12 @@ func TestStaleAskDoesNotSwallowPrompt(t *testing.T) {
 	h := newTestHub(t, f, r, testUser)
 	runHub(t, h)
 
-	r.pendingCh <- hook.Pending{ID: "q1", SessionID: "s1", ToolName: "AskUserQuestion",
+	r.pendingCh <- interaction.Pending{ID: "q1", SessionID: "s1", Kind: interaction.KindChoice, ToolName: "AskUserQuestion",
 		ToolInput: json.RawMessage(`{"questions":[{"question":"Deploy?","options":[{"label":"Yes"}]}]}`)}
 	waitFor(t, "ask card", func() bool { return len(f.messages()) >= 2 })
 
 	// Resolve it "in the web UI" (directly on the router).
-	if err := r.RespondInteraction("q1", hook.Response{Behavior: "allow"}); err != nil {
+	if err := r.RespondInteraction("q1", interaction.Response{Behavior: "allow"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1129,7 +1129,7 @@ func TestTransportFailureKeepsAskAnswerable(t *testing.T) {
 	h := newTestHub(t, f, r, testUser)
 	runHub(t, h)
 
-	r.pendingCh <- hook.Pending{ID: "q1", SessionID: "s1", ToolName: "AskUserQuestion",
+	r.pendingCh <- interaction.Pending{ID: "q1", SessionID: "s1", Kind: interaction.KindChoice, ToolName: "AskUserQuestion",
 		ToolInput: json.RawMessage(`{"questions":[{"question":"Deploy?","options":[{"label":"Yes"}]}]}`)}
 	waitFor(t, "ask card", func() bool { return len(f.messages()) >= 2 })
 
@@ -1161,7 +1161,7 @@ func TestResolvedCardReplacesButtons(t *testing.T) {
 	h := newTestHub(t, f, r, testUser)
 	runHub(t, h)
 
-	r.pendingCh <- hook.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash",
+	r.pendingCh <- interaction.Pending{ID: "p1", SessionID: "s1", ToolName: "Bash",
 		ToolInput: json.RawMessage(`{"command":"make build"}`)}
 	waitFor(t, "card", func() bool { return len(f.messages()) >= 2 })
 
@@ -1175,7 +1175,7 @@ func TestResolvedCardReplacesButtons(t *testing.T) {
 	}
 
 	// Ask flow: malformed opt keeps the entry; the valid tap still works.
-	r.pendingCh <- hook.Pending{ID: "q1", SessionID: "s1", ToolName: "AskUserQuestion",
+	r.pendingCh <- interaction.Pending{ID: "q1", SessionID: "s1", Kind: interaction.KindChoice, ToolName: "AskUserQuestion",
 		ToolInput: json.RawMessage(`{"questions":[{"question":"Go?","options":[{"label":"Yes"}]}]}`)}
 	waitFor(t, "ask card", func() bool { return len(f.messages()) >= 3 })
 	if resp := h.HandleCardAction(context.Background(), cardTap(testChat, testUser, obj{"k": "q", "id": "q1", "opt": "7"})); resp.Toast == nil || resp.Toast.Content != "expired" {
@@ -1192,7 +1192,7 @@ func TestResolvedCardReplacesButtons(t *testing.T) {
 // TestCardFenceInjectionDefanged: a tool input containing ``` cannot close
 // the code fence and smuggle card markup into the card.
 func TestCardFenceInjectionDefanged(t *testing.T) {
-	p := hook.Pending{ID: "p1", ToolName: "Bash",
+	p := interaction.Pending{ID: "p1", ToolName: "Bash",
 		ToolInput: json.RawMessage("{\"command\":\"echo hi\\n```\\n<at id=all></at> harmless\"}")}
 	rendered := cardJSON(permissionCard(p, nil, ""))
 	if strings.Contains(rendered, `"k":"s"`) {
@@ -1232,7 +1232,7 @@ func TestCardBodyElementTags(t *testing.T) {
 	free := imutil.AskQuestion{Question: "Name?", MultiSelect: true, Options: []struct {
 		Label string `json:"label"`
 	}{{Label: "a"}}}
-	p := hook.Pending{ID: "p1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)}
+	p := interaction.Pending{ID: "p1", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"ls"}`)}
 	cards := map[string]obj{
 		"root":                rootCard("fix the bug", "/w", "claude · 3f2a1b9c"),
 		"permission":          permissionCard(p, []string{"ou_x"}, ""),

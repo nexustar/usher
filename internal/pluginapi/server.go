@@ -27,7 +27,7 @@ import (
 	"github.com/nexustar/usher/internal/attachment"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // RouterAPI is the strict subset of router.Router served to plugins — the
@@ -38,9 +38,9 @@ type RouterAPI interface {
 	StartSession(o core.CreateOptions) (string, error)
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	SendToSession(id, text string) error
-	ListPendingInteractions() []hook.Pending
-	SubscribePendingInteractions() (<-chan hook.Pending, func())
-	RespondInteraction(id string, resp hook.Response) error
+	ListPendingInteractions() []interaction.Pending
+	SubscribePendingInteractions() (<-chan interaction.Pending, func())
+	RespondInteraction(id string, resp interaction.Response) error
 }
 
 // Server serves the plugin API on a Unix socket.
@@ -195,7 +195,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRespond(w http.ResponseWriter, r *http.Request) {
-	var resp hook.Response
+	var resp interaction.Response
 	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
 		writeError(w, http.StatusBadRequest, "bad request body: "+err.Error())
 		return

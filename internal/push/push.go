@@ -1,7 +1,7 @@
 // Package push delivers browser Web Push notifications for usher: a turn
 // finishing or a permission prompt arriving while the web UI is closed or
 // backgrounded. It is a second consumer of the same event seams the web SSE
-// layer uses — broker.SubscribeAll for turn-end, hook.SubscribePending for
+// layer uses — broker.SubscribeAll for turn-end, interaction.SubscribePending for
 // permission requests — and fans those out to subscribed browsers.
 //
 // The protocol is implemented from the stdlib only (RFC 8291 message
@@ -25,7 +25,7 @@ import (
 
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/textutil"
 )
 
@@ -65,7 +65,7 @@ type EventSource interface {
 }
 
 type PendingSource interface {
-	SubscribePending() (<-chan hook.Pending, func())
+	SubscribePending() (<-chan interaction.Pending, func())
 }
 
 // Config wires a Manager. StorePath/KeyPath live under the usher data dir.
@@ -144,7 +144,7 @@ func (m *Manager) Unsubscribe(endpoint string) { m.store.remove(endpoint) }
 // nil (it just blocks on ctx).
 func (m *Manager) Run(ctx context.Context) {
 	var evCh <-chan broker.Event
-	var pendCh <-chan hook.Pending
+	var pendCh <-chan interaction.Pending
 	if m.events != nil {
 		ch, cancel := m.events.SubscribeAll()
 		defer cancel()
@@ -220,7 +220,7 @@ func (m *Manager) notifyTurnDone(sessionID string) {
 	}, urgencyNormal)
 }
 
-func (m *Manager) notifyPermission(p hook.Pending) {
+func (m *Manager) notifyPermission(p interaction.Pending) {
 	if m.suppressed(p.SessionID) {
 		return // a browser is watching this session live; the UI shows the prompt
 	}

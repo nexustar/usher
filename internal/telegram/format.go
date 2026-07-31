@@ -4,8 +4,8 @@ import (
 	"html"
 	"strings"
 
-	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/imutil"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // telegramMaxMessage is the Bot API per-message text limit (in UTF-16 code
@@ -41,7 +41,7 @@ func decodeDecision(data string) (behavior, scope, id string, ok bool) {
 // permissionHTML renders a concise prompt body for a pending interaction as
 // Telegram HTML: the tool name in bold and its input (Bash command / compact
 // JSON) in a <pre> monospace block so a long command stays readable.
-func permissionHTML(p hook.Pending) string {
+func permissionHTML(p interaction.Pending) string {
 	var b strings.Builder
 	b.WriteString("🔐 <b>Permission requested</b>")
 	if p.ToolName != "" {

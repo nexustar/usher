@@ -17,8 +17,8 @@ import (
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
 	"github.com/nexustar/usher/internal/imutil"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/textutil"
 )
@@ -29,8 +29,8 @@ type RouterAPI interface {
 	GetSession(id string) (core.Session, bool)
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	SendToSession(id, text string) error
-	SubscribePendingInteractions() (<-chan hook.Pending, func())
-	RespondInteraction(id string, resp hook.Response) error
+	SubscribePendingInteractions() (<-chan interaction.Pending, func())
+	RespondInteraction(id string, resp interaction.Response) error
 }
 
 // Config configures a Hub. The bot token is baked into the client passed to
@@ -282,15 +282,16 @@ func (h *Hub) permissionLoop(ctx context.Context) {
 // postPermission posts a pending interaction into its session's topic as
 // allow / deny / allow-for-session buttons (lazily creating the topic).
 // AskUserQuestion gets its own option prompt instead.
-func (h *Hub) postPermission(ctx context.Context, p hook.Pending) {
+func (h *Hub) postPermission(ctx context.Context, p interaction.Pending) {
 	thread, err := h.topicFor(ctx, p.SessionID)
 	if err != nil {
 		h.logger.Warn("telegram: permission topic", "session", p.SessionID, "err", err)
 		return
 	}
-	// AskUserQuestion needs its options as buttons; a plain "allow" without a
-	// chosen answer would just block on the pane TUI selector.
-	if p.ToolName == "AskUserQuestion" {
+	// Questions need their options as buttons; a plain "allow" carries no
+	// answer, which for Claude's AskUserQuestion would just block on the pane
+	// TUI selector and for an extension dialog would send back nothing.
+	if p.Kind == interaction.KindChoice || p.Kind == interaction.KindText {
 		h.postAskQuestion(ctx, thread, p)
 		return
 	}
@@ -313,7 +314,7 @@ func (h *Hub) postPermission(ctx context.Context, p hook.Pending) {
 }
 
 // handleCallback resolves a permission button tap: it authorizes the tapper,
-// maps the button to a hook.Response, strips the keyboard so it can't be
+// maps the button to a interaction.Response, strips the keyboard so it can't be
 // re-tapped, and toasts the outcome.
 func (h *Hub) handleCallback(ctx context.Context, cb *CallbackQuery) {
 	if cb.Message == nil || !h.authorizedChat(cb.Message.Chat.ID) || !h.authorizedSender(&cb.From) {
@@ -330,7 +331,7 @@ func (h *Hub) handleCallback(ctx context.Context, cb *CallbackQuery) {
 		_ = h.client.AnswerCallbackQuery(ctx, cb.ID, "")
 		return
 	}
-	resp := hook.Response{Behavior: behavior, Scope: scope, Reason: "via telegram"}
+	resp := interaction.Response{Behavior: behavior, Scope: scope, Reason: "via telegram"}
 	toast := "✅ allowed"
 	switch {
 	case strings.HasPrefix(cb.Data, "i:"):

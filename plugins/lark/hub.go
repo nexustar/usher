@@ -21,7 +21,7 @@ import (
 
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
@@ -40,8 +40,8 @@ type RouterAPI interface {
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	SendToSession(id, text string) error
 	UploadAttachment(id, filename string, src io.Reader) (string, error)
-	SubscribePendingInteractions() (<-chan hook.Pending, func())
-	RespondInteraction(id string, resp hook.Response) error
+	SubscribePendingInteractions() (<-chan interaction.Pending, func())
+	RespondInteraction(id string, resp interaction.Response) error
 }
 
 // Config configures a Hub. App credentials are baked into the lark client.
@@ -117,7 +117,7 @@ type Hub struct {
 	// re-rendered without buttons. Entries leave on resolution via Lark;
 	// prompts resolved elsewhere (web UI) linger — bounded by usage, not time.
 	postedMu sync.Mutex
-	posted   map[string]hook.Pending
+	posted   map[string]interaction.Pending
 
 	// recentSent: last prompt forwarded FROM Lark per session, so the
 	// prompt-echo skips it (else the user's own message mirrors back twice).
@@ -173,7 +173,7 @@ func NewHub(client larkAPI, router RouterAPI, cfg Config, logger *slog.Logger) (
 		logger:        logger,
 		asks:          map[string]askEntry{},
 		asksBySession: map[string]string{},
-		posted:        map[string]hook.Pending{},
+		posted:        map[string]interaction.Pending{},
 		recentSent:    map[string]string{},
 		seen:          map[string]time.Time{},
 		names:         map[string]map[string]string{},
@@ -317,7 +317,7 @@ func (h *Hub) permissionLoop(ctx context.Context) {
 
 // claimPending records a prompt as posted, returning false when it already
 // was (a snapshot replay after reconnect).
-func (h *Hub) claimPending(p hook.Pending) bool {
+func (h *Hub) claimPending(p interaction.Pending) bool {
 	h.postedMu.Lock()
 	defer h.postedMu.Unlock()
 	if _, ok := h.posted[p.ID]; ok {
@@ -335,7 +335,7 @@ func (h *Hub) unclaimPending(id string) {
 
 // takePosted removes and returns the prompt behind a live card, for the
 // resolved re-render. !ok after a plugin restart (the map is in-memory).
-func (h *Hub) takePosted(id string) (hook.Pending, bool) {
+func (h *Hub) takePosted(id string) (interaction.Pending, bool) {
 	h.postedMu.Lock()
 	defer h.postedMu.Unlock()
 	p, ok := h.posted[id]
@@ -536,14 +536,14 @@ func (h *Hub) notifyTurnError(ctx context.Context, ev broker.Event) {
 // postPermission posts a pending interaction into its session's thread as an
 // interactive card (lazily creating the thread). AskUserQuestion gets its
 // own option prompt instead.
-func (h *Hub) postPermission(ctx context.Context, p hook.Pending) bool {
+func (h *Hub) postPermission(ctx context.Context, p interaction.Pending) bool {
 	root, err := h.rootFor(ctx, p.SessionID)
 	if err != nil {
 		h.logger.Warn("lark: permission thread", "session", p.SessionID, "err", err)
 		return false
 	}
 	var c obj
-	if p.ToolName == "AskUserQuestion" {
+	if p.Kind == interaction.KindChoice || p.Kind == interaction.KindText {
 		c = h.registerAsk(p)
 	} else {
 		c = permissionCard(p, h.mentionIDs, "")
@@ -561,7 +561,7 @@ func (h *Hub) postPermission(ctx context.Context, p hook.Pending) bool {
 // registerAsk renders the card for an AskUserQuestion and registers it for
 // tap / typed-reply answering. Multi-question prompts can't be mapped to one
 // typed reply, so those fall back to the web UI (Ignore-only card).
-func (h *Hub) registerAsk(p hook.Pending) obj {
+func (h *Hub) registerAsk(p interaction.Pending) obj {
 	qs := imutil.ParseQuestions(p.ToolInput)
 	if len(qs) != 1 {
 		return multiStepCard(p.ID, h.mentionIDs, "")
@@ -1641,7 +1641,7 @@ func (h *Hub) authorizedSender(s *larkim.EventSender) bool {
 }
 
 // HandleCardAction resolves a card button tap: it authorizes the tapper,
-// maps the button to a hook.Response, and returns a toast plus the resolved
+// maps the button to a interaction.Response, and returns a toast plus the resolved
 // card (buttons stripped so it can't be re-tapped).
 func (h *Hub) HandleCardAction(ctx context.Context, event *callback.CardActionTriggerEvent) *callback.CardActionTriggerResponse {
 	if event == nil || event.Event == nil || event.Event.Action == nil {
@@ -1671,7 +1671,7 @@ func (h *Hub) HandleCardAction(ctx context.Context, event *callback.CardActionTr
 	case scope == "session":
 		msg = "✅ always allowed"
 	}
-	err := h.router.RespondInteraction(v.ID, hook.Response{Behavior: behavior, Scope: scope, Reason: "via lark"})
+	err := h.router.RespondInteraction(v.ID, interaction.Response{Behavior: behavior, Scope: scope, Reason: "via lark"})
 	if err != nil && !isServerReject(err) {
 		// Transport failure: usher may never have seen it. Keep the card and
 		// the ask entry live so the tap can be retried.
@@ -1714,7 +1714,7 @@ func (h *Hub) handleAskAction(v decisionValue) *callback.CardActionTriggerRespon
 		return toast("expired")
 	}
 	label := entry.labels[idx]
-	respErr := h.router.RespondInteraction(v.ID, hook.Response{
+	respErr := h.router.RespondInteraction(v.ID, interaction.Response{
 		Behavior: "allow",
 		Reason:   "via lark",
 		Answers:  map[string]string{entry.question: label},
@@ -1779,7 +1779,7 @@ func (h *Hub) answerByText(ctx context.Context, sessionID, messageID, text strin
 	if !ok {
 		return false
 	}
-	err := h.router.RespondInteraction(id, hook.Response{
+	err := h.router.RespondInteraction(id, interaction.Response{
 		Behavior: "allow",
 		Reason:   "via lark",
 		Answers:  map[string]string{entry.question: strings.TrimSpace(text)},

@@ -1,4 +1,4 @@
-package hook
+package interaction
 
 import (
 	"context"
@@ -18,9 +18,8 @@ func TestManager_SubmitAndRespond(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		gotResp, gotErr = m.Submit(context.Background(), Event{
+		gotResp, gotErr = m.Submit(context.Background(), Request{
 			SessionID: "s1",
-			Event:     "PreToolUse",
 			ToolName:  "Bash",
 		})
 	}()
@@ -47,7 +46,7 @@ func TestManager_SubmitAndRespond(t *testing.T) {
 
 func TestManagerDeduplicatesToolUseID(t *testing.T) {
 	m := New("")
-	ev := Event{SessionID: "s", ToolUseID: "tool-1", ToolName: "Bash"}
+	ev := Request{SessionID: "s", ToolUseID: "tool-1", ToolName: "Bash"}
 	results := make(chan Response, 2)
 	for range 2 {
 		go func() { r, _ := m.Submit(context.Background(), ev); results <- r }()
@@ -76,7 +75,7 @@ func TestManager_ContextCancelReleases(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.Submit(ctx, Event{SessionID: "s", Event: "PreToolUse"})
+		_, err := m.Submit(ctx, Request{SessionID: "s"})
 		done <- err
 	}()
 
@@ -102,7 +101,7 @@ func TestManager_RespondUnknown(t *testing.T) {
 
 func TestManager_RespondTwice(t *testing.T) {
 	m := New("")
-	go func() { _, _ = m.Submit(context.Background(), Event{SessionID: "s"}) }()
+	go func() { _, _ = m.Submit(context.Background(), Request{SessionID: "s"}) }()
 	id := waitForPending(t, m)
 	if err := m.Respond(id, Response{Behavior: "allow"}); err != nil {
 		t.Fatal(err)
@@ -117,7 +116,7 @@ func TestManager_RespondTwice(t *testing.T) {
 
 func TestManagerSessionScopeRequiresBackendSupport(t *testing.T) {
 	m := New("")
-	go func() { _, _ = m.Submit(context.Background(), Event{SessionID: "s", ToolName: "Bash"}) }()
+	go func() { _, _ = m.Submit(context.Background(), Request{SessionID: "s", ToolName: "Bash"}) }()
 	id := waitForPending(t, m)
 	if err := m.Respond(id, Response{Behavior: "allow", Scope: "session"}); err == nil {
 		t.Fatal("session scope succeeded without backend support")
@@ -134,7 +133,7 @@ func TestManagerPassesSupportedSessionScopeToBackend(t *testing.T) {
 	m := New("")
 	result := make(chan Response, 1)
 	go func() {
-		r, _ := m.Submit(context.Background(), Event{SessionID: "s", ToolName: "Bash", AllowAlways: true})
+		r, _ := m.Submit(context.Background(), Request{SessionID: "s", ToolName: "Bash", AllowAlways: true})
 		result <- r
 	}()
 	id := waitForPending(t, m)
@@ -161,7 +160,7 @@ func TestManager_ConcurrentSubmits(t *testing.T) {
 			defer cancel()
 			done := make(chan struct{})
 			go func() {
-				_, _ = m.Submit(ctx, Event{SessionID: "s", Event: "PreToolUse"})
+				_, _ = m.Submit(ctx, Request{SessionID: "s"})
 				close(done)
 			}()
 			// wait briefly then cancel
@@ -180,13 +179,13 @@ func TestQuickDecide(t *testing.T) {
 	m := New("")
 
 	// Empty manager: no decision yet, caller must block on UI.
-	if resp, ok := m.QuickDecide(Event{SessionID: "s", ToolName: "Read"}); ok {
+	if resp, ok := m.QuickDecide(Request{SessionID: "s", ToolName: "Read"}); ok {
 		t.Errorf("expected (zero,false) on empty manager; got (%+v,%v)", resp, ok)
 	}
 
 	// Auto-approve settles instantly.
 	m.SetAutoApprove("s", true)
-	resp, ok := m.QuickDecide(Event{SessionID: "s", ToolName: "Bash"})
+	resp, ok := m.QuickDecide(Request{SessionID: "s", ToolName: "Bash"})
 	if !ok || resp.Behavior != "allow" || resp.Reason != "auto-approve" {
 		t.Errorf("auto-approve QuickDecide = (%+v,%v); want allow/auto-approve/true", resp, ok)
 	}
@@ -199,11 +198,11 @@ func TestQuickDecide(t *testing.T) {
 func TestQuickDecideSkipsAskUserQuestion(t *testing.T) {
 	m := New("")
 	m.SetAutoApprove("s", true)
-	if resp, ok := m.QuickDecide(Event{SessionID: "s", ToolName: "AskUserQuestion"}); ok {
+	if resp, ok := m.QuickDecide(Request{SessionID: "s", ToolName: "AskUserQuestion"}); ok {
 		t.Errorf("AskUserQuestion under auto-approve = (%+v,%v); want (zero,false)", resp, ok)
 	}
 	// Sanity: a different tool in the same session is still auto-approved.
-	if _, ok := m.QuickDecide(Event{SessionID: "s", ToolName: "Read"}); !ok {
+	if _, ok := m.QuickDecide(Request{SessionID: "s", ToolName: "Read"}); !ok {
 		t.Errorf("Read under auto-approve should still settle")
 	}
 }

@@ -20,7 +20,7 @@ import (
 	"github.com/nexustar/usher/internal/claude/jsonl"
 	"github.com/nexustar/usher/internal/codex"
 	"github.com/nexustar/usher/internal/codex/rollout"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // StreamEvent is one event for a turn. Type is the jsonl line's "type"
@@ -98,9 +98,9 @@ func claudeMCPConfigArgs(hookSock string, logger *slog.Logger) []string {
 // New builds a Sender. claudeCmd is the claude binary; permissionMode (if
 // non-empty) is passed through as --permission-mode; projectsDir is Claude
 // Code's projects root (used to locate session jsonl files by their globally
-// unique id); hookSock routes AskUserQuestion hooks back to this instance;
+// unique id); hookSock routes AskUserQuestion interactions back to this instance;
 // maxLive caps Claude workers.
-func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, injectMCPTools bool, hooks *hook.Manager, logger *slog.Logger) *Sender {
+func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, injectMCPTools bool, interactions *interaction.Manager, logger *slog.Logger) *Sender {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -117,7 +117,7 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	}
 	t := timing{confirm: 8 * time.Second, poll: 150 * time.Millisecond}
 	return &Sender{
-		claude:   claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, hooks, logger),
+		claude:   claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, interactions, logger),
 		locateFn: func(id string) string { return locateClaude(projectsDir, id) },
 		logger:   logger,
 		t:        t,
@@ -188,7 +188,7 @@ func codexMCPConfig(logger *slog.Logger) map[string]any {
 // --sandbox workspace-write); hookSock, if set, routes the codex permission hook
 // back to this instance. maxLive caps Codex workers; idle workers are shut down
 // and cold-resumed on the next send. Codex assigns ids for new threads.
-func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxLive int, injectMCPTools bool, hooks *hook.Manager, logger *slog.Logger) *Sender {
+func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxLive int, injectMCPTools bool, interactions *interaction.Manager, logger *slog.Logger) *Sender {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -206,7 +206,7 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 		config[k] = v
 	}
 	return &Sender{
-		app:       codex.NewManager(codexCmd, hooks, sandbox, config, env, maxLive, logger),
+		app:       codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger),
 		locateFn:  func(id string) string { return locateCodex(sessionsDir, id) },
 		indexPath: filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
 		logger:    logger,

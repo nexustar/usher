@@ -17,8 +17,11 @@ func fakePiRuntime(t *testing.T, stateData, afterPrompt string) (*Runtime, *work
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-pi")
+	// Every received line lands in rpc.log (cwd is the worker dir) so a test can
+	// assert on what usher sent back.
 	body := `#!/bin/sh
 while IFS= read -r line; do
+  printf '%s\n' "$line" >> rpc.log
   id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
   case "$line" in
     *'"type":"get_state"'*)
@@ -48,9 +51,13 @@ done
 	t.Cleanup(c.stop)
 	w := &worker{c: c, cwd: dir, path: path, last: time.Now()}
 	r := &Runtime{
-		workers: map[string]*worker{"s1": w},
+		workers: map[string]*worker{},
 		max:     1,
 		logger:  slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	}
+	// Through add(), like every production path, so the event pump runs.
+	if err := r.add("s1", w); err != nil {
+		t.Fatal(err)
 	}
 	return r, w
 }

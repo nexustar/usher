@@ -1,7 +1,8 @@
-// Package hook brokers backend interactions through usher's web UI. Claude's
-// stdio permission callback, Codex app-server approvals, and the command hook
-// used for AskUserQuestion all submit here and wait for a UI response.
-package hook
+// Package interaction brokers every backend request that blocks on a user
+// answer — Claude's permission callback and AskUserQuestion hook, Codex
+// approvals, pi's extension dialogs — through usher's web UI. One-way
+// notifications stay out: nothing waits on them.
+package interaction
 
 import (
 	"context"
@@ -16,11 +17,19 @@ import (
 	"time"
 )
 
-// Pending describes a permission request waiting for a user decision.
+// Interaction kinds. The frontend picks its control from these, never from a
+// backend or tool name.
+const (
+	KindPermission = "permission" // allow/deny, answered by Response.Behavior
+	KindChoice     = "choice"     // pick an option, answered by Response.Answers
+	KindText       = "text"       // free text, answered by Response.Answers
+)
+
+// Pending describes an interaction waiting for a user decision.
 type Pending struct {
 	ID        string          `json:"id"`
 	SessionID string          `json:"session_id"`
-	Event     string          `json:"event"`
+	Kind      string          `json:"kind"`
 	ToolName  string          `json:"tool_name,omitempty"`
 	ToolInput json.RawMessage `json:"tool_input,omitempty"`
 	Cwd       string          `json:"cwd,omitempty"`
@@ -42,23 +51,46 @@ type Response struct {
 	// Scope is "once" (default) or "session". "session" is the historical API
 	// spelling for the UI's "always" choice; the backend owns its exact scope.
 	Scope string `json:"scope,omitempty"`
-	// Answers resolves an AskUserQuestion tool call: each entry maps a
-	// question (verbatim from the tool input) to the option label the user
-	// chose in the web UI. When set, the server merges it into the tool's
-	// updatedInput so claude proceeds with the answer instead of blocking on
-	// the pane TUI selector. Behavior is "allow" in this case.
+	// Answers maps each question, verbatim from the tool input, to what the
+	// user picked or typed; Behavior is "allow" alongside it. Claude's
+	// AskUserQuestion merges it into the tool's updatedInput so the tool never
+	// falls back to its pane TUI selector.
 	Answers map[string]string `json:"answers,omitempty"`
 }
 
-// Event is the input usher receives from `usher hook` and forwards to Submit.
-type Event struct {
-	SessionID   string
-	ToolUseID   string
-	Event       string
+// Answer returns the single answer of a one-question interaction.
+func (r Response) Answer() string {
+	for _, v := range r.Answers {
+		return v
+	}
+	return ""
+}
+
+// Request is one backend asking the user something.
+type Request struct {
+	SessionID string
+	ToolUseID string
+	// Kind is one of the Kind* constants; empty means KindPermission, except
+	// for Claude's AskUserQuestion, which is a choice by tool name alone.
+	Kind        string
 	ToolName    string
 	ToolInput   json.RawMessage
 	Cwd         string
 	AllowAlways bool
+}
+
+// AskUserQuestionTool arrives as an ordinary hook event, so nothing upstream
+// can tag its kind; the name is the only signal.
+const AskUserQuestionTool = "AskUserQuestion"
+
+func kindOf(ev Request) string {
+	if ev.Kind != "" {
+		return ev.Kind
+	}
+	if ev.ToolName == AskUserQuestionTool {
+		return KindChoice
+	}
+	return KindPermission
 }
 
 // Manager owns pending interactions and the per-session blanket auto-approve
@@ -161,12 +193,9 @@ func (m *Manager) persistAutoApprove() {
 
 // QuickDecide settles ev from blanket auto-approve without UI; returns
 // (zero, false) when input is needed.
-func (m *Manager) QuickDecide(ev Event) (Response, bool) {
-	// AskUserQuestion can't be settled without a chosen answer: a bare allow
-	// from blanket auto-approve would let the tool run and block on the pane TUI
-	// selector — the very thing usher routes around.
-	// Always defer it to the web UI for an explicit per-call choice.
-	if ev.ToolName == "AskUserQuestion" {
+func (m *Manager) QuickDecide(ev Request) (Response, bool) {
+	// A bare allow carries no answer, so it can only settle a permission.
+	if kindOf(ev) != KindPermission {
 		return Response{}, false
 	}
 	if m.IsAutoApprove(ev.SessionID) {
@@ -180,7 +209,7 @@ func (m *Manager) QuickDecide(ev Event) (Response, bool) {
 
 // Submit blocks until the user responds via Respond or ctx is cancelled.
 // Short-circuits via QuickDecide first.
-func (m *Manager) Submit(ctx context.Context, ev Event) (Response, error) {
+func (m *Manager) Submit(ctx context.Context, ev Request) (Response, error) {
 	if ev.ToolUseID == "" {
 		return m.submit(ctx, ev)
 	}
@@ -211,7 +240,7 @@ func (m *Manager) Submit(ctx context.Context, ev Event) (Response, error) {
 	}
 }
 
-func (m *Manager) submit(ctx context.Context, ev Event) (Response, error) {
+func (m *Manager) submit(ctx context.Context, ev Request) (Response, error) {
 	if resp, ok := m.QuickDecide(ev); ok {
 		return resp, nil
 	}
@@ -220,7 +249,7 @@ func (m *Manager) submit(ctx context.Context, ev Event) (Response, error) {
 		Pending: Pending{
 			ID:          newID(),
 			SessionID:   ev.SessionID,
-			Event:       ev.Event,
+			Kind:        kindOf(ev),
 			ToolName:    ev.ToolName,
 			ToolInput:   ev.ToolInput,
 			Cwd:         ev.Cwd,

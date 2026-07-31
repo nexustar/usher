@@ -16,7 +16,7 @@ import (
 
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // Client talks to the plugin API socket and presents the same interface shape
@@ -141,7 +141,7 @@ func (c *Client) UploadAttachment(id, filename string, src io.Reader) (string, e
 }
 
 // RespondInteraction resolves a pending permission interaction.
-func (c *Client) RespondInteraction(id string, resp hook.Response) error {
+func (c *Client) RespondInteraction(id string, resp interaction.Response) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	return c.post(ctx, "/v1/interactions/"+id+"/respond", resp)
@@ -161,8 +161,8 @@ func (c *Client) SubscribeAllSessions() (<-chan broker.Event, func()) {
 // SubscribePendingInteractions streams pending permission prompts. On each
 // (re)connect the server replays the currently-pending set before the live
 // stream; consumers must dedupe by pending id.
-func (c *Client) SubscribePendingInteractions() (<-chan hook.Pending, func()) {
-	return subscribe[hook.Pending](c, "/v1/interactions")
+func (c *Client) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
+	return subscribe[interaction.Pending](c, "/v1/interactions")
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, v any) error {

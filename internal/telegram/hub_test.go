@@ -17,19 +17,19 @@ import (
 
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/hook"
+	"github.com/nexustar/usher/internal/interaction"
 )
 
 // fakeRouter implements RouterAPI with a hand-fed event channel and records
 // the messages routed to sessions.
 type fakeRouter struct {
 	events   chan broker.Event
-	pending  chan hook.Pending
+	pending  chan interaction.Pending
 	sessions map[string]core.Session
 
 	mu        sync.Mutex
 	sent      []routedMsg
-	responded map[string]hook.Response
+	responded map[string]interaction.Response
 	respErr   error // returned by RespondInteraction when set
 	sendErr   error // returned by SendToSession when set
 }
@@ -59,20 +59,20 @@ func (f *fakeRouter) routed() []routedMsg {
 	defer f.mu.Unlock()
 	return append([]routedMsg(nil), f.sent...)
 }
-func (f *fakeRouter) SubscribePendingInteractions() (<-chan hook.Pending, func()) {
+func (f *fakeRouter) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
 	if f.pending == nil {
-		f.pending = make(chan hook.Pending)
+		f.pending = make(chan interaction.Pending)
 	}
 	return f.pending, func() {}
 }
-func (f *fakeRouter) RespondInteraction(id string, resp hook.Response) error {
+func (f *fakeRouter) RespondInteraction(id string, resp interaction.Response) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.respErr != nil {
 		return f.respErr
 	}
 	if f.responded == nil {
-		f.responded = map[string]hook.Response{}
+		f.responded = map[string]interaction.Response{}
 	}
 	f.responded[id] = resp
 	return nil
@@ -312,7 +312,7 @@ func TestMirrorImageFailureNotice(t *testing.T) {
 }
 
 func TestPermissionHTML(t *testing.T) {
-	p := hook.Pending{ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"grep -r \"x<y\" ."}`)}
+	p := interaction.Pending{ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"grep -r \"x<y\" ."}`)}
 	got := permissionHTML(p)
 	if !strings.Contains(got, "<b>Permission requested</b>") || !strings.Contains(got, "Bash") {
 		t.Errorf("missing header/tool: %q", got)
@@ -549,8 +549,8 @@ func TestAskAnswerByText(t *testing.T) {
 	ctx := context.Background()
 
 	// A free-form (no options) question registers the topic for a typed reply.
-	hub.postAskQuestion(ctx, 5, hook.Pending{
-		ID: "pX", SessionID: "s1", ToolName: "AskUserQuestion",
+	hub.postAskQuestion(ctx, 5, interaction.Pending{
+		ID: "pX", SessionID: "s1", Kind: interaction.KindChoice, ToolName: "AskUserQuestion",
 		ToolInput: json.RawMessage(`{"questions":[{"question":"Name?","options":[]}]}`),
 	})
 
@@ -707,7 +707,7 @@ func TestAskQuestionRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	input := json.RawMessage(`{"questions":[{"header":"Pick","question":"Which DB?","options":[{"label":"Postgres"},{"label":"SQLite"}]}]}`)
-	hub.postAskQuestion(ctx, 5, hook.Pending{ID: "pend1", SessionID: "s1", ToolName: "AskUserQuestion", ToolInput: input})
+	hub.postAskQuestion(ctx, 5, interaction.Pending{ID: "pend1", SessionID: "s1", ToolName: "AskUserQuestion", ToolInput: input})
 
 	if len(sentButtons) != 2 {
 		t.Fatalf("want 2 option buttons, got %d", len(sentButtons))
@@ -754,7 +754,7 @@ func TestAskQuestionMultiFallsBackToWeb(t *testing.T) {
 
 	// Two questions → can't be answered with one tap → web fallback.
 	input := json.RawMessage(`{"questions":[{"question":"A?","options":[{"label":"x"}]},{"question":"B?","options":[{"label":"y"}]}]}`)
-	hub.postAskQuestion(context.Background(), 5, hook.Pending{ID: "p", ToolName: "AskUserQuestion", ToolInput: input})
+	hub.postAskQuestion(context.Background(), 5, interaction.Pending{ID: "p", ToolName: "AskUserQuestion", ToolInput: input})
 
 	if !strings.Contains(text, "web UI") {
 		t.Errorf("multi-question should fall back to web UI note, got %q", text)
