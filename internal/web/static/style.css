@@ -66,6 +66,44 @@
   /* Layout */
   --sidebar-pad-x: 0.75rem;
 
+  /* Type scale. Every font-size comes from here; a bare number is a mistake.
+     body anchors --font-base and .settings-dialog re-anchors --font-lg, so a
+     rule declares a size only where it deviates from what it would inherit, or
+     where the UA default would intervene (buttons and inputs don't inherit
+     fonts). Merely secondary copy stays on the inherited size and de-emphasises
+     through color (--text-muted/--text-faint). */
+  /* The roomy tier: titles, and the settings surfaces, which are configured
+     occasionally rather than watched all day and so are not packed tight. */
+  --font-lg: 1rem;        /* 16px */
+  --font-base: 0.875rem;  /* 14px: body text and every control, row, table, hint */
+  /* Monospace runs optically a step larger than the sans at equal size, so
+     mono data and code blocks sit here, with the group-chrome labels and the
+     nested sidebar rows. */
+  --font-sm: 0.8125rem;   /* 13px */
+  --font-meta: 0.75rem;   /* 12px: timestamps, roles, uppercase micro-labels */
+  /* Inline code scales with whatever prose it interrupts — headings included —
+     so it is em-relative, not a fixed step. */
+  --font-code: 0.9em;
+  /* iOS Safari zooms on focus below 16px, so inputs never follow --font-base. */
+  --font-input: 1rem;
+  /* Not type: these size an icon, a wordmark, and the terminal cell (px because
+     terminal.js measures column width against it; its 13px matches --font-sm so
+     the terminal sits with the other mono surfaces). */
+  --glyph: 1rem;
+  --glyph-lg: 1.5rem;
+  --font-brand: 1.5rem;
+  --term-size: 13px;
+
+  /* Radius scale, same discipline as type: a bare radius is a mistake.
+     Pills (999px), circles (50%) and full-bleed edges (0) are shapes, not
+     steps, and stay literal. Verbatim output blocks — code pre, tool JSON,
+     option previews, the lightbox image — are content, not chrome: square,
+     no radius at all. */
+  --radius-sm: 4px;  /* chips, menu rows, nested surfaces */
+  --radius: 6px;     /* standalone controls: buttons, inputs, images */
+  --radius-lg: 8px;  /* floating panels: composer, popovers, cards */
+  --radius-xl: 10px; /* the settings dialog */
+
   /* Overlays / shadows */
   --shadow-sidebar: rgba(0, 0, 0, 0.15);
   --shadow-modal: rgba(0, 0, 0, 0.25);
@@ -80,6 +118,9 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Elements that set no size of their own would otherwise inherit the
+     browser's 16px and sit outside the scale entirely. */
+  font-size: var(--font-base);
   margin: 0;
   padding: 0;
   background: var(--bg-canvas);
@@ -103,13 +144,12 @@ body {
   background: var(--bg-chrome);
   padding: 1rem 0 0;
   overflow: hidden;
-  font-size: 0.85rem;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
 }
 .sidebar-brand {
-  font-size: 1.5rem;
+  font-size: var(--font-brand);
   font-weight: 600;
   margin: 0 0 1rem;
   padding: 0 calc(var(--sidebar-pad-x) + 0.5rem) 0 1.5rem;
@@ -127,8 +167,7 @@ body {
   margin-right: 1.15rem;
   border: none;
   background: var(--bg-mainchat);
-  border-radius: 6px;
-  font-size: 0.85rem;
+  border-radius: var(--radius);
   margin-bottom: 0.5rem;
   color: var(--accent);
   text-decoration: none;
@@ -139,7 +178,7 @@ body {
 .sidebar-section { margin-bottom: 0; flex: 1; overflow-y: auto; min-height: 0; padding: 0 var(--sidebar-pad-x); }
 .sidebar-heading {
   border-top: 1px solid var(--border-muted);
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-faint);
@@ -150,9 +189,6 @@ body {
   justify-content: space-between;
   gap: 0.4rem;
 }
-/* The session count borrows .muted only for its faint color; override the
- * size that class also carries so it tracks the heading instead of dwarfing it. */
-.sidebar-heading .muted { font-size: inherit; }
 .sidebar-new {
   display: inline-flex;
   align-items: center;
@@ -160,10 +196,10 @@ body {
   width: 1.1rem;
   height: 1.1rem;
   line-height: 1;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   text-decoration: none;
-  font-size: 1rem;
+  font-size: var(--glyph);
   font-weight: 400;
 }
 .sidebar-new:hover { background: var(--bg-hover); color: var(--text); }
@@ -181,20 +217,19 @@ body {
  * fades in on hover and masks the title tail behind its own background. */
 .sidebar-list li.sidebar-item {
   position: relative;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 /* Hover rules live in @media (hover: hover) below: on iOS, a :hover rule that
  * changes visibility forces tap-to-hover (first tap reveals, second navigates). */
 .sidebar-list li.sidebar-item a {
   display: block;
   padding: 0.32rem 0.5rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   text-decoration: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 0.9rem;
   /* Long-press opens the actions menu (sidebar.js); suppress the iOS callout. */
   -webkit-touch-callout: none;
   -webkit-user-select: none;
@@ -204,14 +239,14 @@ body {
 .sidebar-list li.sidebar-item a .running-dot {
   margin-left: 0;
   margin-right: 0.25rem;
-  font-size: 0.7rem;
 }
-/* Subagent (child) rows: indentation, a leading "- " marker, and a slightly
- * smaller type size signal nesting without making them look archived. */
+/* Subagent (child) rows: indentation, a leading "- " marker and one type step
+ * down signal nesting. Not a muted color — that is what archived rows look
+ * like. */
 .sidebar-list li.subagent-row a {
   padding-left: 1.2rem;
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
 }
 .sidebar-list li.subagent-row a::before {
   content: "- ";
@@ -227,9 +262,9 @@ body {
   border: 0;
   color: var(--text-faint);
   cursor: pointer;
-  font-size: 1rem;
+  font-size: var(--glyph);
   line-height: 1;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0;
   /* Row-hover color (uniform on every row, incl. focused) so the chip masks
    * the title tail. pointer-events:none keeps that tail clickable while hidden. */
@@ -281,10 +316,10 @@ body {
   padding: 0.25rem 0.5rem;
   margin: 0;
   font-family: inherit;
-  font-size: 0.75rem;
+  font-size: var(--font-meta);
   color: var(--text-disabled);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .cwd-archived-actions .cwd-toggle-archived { width: auto; }
 .cwd-toggle-archived:hover { color: var(--text-faint); background: var(--bg-hover); }
@@ -294,7 +329,7 @@ body {
   z-index: 200;
   background: var(--bg-chrome);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
   min-width: 5rem;
   padding: 0.25rem;
@@ -306,10 +341,10 @@ body {
   border: 0;
   background: transparent;
   padding: 0.45rem 0.6rem;
-  font-size: 0.9rem;
+  font-size: var(--font-base);
   color: var(--text);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-family: inherit;
   text-decoration: none; /* the editor item is an <a> */
   box-sizing: border-box;
@@ -319,16 +354,15 @@ body {
 .sidebar-empty {
   padding: 0.4rem 0.5rem;
   color: var(--text-disabled);
-  font-size: 0.8rem;
   font-style: italic;
 }
 #sidebar-pinned:not(:empty) { margin-bottom: 0.75rem; }
 .cwd-group { margin-bottom: 0.4rem; }
 .cwd-label {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  /* Sized between title (0.9) and the archive toggle (0.75) so the
-   * visual hierarchy reads title > cwd > toggle. */
-  font-size: 0.8rem;
+  /* Group chrome, not a group member: the session rows it heads are a tier up,
+   * the archive toggle closing the group a tier down. */
+  font-size: var(--font-sm);
   color: var(--text-disabled);
   padding: 0.3rem 0.5rem 0.1rem;
   display: flex;
@@ -450,7 +484,7 @@ body {
   align-items: center;
   justify-content: center;
 }
-.sidebar-toggle:hover { color: var(--text); background: var(--bg-hover); border-radius: 6px; }
+.sidebar-toggle:hover { color: var(--text); background: var(--bg-hover); border-radius: var(--radius); }
 /* Pull the collapse button 0.25rem past the brand's 1.25rem padding so it
  * sits 1rem from the sidebar edge, without touching the shared padding. */
 #sidebar-collapse { margin-right: -0.25rem; }
@@ -494,7 +528,7 @@ body.sidebar-collapsed .mobile-toggle {
   .main-wrap { width: 100%; margin-left: 0; }
   .mobile-toggle { display: inline-flex; }
 }
-.muted { color: var(--text-faint); font-size: 0.85rem; }
+.muted { color: var(--text-faint); }
 .empty { color: var(--text-faint); padding: 3rem 0; text-align: center; }
 .err { color: var(--danger-text); padding: 1rem 0; }
 
@@ -512,10 +546,10 @@ body.sidebar-collapsed .mobile-toggle {
 #list-cwd {
   box-sizing: border-box;
   font: inherit;
-  font-size: 1rem; /* >=16px: avoid iOS focus zoom */
+  font-size: var(--font-input); /* >=16px: avoid iOS focus zoom */
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg-chrome);
   color: var(--text);
   flex: 1 1 12rem; /* fill the row; "show archived" sits at the right edge */
@@ -526,7 +560,6 @@ body.sidebar-collapsed .mobile-toggle {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.85rem;
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -577,7 +610,7 @@ body.sidebar-collapsed .mobile-toggle {
   cursor: pointer;
   padding: 0.15rem 0.4rem;
   margin-left: -0.4rem; /* keep the title's optical left edge where it was */
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 .subtitle-menu .session-title {
   overflow: hidden;
@@ -613,7 +646,6 @@ th, td {
   padding: 0.55rem 0.5rem;
   text-align: left;
   border-bottom: 1px solid var(--border-muted);
-  font-size: 0.9rem;
   vertical-align: top;
 }
 th { color: var(--text-faint); font-weight: 500; background: var(--bg-chrome); }
@@ -622,49 +654,49 @@ tbody tr:hover { background: var(--bg-subtle); }
 td.title { font-weight: 500; }
 td.id, td.cwd {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.875rem;
+  font-size: var(--font-sm);
 }
 td.id { color: var(--text-disabled); }
-td.cwd { font-size: 0.82rem; }
 
 .session-title {
   color: var(--text);
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: var(--font-lg);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Header metadata beside the title, not mono row data — meta, below the
+ * mono-data tier, so the title owns the header line. */
 .session-cwd, .session-id {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   color: var(--text-faint);
-  font-size: 0.78rem;
+  font-size: var(--font-meta);
 }
 
 /* Rendered markdown — used for transcripts, current-send response, and
    main-chat messages. marked emits the usual GFM HTML: <em>, <strong>,
    <code>, <a>, <pre><code>, <ul>/<ol>, <li>, <blockquote>, <h1..6>,
    <hr>, <img>, <table>/<thead>/<tbody>/<tr>/<th>/<td>, <del>. */
-.content { font-size: 0.92rem; line-height: 1.45; overflow-wrap: anywhere; }
+.content { line-height: 1.45; overflow-wrap: anywhere; }
 .content > *:first-child { margin-top: 0; }
 .content > *:last-child  { margin-bottom: 0; }
 .content code {
   background: var(--inline-code-bg);
   padding: 0.1rem 0.3rem;
-  border-radius: 3px;
-  font-size: 0.85em;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-code);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
 .content pre {
   background: var(--code-block-bg);
   color: var(--code-block-text);
   padding: 0.6rem 0.75rem;
-  border-radius: 5px;
   overflow-x: auto;
   margin: 0.5rem 0;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
   line-height: 1.4;
 }
 .content pre code {
@@ -686,7 +718,7 @@ td.cwd { font-size: 0.82rem; }
   width: auto;
   height: auto;
   border: 1px solid var(--border-muted);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg-subtle);
   cursor: zoom-in;
 }
@@ -708,12 +740,11 @@ td.cwd { font-size: 0.82rem; }
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
-  border-radius: 4px;
 }
 .content h1, .content h2, .content h3, .content h4, .content h5, .content h6 {
   margin: 0.6rem 0 0.3rem;
   font-weight: 600;
-  font-size: 1rem;
+  font-size: var(--font-lg);
 }
 .content blockquote {
   margin: 0.4rem 0;
@@ -726,7 +757,6 @@ td.cwd { font-size: 0.82rem; }
 .content table {
   border-collapse: collapse;
   margin: 0.5rem 0;
-  font-size: 0.88rem;
   display: block;
   overflow-x: auto;
   max-width: 100%;
@@ -746,7 +776,7 @@ td.cwd { font-size: 0.82rem; }
   position: relative;
   margin-top: 0.5rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-chrome);
 }
 .command-preview {
@@ -759,7 +789,7 @@ td.cwd { font-size: 0.82rem; }
   overflow-y: auto;
   padding: 0.3rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-chrome);
   box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
 }
@@ -771,11 +801,10 @@ td.cwd { font-size: 0.82rem; }
   gap: 1rem;
   padding: 0.45rem 0.55rem;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 1rem;
   text-align: left;
 }
 .command-option:hover,
@@ -801,7 +830,7 @@ td.cwd { font-size: 0.82rem; }
   border: none;
   background: transparent;
   color: var(--text);
-  font: inherit;  font-size: 1rem;
+  font: inherit;  font-size: var(--font-input);
   line-height: 1.5;
   resize: none;            /* height tracks content via growPrompt() */
   /* 1.1rem = 0.55rem padding top+bottom (no border — the card owns it). */
@@ -847,11 +876,10 @@ td.cwd { font-size: 0.82rem; }
   min-width: 0;
   padding: 0.55rem 0.65rem;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-lg);
   background: var(--bg-chrome);
   box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
   color: var(--text);
-  font-size: 0.78rem;
 }
 .session-usage-detail > div { display: flex; align-items: baseline; gap: 0.55rem; }
 .session-usage-detail strong { width: 3.6rem; flex: none; font-weight: 500; color: var(--text-faint); }
@@ -861,10 +889,9 @@ td.cwd { font-size: 0.82rem; }
   border: 1px solid var(--accent);
   background: var(--accent);
   color: white;
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
   font: inherit;
-  font-size: 0.85rem;
   line-height: 1.2;
 }
 .composer-send button:disabled {
@@ -875,17 +902,17 @@ td.cwd { font-size: 0.82rem; }
 .render-pill {
   display: inline-flex;
   background: var(--bg-mainchat);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 2px;
   margin-left: 0.25rem;
 }
 .render-pill-opt {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.8rem;
+  font-size: var(--font-sm);
   padding: 0.15rem 0.5rem;
   border: none;
   background: transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--text-faint);
   line-height: 1.4;
@@ -908,9 +935,9 @@ td.cwd { font-size: 0.82rem; }
   width: 100%;
   padding: 0.35rem 0.5rem;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-faint);
-  font-size: 0.85rem;
+  font-size: var(--font-base);
   text-align: center;
   background: transparent;
   cursor: pointer;
@@ -924,7 +951,7 @@ td.cwd { font-size: 0.82rem; }
   right: 0.35rem;
   background: var(--bg-chrome);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
   padding: 0.25rem;
   margin-bottom: 0.35rem;
@@ -936,10 +963,10 @@ td.cwd { font-size: 0.82rem; }
   border: 0;
   background: transparent;
   padding: 0.45rem 0.6rem;
-  font-size: 0.9rem;
+  font-size: var(--font-base);
   color: var(--text);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-family: inherit;
   text-decoration: none;
   box-sizing: border-box;
@@ -954,10 +981,9 @@ td.cwd { font-size: 0.82rem; }
 pre.raw-markdown {
   background: var(--bg-subtle);
   border: 1px solid var(--border-muted);
-  border-radius: 4px;
   padding: 0.5rem 0.6rem;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.82rem;
+  font-size: var(--font-sm);
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
@@ -980,7 +1006,7 @@ pre.raw-markdown {
 .chat-message.optimistic { border-bottom: 0; }
 .chat-message.awaiting-output .role { display: none; }
 .chat-message .role {
-  font-size: 0.72rem;
+  font-size: var(--font-meta);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-faint);
@@ -996,7 +1022,7 @@ pre.raw-markdown {
   padding: 0.65rem 0.25rem;
   border-bottom: 0;
   color: var(--text-faint);
-  font-size: 0.72rem;
+  font-size: var(--font-meta);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1019,23 +1045,23 @@ pre.raw-markdown {
 .chat-message.summary .summary-body > summary {
   cursor: pointer;
   color: var(--text-faint);
-  font-size: 0.72rem;
+  font-size: var(--font-meta);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.chat-message.summary .content { color: var(--text-muted); font-size: 0.85rem; }
+.chat-message.summary .content { color: var(--text-muted); }
 /* Grouped assistant turn: tool parts render as collapsible <details> within the
    single assistant card. Edit/Write expand by default; others collapse. */
 .chat-message.assistant .tool-details {
   margin: 0.4rem 0;
   border: 1px solid var(--border-muted);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--bg-subtle);
 }
 .chat-message.assistant .tool-details summary {
   cursor: pointer;
   color: var(--text-faint);
-  font-size: 0.8rem;
+  font-size: var(--font-meta);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1060,7 +1086,7 @@ pre.raw-markdown {
   border: 0;
   background: none;
   color: var(--text-faint);
-  font-size: 0.9rem;
+  font-size: var(--font-base);
   cursor: pointer;
   padding: 0.1rem 0.45rem; /* padding doubles as the mobile touch target */
 }
@@ -1071,7 +1097,6 @@ pre.raw-markdown {
 .chat-message.assistant .tool-details .tool-body {
   padding: 0 0.5rem 0.4rem;
   color: var(--text-muted);
-  font-size: 0.9rem;
   overflow-x: auto;
   min-width: 0;
 }
@@ -1079,11 +1104,10 @@ pre.raw-markdown {
   background: var(--code-block-bg);
   color: var(--code-block-text);
   padding: 0.6rem 0.75rem;
-  border-radius: 5px;
   overflow-x: auto;
   margin: 0.5rem 0;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.85rem;
+  font-size: var(--font-sm);
   line-height: 1.4;
 }
 .chat-message.assistant .tool-details .tool-body pre code {
@@ -1095,7 +1119,6 @@ pre.raw-markdown {
 .chat-message.placeholder .content { color: var(--text-disabled); font-style: italic; }
 .live-working {
   color: var(--text-disabled);
-  font-size: 0.85rem;
   font-style: italic;
   padding: 0.4rem 0.25rem;
 }
@@ -1112,13 +1135,13 @@ pre.raw-markdown {
   border-radius: 999px;
   background: var(--bg-subtle);
   color: var(--text-faint);
-  font-size: 0.8rem;
+  font-size: var(--font-base);
   cursor: pointer;
 }
 .load-earlier:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .load-earlier:disabled { opacity: 0.5; cursor: default; }
 .chat-message .role .ts {
-  font-size: 0.7rem;
+  font-size: var(--font-meta);
   color: var(--text-disabled);
   margin-left: 0.5rem;
   text-transform: none;
@@ -1137,7 +1160,7 @@ pre.raw-markdown {
   border: 0;
   background: transparent;
   color: var(--text-disabled);
-  font-size: 0.75rem; /* matches the sidebar's "show archived" tier */
+  font-size: var(--font-meta); /* matches the sidebar's "show archived" tier */
   line-height: 1.4;
   cursor: pointer;
 }
@@ -1148,7 +1171,7 @@ pre.raw-markdown {
    present but quiet, so a row of idle sessions doesn't shout and full
    brightness is reserved for actual activity. */
 .running-dot {
-  font-size: 0.75rem;
+  font-size: var(--font-meta);
   color: var(--live-dot);
   font-weight: 500;
   opacity: 0.5;
@@ -1175,7 +1198,7 @@ pre.raw-markdown {
 .auto-dot {
   margin-right: 0.25rem;
   color: var(--warning-border);
-  font-size: 0.75rem;
+  font-size: var(--font-meta);
 }
 .pinned-label {
   color: var(--text-disabled);
@@ -1203,11 +1226,11 @@ pre.raw-markdown {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.78rem;
+  font-size: var(--font-sm);
   padding: 0.25rem 0.4rem;
   border: none;
   background: transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--text-faint);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -1242,7 +1265,7 @@ pre.raw-markdown {
   background: #0d1117;
   border: 1px solid var(--border);
   border-bottom: none;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius) var(--radius) 0 0;
 }
 .term-grid {
   /* The pane is sized to the viewer's width on expand, so normal lines fill
@@ -1253,7 +1276,7 @@ pre.raw-markdown {
   width: max-content;
   white-space: pre;
   font-family: var(--term-font);
-  font-size: 13px;
+  font-size: var(--term-size);
   line-height: 1.25;
   color: #c9d1d9;
 }
@@ -1283,17 +1306,17 @@ pre.raw-markdown {
   padding: 0.25rem;
   background: var(--bg-chrome);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
 }
 .term-ctrl-menu button {
   padding: 0.35rem 0.9rem;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: none;
   color: var(--text);
   font-family: var(--term-font);
-  font-size: 16px;
+  font-size: var(--font-input);
   text-align: left;
   cursor: pointer;
 }
@@ -1301,12 +1324,12 @@ pre.raw-markdown {
 .term-keys button {
   min-width: 0;          /* let the grid column shrink below content width */
   min-height: 2rem;      /* finger-friendly tap target */
-  font-size: 16px;       /* ≥16px keeps one font set; tappable on mobile */
+  font-size: var(--font-input);       /* ≥16px keeps one font set; tappable on mobile */
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   border: 1px solid var(--border);
   background: var(--bg-chrome);
   color: var(--text);
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 .term-keys button:hover { background: var(--bg-subtle); }
@@ -1324,11 +1347,11 @@ pre.raw-markdown {
   background: #0d1117;
   border: 1px solid var(--border);
   border-top: 1px solid #21262d;  /* faint internal seam below the screen */
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 var(--radius) var(--radius);
 }
 .term-prompt {
   font-family: var(--term-font);
-  font-size: 16px;
+  font-size: var(--font-input);
   color: #7ee787;
   user-select: none;
 }
@@ -1337,7 +1360,7 @@ pre.raw-markdown {
   min-width: 0;
   resize: none;
   font-family: var(--term-font);
-  font-size: 16px;
+  font-size: var(--font-input);
   line-height: 1.35;
   padding: 0.3rem 0;
   border: none;
@@ -1350,9 +1373,9 @@ pre.raw-markdown {
   align-self: center;
   padding: 0.2rem 0.6rem;
   min-width: 3.5rem;
-  font-size: 16px;
+  font-size: var(--font-input);
   border: 1px solid #30363d;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: transparent;
   color: #c9d1d9;
   cursor: pointer;
@@ -1373,7 +1396,7 @@ pre.raw-markdown {
   margin-top: 0.5rem;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-chrome);
 }
 .session-permission .interaction { padding: 0; border: 0; }
@@ -1381,20 +1404,19 @@ pre.raw-markdown {
   margin-top: 0.5rem;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-chrome);
 }
 .session-interactions .interaction:first-child { padding-top: 0; }
 .session-interactions .interaction:last-child { padding-bottom: 0; }
 .interaction { padding: 0.75rem 0; border-top: 1px solid var(--border-muted); }
 .interaction:first-of-type { border-top: 0; }
-.interaction .meta { margin-bottom: 0.4rem; font-size: 0.9rem; }
-.interaction .meta .muted { margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.78rem; }
+.interaction .meta { margin-bottom: 0.4rem; }
+.interaction .meta .muted { margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--font-sm); }
 .interaction .tool-input {
   background: var(--bg-subtle);
   padding: 0.5rem;
-  border-radius: 4px;
-  font-size: 0.78rem;
+  font-size: var(--font-sm);
   max-height: 10rem;
   overflow: auto;
   margin: 0 0 0.5rem 0;
@@ -1402,10 +1424,9 @@ pre.raw-markdown {
 .interaction .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .interaction button {
   padding: 0.4rem 0.8rem;
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
   font: inherit;
-  font-size: 0.85rem;
   border: 1px solid transparent;
 }
 .interaction button.allow.primary {
@@ -1439,14 +1460,14 @@ pre.raw-markdown {
   border-top: 1px solid var(--border-muted);
 }
 .interaction.ask .q-header {
-  font-size: 0.72rem;
+  font-size: var(--font-meta);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
   margin-bottom: 0.2rem;
 }
-.interaction.ask .q-text { font-size: 0.92rem; margin-bottom: 0.5rem; }
-.interaction.ask .q-multi { color: var(--text-muted); font-size: 0.78rem; }
+.interaction.ask .q-text { margin-bottom: 0.5rem; }
+.interaction.ask .q-multi { color: var(--text-muted); }
 .interaction.ask .q-options { display: flex; flex-direction: column; gap: 0.35rem; }
 .interaction.ask .qopt {
   display: flex;
@@ -1454,18 +1475,18 @@ pre.raw-markdown {
   align-items: flex-start;
   gap: 0.1rem;
   text-align: left;
+  font: inherit; /* buttons don't inherit the body font on their own */
   width: 100%;
   padding: 0.5rem 0.7rem;
   background: var(--bg-subtle);
   border: 1px solid var(--border-muted);
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 .interaction.ask .qopt.selected {
   background: var(--accent-bg);
   border-color: var(--accent);
 }
-.interaction.ask .qopt-label { font-size: 0.88rem; }
-.interaction.ask .qopt-desc { font-size: 0.78rem; color: var(--text-muted); }
+.interaction.ask .qopt-desc { color: var(--text-muted); }
 .interaction.ask .qopt-preview {
   display: block;
   width: 100%;
@@ -1476,9 +1497,8 @@ pre.raw-markdown {
   overflow: auto;
   white-space: pre;
   background: var(--bg-subtle);
-  border-radius: 4px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.75rem;
+  font-size: var(--font-meta);
   color: var(--text);
 }
 .interaction.ask .qother {
@@ -1489,10 +1509,10 @@ pre.raw-markdown {
   max-height: 30vh;  /* a long prefill scrolls; the card caps the rest */
   overflow-y: auto;
   font: inherit;
-  font-size: 1rem; /* >=16px: avoid iOS focus zoom */
+  font-size: var(--font-input); /* >=16px: avoid iOS focus zoom */
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg-chrome);
   color: var(--text);
 }
@@ -1535,19 +1555,14 @@ pre.raw-markdown {
   gap: 0.4rem;
 }
 .new-cwd-field > span {
-  font-size: 0.85rem;
+  font-size: var(--font-meta);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-/* Backend/model pickers — a row of ghost buttons split by a short divider,
- * matching the form's other ghost controls (cwd field, session toggles).
- * Labels are centered and the backend segment reserves the width of the
- * longest backend name, so switching backends never moves the divider or the
- * model text. The model segment stays auto-width: it only borders empty space
- * on the right, so its length changes push nothing around.
- * Font stays 1rem: a <select> triggers iOS focus-zoom below 16px (unlike the
- * <button> toggles). appearance:none drops the native arrow — no caret at all;
- * the backend-colored text carries the affordance. */
+/* Backend/model picker — a ghost <button> (not a <select>, so no iOS
+ * focus-zoom floor) that opens the config menu, matching the form's other
+ * ghost controls (cwd field, session toggles). No caret — the backend-colored
+ * text carries the affordance. */
 .composer-config-wrap { position: relative; display: inline-flex; align-items: center; }
 .composer-picker {
   appearance: none;
@@ -1555,10 +1570,10 @@ pre.raw-markdown {
   border: none;
   background: transparent;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 1rem;
+  font-size: var(--font-sm);
   text-align: center;
   padding: 0.3rem 0.55rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   /* The button wears the backend color (like the sidebar backend marks);
    * JS mirrors the choice onto the wrapper's data-backend. */
@@ -1590,7 +1605,7 @@ pre.raw-markdown {
   padding: 0.25rem;
   background: var(--bg-chrome);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
 }
 .config-menu-body { min-width: 13rem; }
@@ -1615,9 +1630,9 @@ pre.raw-markdown {
   padding: 0.35rem 0.6rem;
   border: none;
   background: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-family: inherit; /* buttons don't inherit the body font on their own */
-  font-size: 0.95rem;
+  font-size: var(--font-base);
   color: var(--text);
   text-align: left;
   cursor: pointer;
@@ -1628,7 +1643,6 @@ pre.raw-markdown {
 .config-check { min-width: 1em; text-align: right; color: var(--accent); }
 .config-sep { height: 1px; margin: 0.25rem 0; background: var(--border-muted); }
 .config-fold-name {
-  font-size: 0.85rem;
   text-transform: capitalize;
   color: var(--text-muted);
 }
@@ -1637,10 +1651,10 @@ pre.raw-markdown {
 }
 .new-cwd-field input {
   max-width: 100%;
-  font-size: 1rem;
+  font-size: var(--font-input);
   padding: 0.25rem 0.5rem;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -1672,13 +1686,16 @@ pre.raw-markdown {
  * over the app — dimmed backdrop, inset from the viewport, elevated — rather
  * than as a page you navigated to. */
 .settings-dialog {
+  /* Re-anchors the whole panel: nav items, row labels and buttons declare no
+     size of their own, so anything added here lands on the roomy tier. */
+  font-size: var(--font-lg);
   width: min(72rem, 92vw);
   height: min(42rem, 88vh);
   max-width: none;
   max-height: none;
   padding: 0;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-xl);
   background: var(--bg-canvas);
   color: var(--text);
   box-shadow: 0 12px 32px var(--shadow-modal);
@@ -1695,7 +1712,7 @@ pre.raw-markdown {
   border-bottom: 1px solid var(--border-muted);
   background: var(--bg-chrome);
 }
-.settings-dialog-header h1 { margin: 0; font-size: 1rem; font-weight: 600; }
+.settings-dialog-header h1 { margin: 0; font-size: var(--font-lg); font-weight: 600; }
 /* Both titles and the back link ship in the markup; the media query below
  * picks which apply, so nothing here depends on measuring the viewport. */
 .settings-back,
@@ -1704,7 +1721,7 @@ pre.raw-markdown {
   width: 2rem;
   height: 2rem;
   margin-left: -0.5rem;
-  border-radius: 5px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   text-decoration: none;
   align-items: center;
@@ -1716,11 +1733,11 @@ pre.raw-markdown {
   width: 2rem;
   height: 2rem;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 1.5rem;
+  font-size: var(--glyph-lg);
   line-height: 1;
   cursor: pointer;
 }
@@ -1747,7 +1764,7 @@ pre.raw-markdown {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.45rem 0.6rem;
-  border-radius: 5px;
+  border-radius: var(--radius);
   color: var(--text);
   text-decoration: none;
 }
@@ -1760,7 +1777,7 @@ pre.raw-markdown {
 .settings-section { padding: 1.25rem 1.5rem; }
 .settings-section h2 {
   margin: 0 0 0.25rem;
-  font-size: 0.85rem;
+  font-size: var(--font-meta);
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -1781,7 +1798,6 @@ pre.raw-markdown {
 .settings-row-hint {
   margin: 0.2rem 0 0;
   color: var(--text-faint);
-  font-size: 0.85rem;
   line-height: 1.5;
 }
 .settings-row-action {
@@ -1790,7 +1806,7 @@ pre.raw-markdown {
    * change the button's width. */
   min-width: 11.5rem;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--bg-chrome);
   color: var(--text);
   padding: 0.4rem 0.65rem;
@@ -1801,7 +1817,7 @@ pre.raw-markdown {
 .settings-row-action:disabled { color: var(--text-faint); cursor: default; }
 /* push.js hides the button when the browser or server can't do push; the note
  * takes its place rather than leaving a row with nothing on the right. */
-.settings-row-note { display: none; flex-shrink: 0; font-size: 0.85rem; }
+.settings-row-note { display: none; flex-shrink: 0; }
 .settings-row:has(> .settings-row-action[hidden]) .settings-row-note { display: block; }
 
 /* ----- Config panes (Agents, Scheduled) --------------------------------- */
@@ -1824,7 +1840,6 @@ pre.raw-markdown {
 .cfg-intro {
   margin: 0;
   color: var(--text-faint);
-  font-size: 0.85rem;
   line-height: 1.5;
 }
 .cfg-pane-editor { display: flex; min-height: 0; }
@@ -1841,7 +1856,7 @@ pre.raw-markdown {
 .cfg-pane-heading button,
 .cfg-form-actions button {
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--bg-chrome);
   color: var(--text);
   padding: 0.4rem 0.65rem;
@@ -1857,7 +1872,7 @@ pre.raw-markdown {
   width: 100%;
   padding: 0.5rem 0.6rem;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -1868,6 +1883,7 @@ pre.raw-markdown {
 .cfg-row.active { background: var(--bg-accent); color: var(--accent); }
 .cfg-row-name { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .cfg-row small {
+  font-size: var(--font-meta);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1880,7 +1896,6 @@ pre.raw-markdown {
 .cfg-form label { display: flex; flex-direction: column; gap: 0.35rem; }
 .cfg-form label > span {
   color: var(--text-muted);
-  font-size: 0.85rem;
 }
 .cfg-form input,
 .cfg-form select,
@@ -1888,12 +1903,12 @@ pre.raw-markdown {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--bg-chrome);
   color: var(--text);
   padding: 0.55rem 0.65rem;
   font: inherit;
-  font-size: 1rem;
+  font-size: var(--font-input);
 }
 /* Opt-in for the fields whose value is a token rather than prose: an agent
  * name, a cron expression. */
@@ -1906,12 +1921,11 @@ pre.raw-markdown {
 }
 .cfg-field-hint {
   color: var(--text-faint);
-  font-size: 0.82rem;
   line-height: 1.5;
 }
 .cfg-field-hint code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.95em;
+  font-size: var(--font-code);
 }
 .cfg-form-pair {
   display: grid;
@@ -1986,7 +2000,6 @@ pre.raw-markdown {
   color: var(--text-muted);
   padding: 0.25rem 0.65rem;
   font: inherit;
-  font-size: 0.85rem;
   cursor: pointer;
 }
 .sched-preset:hover {
@@ -2000,10 +2013,21 @@ pre.raw-markdown {
  * form control: it is written by the runner, not by the user. */
 .sched-status {
   margin-top: 0.75rem;
-  font-size: 0.85rem;
   color: var(--text-faint);
 }
 .sched-status-label { margin-right: 0.5rem; color: var(--text-muted); }
+
+/* The panel's secondary copy — hints, captions, field labels — and its quiet
+ * controls sit one step below the roomy anchor, on the tier the rest of the
+ * app reads at. Last in the section so the size outranks the font:inherit
+ * shorthands above (.sched-preset). */
+.settings-row-hint,
+.settings-row-note,
+.cfg-intro,
+.cfg-form label > span,
+.cfg-field-hint,
+.sched-preset,
+.sched-status { font-size: var(--font-base); }
 
 /* Three columns (sections | items | editor) only pay off while the editor
  * keeps ~30rem. Below that the item list stacks above it and the pane is two
@@ -2042,9 +2066,9 @@ pre.raw-markdown {
   }
   .settings-dialog-header,
   .settings-dialog-body { pointer-events: auto; }
-  .settings-dialog-header { border-radius: 10px 10px 0 0; }
+  .settings-dialog-header { border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
   .settings-dialog-body {
-    border-radius: 0 0 10px 10px;
+    border-radius: 0 0 var(--radius-xl) var(--radius-xl);
     background: var(--bg-canvas);
     overflow: hidden;
   }

@@ -85,7 +85,8 @@ export function measureCols(boxEl) {
   ruler.textContent = '0'.repeat(100);
   ruler.style.cssText =
     'position:absolute;visibility:hidden;white-space:pre;' +
-    'font-size:13px;font-family:var(--term-font)'; // match the grid's font, or cols mis-measure
+    // must match the grid's font, or cols mis-measure
+    'font-size:var(--term-size);font-family:var(--term-font)';
   document.body.appendChild(ruler);
   const charPx = ruler.getBoundingClientRect().width / 100;
   ruler.remove();
