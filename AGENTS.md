@@ -26,6 +26,15 @@ Do not introduce:
 When backend behavior is uncertain, inspect the local upstream sources before
 guessing: `../claude-agent-sdk-python`, `../codex`, and `../pi`.
 
+Running usher to check a change is fine, but the maintainer's own instance
+serves real sessions on the default port. Never disturb it:
+
+- Give a throwaway instance a spare port and its own `--data-dir`,
+  `--projects-dir`, `--codex-sessions-dir` and `--pi-sessions-dir`; any flag
+  left at its default is shared with the live instance.
+- Stop it by the PID you started, never `pkill`/`killall` by name — that
+  matches the maintainer's `usher serve` too.
+
 ## Frontend
 
 Priority order: maintainability > few dependencies > performance > visual
