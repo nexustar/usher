@@ -441,6 +441,7 @@ func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 	if r.meta != nil {
 		r.meta.SetAppendSystemPrompt(newID, r.meta.AppendSystemPrompt(srcID))
 	}
+	// Auto-approve is deliberately not inherited: a branch is a new conversation.
 	// Ingest synchronously so the id resolves the moment the client navigates
 	// to it, instead of racing the fsnotify watcher.
 	r.discovery.Upsert(dstPath)
@@ -1547,6 +1548,7 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 	}
 	id, ch, err := r.senderForBackend(o.Backend).Start(ctx, backendpkg.StartRequest{
 		Cwd: o.Cwd, Prompt: o.InitialMessage, Model: o.Model, AppendSystemPrompt: o.AppendSystemPrompt,
+		AutoApprove: o.AutoApprove,
 	})
 	if err != nil {
 		return "", nil, nil, err

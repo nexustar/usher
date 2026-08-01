@@ -498,12 +498,15 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// AutoApprove is a pointer: omitted keeps the agent's default, an explicit
+// false turns it off for this session only.
 type createSessionRequest struct {
 	Agent          string `json:"agent"`
 	Cwd            string `json:"cwd"`
 	InitialMessage string `json:"initial_message"`
 	Backend        string `json:"backend"`
 	Model          string `json:"model"`
+	AutoApprove    *bool  `json:"auto_approve"`
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -518,6 +521,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts.InitialMessage = req.InitialMessage
+	if req.AutoApprove != nil {
+		opts.AutoApprove = *req.AutoApprove
+	}
 	id, err := s.router.StartSession(opts)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

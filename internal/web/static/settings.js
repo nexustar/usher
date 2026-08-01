@@ -201,17 +201,17 @@ function renderForm(agent, copy = false) {
   const host = document.getElementById('agent-editor');
   if (!host) return;
   const creating = !agent || copy;
-  const value = agent || {name: '', cwd: '', backend: '', model: '', append_system_prompt: ''};
+  const value = agent || {name: '', cwd: '', backend: '', model: '', append_system_prompt: '', auto_approve: false};
   const name = copy ? value.name + '-copy' : value.name;
   const selectedBackend = value.backend || backends[0] || '';
   host.innerHTML = `
     <form class="cfg-form">
       <label>
         <span>Name</span>
-        <input name="name" class="mono" value="${esc(name)}" required autocapitalize="off" autocorrect="off" spellcheck="false">
-        <small class="cfg-field-hint">No spaces or <code>/</code></small>
+        <input name="name" class="mono" value="${esc(name)}" required placeholder="no spaces or /"
+               autocapitalize="off" autocorrect="off" spellcheck="false">
       </label>
-      <label class="cfg-form-group"><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
+      <label><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
         list="agent-cwd-list" autocomplete="off" placeholder="/absolute/path or ~"></label>
       <datalist id="agent-cwd-list">${[...new Set(getLastSessions().map(s => s.cwd).filter(Boolean))].sort()
         .map(cwd => `<option value="${esc(cwd)}"></option>`).join('')}</datalist>
@@ -219,7 +219,11 @@ function renderForm(agent, copy = false) {
         <label><span>Backend</span><select name="backend">${backendOptions(selectedBackend)}</select></label>
         <label><span>Model</span><select name="model">${modelOptions(selectedBackend, value.model || '')}</select></label>
       </div>
-      <label class="cfg-form-group"><span>Append system prompt</span>
+      <label class="cfg-form-check">
+        <input type="checkbox" name="auto_approve"${value.auto_approve ? ' checked' : ''}>
+        <span>Auto-approve tool calls</span>
+      </label>
+      <label><span>Append system prompt</span>
         <textarea name="append_system_prompt" rows="6" placeholder="Additional instructions for sessions created with this agent…">${esc(value.append_system_prompt || '')}</textarea>
       </label>
       <div class="cfg-form-error err" hidden></div>
@@ -250,6 +254,8 @@ function renderForm(agent, copy = false) {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const payload = Object.fromEntries(new FormData(form));
+    // FormData reports the checkbox as "on" or omits it; the API wants a bool.
+    payload.auto_approve = form.elements.auto_approve.checked;
     const response = await fetch(creating ? '/api/agents' : '/api/agents/' + encodeURIComponent(value.name), {
       method: creating ? 'POST' : 'PUT',
       headers: {'Content-Type': 'application/json'},
@@ -468,7 +474,7 @@ function renderScheduleForm(task) {
     <form class="cfg-form">
       <label><span>Name</span>
         <input name="name" value="${esc(value.name || '')}" required placeholder="Nightly test run"></label>
-      <label class="cfg-form-group">
+      <label>
         <span>Cron${serverZone ? ` (${esc(serverZone)})` : ''}</span>
         <input name="cron" class="mono" value="${esc(value.cron || '')}"
                autocapitalize="off" autocorrect="off" spellcheck="false"></label>
@@ -476,7 +482,7 @@ function renderScheduleForm(task) {
         ([expr, label]) => `<button type="button" class="sched-preset" data-cron="${esc(expr)}">${esc(label)}</button>`
       ).join('')}</div>
       <small class="cfg-field-hint"><code>minute hour day month weekday</code></small>
-      <label class="cfg-form-group"><span>Agent</span><select name="agent">${
+      <label><span>Agent</span><select name="agent">${
         agentOptions(value.agent || '')
       }</select></label>
       <label><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
@@ -489,7 +495,7 @@ function renderScheduleForm(task) {
           modelOptions(selectedBackend, value.model || '')
         }</select></label>
       </div>
-      <label class="cfg-form-group"><span>Prompt</span>
+      <label><span>Prompt</span>
         <textarea name="prompt" rows="6" required
           placeholder="The message each run starts its session with…">${esc(value.prompt || '')}</textarea>
       </label>

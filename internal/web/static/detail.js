@@ -184,9 +184,8 @@ function wireCommandPreview(promptEl, sessionID) {
 // ---------- New session view ----------
 //
 // Mirrors the regular session detail layout so the page transition after
-// creation is purely additive (empty placeholders fill in). The only
-// pre-creation difference is the auto-approve toggle position — replaced
-// with a cwd picker, since auto-approve can't be set without a session id.
+// creation is purely additive (empty placeholders fill in); the cwd picker
+// above the composer is the only pre-creation addition.
 // Submitting POSTs to /api/sessions (router.StartSession returns the new
 // id immediately and streams to broker subscribers), then hash-routes to
 // the freshly-created session's detail page.
@@ -234,6 +233,11 @@ export async function showNewSession(opts = {}) {
                         aria-haspopup="menu" aria-expanded="false"></button>
                 <div id="new-config-menu" class="composer-config-menu" role="menu" hidden></div>
               </div>
+              <button id="auto-approve-toggle" class="auto-approve-toggle" type="button"
+                aria-pressed="false"
+                title="ask: confirm each tool call · auto: run them automatically">
+                <span class="t-icon">ϟ</span><span class="t-full">approve:</span><span class="toggle-val">ask</span>
+              </button>
             </div>
             <div class="composer-send"><button id="send">send</button></div>
           </div>
@@ -248,6 +252,7 @@ export async function showNewSession(opts = {}) {
   const cwdEl = document.getElementById('new-cwd');
   const configBtn = document.getElementById('new-config');
   const configMenu = document.getElementById('new-config-menu');
+  const autoBtn = document.getElementById('auto-approve-toggle');
   const errEl = document.getElementById('new-session-err');
   // Prefilled from a sidebar cwd "+": cwd is known, so drop the cursor in the
   // message box instead of the cwd field.
@@ -263,7 +268,19 @@ export async function showNewSession(opts = {}) {
   let agentProfiles = [];
   let backend = '';
   let model = '';
+  let autoApprove = false;
   let expanded = ''; // config-menu section currently unfolded: 'backend' | 'model' | ''
+
+  // Same control as the session view's, driven locally — no id to POST to yet.
+  const updateAutoApprove = () => {
+    autoBtn.setAttribute('aria-pressed', autoApprove ? 'true' : 'false');
+    autoBtn.querySelector('.toggle-val').textContent = autoApprove ? 'auto' : 'ask';
+  };
+  autoBtn.addEventListener('click', () => {
+    autoApprove = !autoApprove;
+    try { localStorage.setItem('usher.newAutoApprove', autoApprove ? '1' : '0'); } catch {/* private mode */}
+    updateAutoApprove();
+  });
 
   // Choice lists double as display names; an id outside the catalog (an agent
   // pinning something not installed) still renders, marked unavailable.
@@ -312,6 +329,11 @@ export async function showNewSession(opts = {}) {
       if (saved && backends.includes(saved)) backend = saved;
     } catch {/* private mode → first backend */}
     model = defaultModelFor(backend);
+    autoApprove = false;
+    try {
+      autoApprove = localStorage.getItem('usher.newAutoApprove') === '1';
+    } catch {/* private mode → ask */}
+    updateAutoApprove();
     updateConfigLabel();
   };
 
@@ -321,6 +343,8 @@ export async function showNewSession(opts = {}) {
     if (profile.cwd) cwdEl.value = profile.cwd;
     if (profile.backend) backend = profile.backend;
     model = profile.model || defaultModelFor(backend);
+    autoApprove = !!profile.auto_approve;
+    updateAutoApprove();
     updateConfigLabel();
   };
 
@@ -443,6 +467,7 @@ export async function showNewSession(opts = {}) {
       if (!profile || cwdEl.value.trim() !== (profile.cwd || '')) request.cwd = cwdEl.value.trim();
       if (!profile || backend !== (profile.backend || '')) request.backend = backend;
       if (!profile || model !== (profile.model || '')) request.model = model;
+      if (!profile || autoApprove !== !!profile.auto_approve) request.auto_approve = autoApprove;
       const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},

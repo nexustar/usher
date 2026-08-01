@@ -98,4 +98,5 @@ type CreateOptions struct {
 	InitialMessage     string
 	Model              string
 	AppendSystemPrompt string
+	AutoApprove        bool
 }

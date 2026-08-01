@@ -24,6 +24,7 @@ type Profile struct {
 	Backend            string `json:"backend,omitempty"`
 	Model              string `json:"model,omitempty"`
 	AppendSystemPrompt string `json:"append_system_prompt,omitempty"`
+	AutoApprove        bool   `json:"auto_approve,omitempty"`
 }
 
 type fileFormat struct {
@@ -266,6 +267,6 @@ func (s *Store) Resolve(name, cwd, backend, model string) (core.CreateOptions, e
 	}
 	return core.CreateOptions{
 		Backend: p.Backend, Cwd: p.Cwd, Model: p.Model,
-		AppendSystemPrompt: p.AppendSystemPrompt,
+		AppendSystemPrompt: p.AppendSystemPrompt, AutoApprove: p.AutoApprove,
 	}, nil
 }

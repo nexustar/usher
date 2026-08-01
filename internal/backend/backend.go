@@ -95,12 +95,15 @@ type Transcript interface {
 	IsTurnComplete(raw []byte) bool
 }
 
-// StartRequest describes the first turn of a new backend session.
+// StartRequest describes the first turn of a new backend session. Runtimes
+// must record AutoApprove before submitting the prompt: escalations are
+// answered by session id, so a decision recorded later misses the first turn.
 type StartRequest struct {
 	Cwd                string
 	Prompt             string
 	Model              string
 	AppendSystemPrompt string
+	AutoApprove        bool
 }
 
 // Runtime owns live workers for one coding-agent backend.

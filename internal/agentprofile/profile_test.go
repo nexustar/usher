@@ -35,6 +35,17 @@ func TestLoadAndResolve(t *testing.T) {
 	}
 }
 
+func TestResolveCarriesAutoApprove(t *testing.T) {
+	store := New([]Profile{{Name: "trusted", Cwd: "/work", AutoApprove: true}})
+	got, err := store.Resolve("trusted", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AutoApprove {
+		t.Fatalf("Resolve = %+v, want AutoApprove", got)
+	}
+}
+
 func TestResolveUnknown(t *testing.T) {
 	_, err := New(nil).Resolve("missing", "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "unknown agent") {

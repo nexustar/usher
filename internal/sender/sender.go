@@ -38,6 +38,7 @@ type timing struct{ confirm, poll time.Duration }
 type Sender struct {
 	app          *codex.Manager // non-nil for the headless Codex backend
 	claude       *claude.Manager
+	interactions *interaction.Manager
 	locateFn     func(string) string
 	indexPath    string
 	logger       *slog.Logger
@@ -117,10 +118,11 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	}
 	t := timing{confirm: 8 * time.Second, poll: 150 * time.Millisecond}
 	return &Sender{
-		claude:   claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, interactions, logger),
-		locateFn: func(id string) string { return locateClaude(projectsDir, id) },
-		logger:   logger,
-		t:        t,
+		claude:       claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, interactions, logger),
+		interactions: interactions,
+		locateFn:     func(id string) string { return locateClaude(projectsDir, id) },
+		logger:       logger,
+		t:            t,
 		tail: tailConfig{
 			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
 			contentOnly: true, turnComplete: isTurnComplete, turnAborted: isClaudeTurnAborted,
@@ -206,11 +208,12 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 		config[k] = v
 	}
 	return &Sender{
-		app:       codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger),
-		locateFn:  func(id string) string { return locateCodex(sessionsDir, id) },
-		indexPath: filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
-		logger:    logger,
-		t:         t,
+		app:          codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger),
+		interactions: interactions,
+		locateFn:     func(id string) string { return locateCodex(sessionsDir, id) },
+		indexPath:    filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
+		logger:       logger,
+		t:            t,
 		tail: tailConfig{
 			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
 			contentOnly: true, turnComplete: rollout.IsTurnComplete, turnAborted: rollout.IsTurnAborted,
@@ -329,7 +332,11 @@ func codexSlashSkillPrompt(command, args string, skills []codex.Skill) (string, 
 func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <-chan StreamEvent, error) {
 	if s.claude != nil {
 		id := newSessionID()
+		s.setAutoApprove(id, req.AutoApprove)
 		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, false)
+		if err != nil {
+			s.clearAutoApprove(id, req.AutoApprove)
+		}
 		return id, ch, err
 	}
 	if s.app != nil {
@@ -337,10 +344,32 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 		if err != nil {
 			return "", nil, err
 		}
+		s.setAutoApprove(id, req.AutoApprove)
 		ch, err := s.codexPrompt(ctx, id, req.Prompt, req.Cwd, true)
+		if err != nil {
+			s.clearAutoApprove(id, req.AutoApprove)
+		}
 		return id, ch, err
 	}
 	return "", nil, errors.New("sender has no headless backend")
+}
+
+// setAutoApprove records a new session's blanket-allow decision. It must run
+// before the first turn is submitted so that turn's escalations see it.
+func (s *Sender) setAutoApprove(id string, enabled bool) {
+	if !enabled || s.interactions == nil {
+		return
+	}
+	s.interactions.SetAutoApprove(id, true)
+}
+
+// clearAutoApprove drops the decision when the session failed to start, so a
+// half-created id can't leave blanket-allow behind in the persisted file.
+func (s *Sender) clearAutoApprove(id string, enabled bool) {
+	if !enabled || s.interactions == nil {
+		return
+	}
+	s.interactions.SetAutoApprove(id, false)
 }
 
 func newSessionID() string {

@@ -1889,10 +1889,7 @@ pre.raw-markdown {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cfg-form { display: flex; flex-direction: column; gap: 1rem; flex: 1; min-height: 0; }
-/* Three groups — identity, routing, behavior — so the eye has somewhere to
- * land instead of five evenly spaced fields. */
-.cfg-form-group { margin-top: 0.75rem; }
+.cfg-form { display: flex; flex-direction: column; gap: 1.15rem; flex: 1; min-height: 0; }
 .cfg-form label { display: flex; flex-direction: column; gap: 0.35rem; }
 .cfg-form label > span {
   color: var(--text-muted);
@@ -1919,6 +1916,14 @@ pre.raw-markdown {
   resize: none;
   line-height: 1.45;
 }
+/* Inline checkbox row; the shared input rule would stretch the box full width. */
+.cfg-form .cfg-form-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
+}
+.cfg-form .cfg-form-check input { width: auto; }
+.cfg-form .cfg-form-check > span { color: var(--text); }
 .cfg-field-hint {
   color: var(--text-faint);
   line-height: 1.5;

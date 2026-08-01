@@ -746,6 +746,10 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 		return "", nil, err
 	}
 	defer r.releaseWorker(w)
+	// Recorded before the prompt so first-turn escalations see it.
+	if req.AutoApprove && r.interactions != nil {
+		r.interactions.SetAutoApprove(state.SessionID, true)
+	}
 	ch, err := r.prompt(ctx, state.SessionID, w, req.Prompt, true)
 	if err != nil {
 		r.mu.Lock()
@@ -754,6 +758,9 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 		}
 		r.mu.Unlock()
 		c.stop()
+		if req.AutoApprove && r.interactions != nil {
+			r.interactions.SetAutoApprove(state.SessionID, false)
+		}
 		return "", nil, err
 	}
 	return state.SessionID, ch, err

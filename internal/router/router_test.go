@@ -15,6 +15,7 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
 	"github.com/nexustar/usher/internal/transcript"
@@ -169,6 +170,43 @@ func TestForkSessionInheritsAppendSystemPrompt(t *testing.T) {
 	reloaded := sessionmeta.New(metaPath, 0)
 	if got := reloaded.AppendSystemPrompt("branch"); got != "Persisted prompt." {
 		t.Fatalf("persisted fork prompt = %q", got)
+	}
+}
+
+// A branch starts without auto-approve even though it inherits the system prompt.
+func TestForkSessionDoesNotInheritAutoApprove(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "-tmp")
+	srcPath := filepath.Join(projectDir, "source.jsonl")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcPath, []byte(claudeLog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(srcPath)
+	h := interaction.New("")
+	h.SetAutoApprove("source", true)
+	meta := sessionmeta.New(filepath.Join(t.TempDir(), "sessions.json"), 0)
+	r := New(d, map[string]backend.Backend{
+		"claude": {Forker: testForker{
+			dstPath: filepath.Join(projectDir, "branch.jsonl"),
+			newID:   "branch",
+		}},
+	}, "claude", nil, h, meta, nil)
+
+	if _, err := r.ForkSession("source", "turn"); err != nil {
+		t.Fatal(err)
+	}
+	if h.IsAutoApprove("branch") {
+		t.Error("branch inherited auto-approve from its source")
+	}
+	if !h.IsAutoApprove("source") {
+		t.Error("forking cleared the source's auto-approve")
 	}
 }
 
