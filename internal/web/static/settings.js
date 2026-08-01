@@ -37,14 +37,22 @@ const CHEVRON = `<svg class="settings-nav-chevron" width="16" height="16" viewBo
 
 let onRequestClose = null;
 let renderedPane = '';
+// Set by edits in whichever editor form is open, cleared on save and on every
+// form render. Anything that swaps the form out from under those edits —
+// another list item, another pane, closing the dialog — checks it first.
+let paneDirty = false;
+
+function confirmDiscard() {
+  return !paneDirty || confirm('Discard unsaved changes?');
+}
 
 // ----- shell ---------------------------------------------------------------
 
 export function showSettings(pane, requestClose) {
   onRequestClose = requestClose;
   const selected = PANES.find(p => p.id === pane);
-  // '#/settings' shows the first section's content, so the nav marks it too —
-  // wide layouts land on General rather than on nothing. The narrow list level
+  // At the list level nothing is selected; General stands in so wide layouts,
+  // which always show a pane, land somewhere. The narrow list level
   // suppresses the highlight in CSS, since there nothing is open yet.
   const active = selected || PANES[0];
   dialog.classList.toggle('at-pane', Boolean(selected));
@@ -56,9 +64,11 @@ export function showSettings(pane, requestClose) {
   titlePane.textContent = active.label;
   if (!dialog.open) dialog.showModal();
   // The pane is rendered even while the narrow layout is showing the list, so
-  // drilling in is instant and never refetches.
-  if (renderedPane !== active.id) {
+  // drilling in is instant and never refetches. Backing out to the list keeps
+  // the current pane rather than resetting to General, so open edits survive.
+  if (selected ? renderedPane !== selected.id : renderedPane === '') {
     renderedPane = active.id;
+    paneDirty = false;
     active.render(paneHost);
   }
 }
@@ -72,13 +82,21 @@ export function hideSettings() {
 
 dialog.addEventListener('close', () => {
   renderedPane = ''; // refetch on reopen; agents may have changed meanwhile
+  paneDirty = false;
   const requestClose = onRequestClose;
   onRequestClose = null;
   requestClose?.();
 });
-document.getElementById('settings-close').addEventListener('click', () => dialog.close());
+// Every close gesture asks before discarding an edited form. Esc arrives as a
+// cancel event, which is preventable; the close event itself is not.
+dialog.addEventListener('cancel', event => {
+  if (!confirmDiscard()) event.preventDefault();
+});
+document.getElementById('settings-close').addEventListener('click', () => {
+  if (confirmDiscard()) dialog.close();
+});
 dialog.addEventListener('click', event => {
-  if (event.target === dialog) dialog.close(); // backdrop only, never the panel
+  if (event.target === dialog && confirmDiscard()) dialog.close(); // backdrop only, never the panel
 });
 
 // Moving between levels replaces the hash instead of pushing it, so the whole
@@ -89,7 +107,11 @@ dialog.addEventListener('click', event => {
   const link = event.target.closest('a[href^="#/settings"]');
   if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
   event.preventDefault();
-  location.replace(link.getAttribute('href'));
+  const href = link.getAttribute('href');
+  // Only switching to another pane destroys the form; the list level keeps it.
+  const target = href.startsWith('#/settings/') ? href.slice('#/settings/'.length) : renderedPane;
+  if (target !== renderedPane && !confirmDiscard()) return;
+  location.replace(href);
 });
 
 // ----- general pane --------------------------------------------------------
@@ -119,13 +141,6 @@ let selectedName = '';
 let agents = [];
 let catalogs = {};
 let backends = [];
-// Set by edits, cleared by save and by every renderForm. Anything that swaps
-// the form out from under those edits checks it first.
-let formDirty = false;
-
-function confirmDiscard() {
-  return !formDirty || confirm('Discard unsaved changes to this agent?');
-}
 
 // One scannable line per agent, so the list is useful without clicking.
 function agentSummary(agent) {
@@ -214,7 +229,7 @@ function renderForm(agent, copy = false) {
       </div>
     </form>`;
 
-  formDirty = false; // fresh render reflects the stored agent (or a blank)
+  paneDirty = false; // fresh render reflects the stored agent (or a blank)
   const form = host.querySelector('form');
   const backendEl = form.elements.backend;
   const modelEl = form.elements.model;
@@ -228,7 +243,7 @@ function renderForm(agent, copy = false) {
   };
   // Drop the confirmation as soon as the form is dirty again.
   form.addEventListener('input', () => {
-    formDirty = true;
+    paneDirty = true;
     const save = form.querySelector('.agent-save');
     if (save.textContent === 'Saved') save.textContent = 'Save';
   });
@@ -245,7 +260,7 @@ function renderForm(agent, copy = false) {
       showError(body.error || ('HTTP ' + response.status));
       return;
     }
-    formDirty = false;
+    paneDirty = false;
     // Take the name back from the server: it trims and lowercases, and may have
     // just been renamed, so echoing what was typed would lose the selection.
     selectedName = body.name || '';
@@ -337,7 +352,6 @@ async function renderAgentsPane(host) {
 
 let schedules = [];
 let selectedScheduleID = '';
-let scheduleDirty = false;
 // The zone name the server reads cron expressions on, from /api/schedules.
 let serverZone = '';
 
@@ -365,10 +379,6 @@ const CRON_PRESETS = [
   ['0 */6 * * *', 'Every 6 hours'],
 ];
 
-function confirmScheduleDiscard() {
-  return !scheduleDirty || confirm('Discard unsaved changes to this schedule?');
-}
-
 // "None" is a real choice — a task may name no agent — unlike the backend and
 // model lists, which never offer one.
 function agentOptions(selected) {
@@ -395,7 +405,7 @@ function renderScheduleList() {
     </div>`).join('');
   list.querySelectorAll('[data-sched-id]').forEach(button => {
     button.addEventListener('click', () => {
-      if (button.dataset.schedId === selectedScheduleID || !confirmScheduleDiscard()) return;
+      if (button.dataset.schedId === selectedScheduleID || !confirmDiscard()) return;
       selectedScheduleID = button.dataset.schedId;
       renderScheduleList();
       renderScheduleForm(schedules.find(task => task.id === selectedScheduleID));
@@ -418,7 +428,9 @@ async function toggleSchedule(id, enabled) {
     body: JSON.stringify({...task, enabled}),
   }).catch(() => ({ok: false, json: async () => ({})}));
   if (!response.ok) {
-    await loadSchedules(); // the server's answer, whatever it is
+    // Flip the switch back from the unchanged task object; reloading here
+    // would re-render the editor over a form that may hold edits.
+    renderScheduleList();
     return;
   }
   Object.assign(task, await response.json().catch(() => ({})));
@@ -490,7 +502,7 @@ function renderScheduleForm(task) {
       </div>
     </form>`;
 
-  scheduleDirty = false;
+  paneDirty = false;
   const form = host.querySelector('form');
   const showError = message => {
     const error = form.querySelector('.cfg-form-error');
@@ -520,7 +532,7 @@ function renderScheduleForm(task) {
     form.elements.model.innerHTML = modelOptions(backendEl.value, profile.model || '');
   });
   form.addEventListener('input', () => {
-    scheduleDirty = true;
+    paneDirty = true;
     const save = form.querySelector('.sched-save');
     if (save.textContent === 'Saved') save.textContent = 'Save';
   });
@@ -547,11 +559,15 @@ function renderScheduleForm(task) {
       showError(body.error || ('HTTP ' + response.status));
       return;
     }
-    scheduleDirty = false;
+    paneDirty = false;
     selectedScheduleID = body.id;
-    schedules = creating
-      ? [...schedules, body]
-      : schedules.map(task => (task.id === value.id ? body : task));
+    if (creating) {
+      schedules = [...schedules, body];
+    } else {
+      // Merged into the object the list holds, not swapped for a new one: the
+      // toggle writes enabled into it, and the next save reads it back.
+      Object.assign(value, body);
+    }
     renderScheduleList();
     if (creating) {
       // Switch into edit mode: grow the delete/run buttons and start issuing
@@ -559,14 +575,14 @@ function renderScheduleForm(task) {
       renderScheduleForm(body);
     } else {
       // Keep the fields as typed (caret, scroll), but next_run has just moved.
-      form.querySelector('.sched-status').innerHTML = scheduleStatusHTML(body);
+      form.querySelector('.sched-status').innerHTML = scheduleStatusHTML(value);
     }
     const save = document.querySelector('#sched-editor .sched-save');
     if (save) save.textContent = 'Saved';
   });
 
   host.querySelector('.sched-run')?.addEventListener('click', async event => {
-    if (scheduleDirty && !confirm('Run the saved version? Unsaved changes here are not used.')) return;
+    if (paneDirty && !confirm('Run the saved version? Unsaved changes here are not used.')) return;
     const button = event.currentTarget;
     button.disabled = true;
     button.textContent = 'Starting…';
@@ -587,7 +603,7 @@ function renderScheduleForm(task) {
       showError(body.error || ('HTTP ' + response.status));
       return;
     }
-    scheduleDirty = false;
+    paneDirty = false;
     selectedScheduleID = '';
     await loadSchedules();
   });
@@ -617,7 +633,7 @@ async function renderScheduledPane(host) {
       <div id="sched-editor" class="cfg-pane-editor"></div>
     </div>`;
   document.getElementById('sched-new').addEventListener('click', () => {
-    if (!confirmScheduleDiscard()) return;
+    if (!confirmDiscard()) return;
     selectedScheduleID = '';
     renderScheduleList();
     renderScheduleForm(null);

@@ -1766,8 +1766,6 @@ pre.raw-markdown {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-/* A flat hairline-separated list, not boxed cards: with one control a card
- * reads as a lonely island in the dialog's spare height. */
 .settings-row {
   display: flex;
   align-items: center;
@@ -2050,18 +2048,14 @@ pre.raw-markdown {
     background: var(--bg-canvas);
     overflow: hidden;
   }
-  /* Drill-down: one level occupies the screen at a time, the way phone
-   * settings work. Which one is decided by .at-pane, set from the hash. */
+  /* Drill-down: one level on screen at a time, picked by .at-pane (set from
+   * the hash). */
   .settings-dialog-body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
   }
-  /* Edge-to-edge rows on their own surface, separated by hairlines: the
-   * phone-list idiom that says "tap me". A bare label with a chevron half a
-   * screen away reads as two unrelated things. */
-  /* The list surface runs to the bottom of the sheet. Rows on their own fill
-   * leave a hard colour break under the last one, which reads as a half-loaded
-   * screen rather than a short list. */
+  /* The surface colour sits on the nav, not the rows, so a short list doesn't
+   * end in a hard colour break. */
   .settings-nav {
     border-right: 0;
     padding: 0;
@@ -2088,8 +2082,6 @@ pre.raw-markdown {
   .settings-dialog.at-pane .settings-title-all { display: none; }
   .settings-dialog.at-pane .settings-title-pane { display: inline; }
   .settings-section { padding: 1rem; }
-  /* Stacked: a short button hanging under the text reads as an orphan, so it
-   * takes the row's width. */
   .settings-row { align-items: stretch; flex-direction: column; gap: 0.75rem; }
   .settings-row-action { width: 100%; padding: 0.6rem; }
   .cfg-pane { padding: 1rem; gap: 0.75rem; }
