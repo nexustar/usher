@@ -181,6 +181,53 @@ function wireCommandPreview(promptEl, sessionID) {
   promptEl.addEventListener('blur', () => setTimeout(hide, 0));
 }
 
+// fileRef is how an uploaded file enters the message: images as Markdown so
+// the sent turn shows the picture, anything else as a plain marker. The
+// extensions are the ones /image serves; a path with a space needs the <…>
+// destination form.
+function fileRef(path) {
+  if (!/\.(?:png|jpe?g|gif|webp)$/i.test(path)) return '[file: ' + path + ']';
+  const alt = path.split('/').pop().replace(/[[\]]/g, '');
+  const dest = /\s/.test(path) ? '<' + path + '>' : path;
+  return '![' + alt + '](' + dest + ')';
+}
+
+// wireUpload connects the composer's upload button to url, then drops the
+// stored path into the message box for the agent to read. notify(text, role)
+// reports progress the way the calling view can — 'system' or 'error'.
+function wireUpload(url, promptEl, notify) {
+  const btn = document.getElementById('upload-btn');
+  const input = document.getElementById('upload-input');
+  if (!btn || !input) return;
+  btn.addEventListener('click', () => input.click());
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    if (!file) return;
+    btn.disabled = true;
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const res = await fetch(url, { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        notify('upload failed: ' + (err.error || 'HTTP ' + res.status), 'error');
+        return;
+      }
+      const { path } = await res.json();
+      const prefix = promptEl.value && !promptEl.value.endsWith('\n') ? '\n' : '';
+      promptEl.value += prefix + fileRef(path) + ' ';
+      promptEl.focus();
+      growPrompt(promptEl);
+      notify('uploaded ' + file.name, 'system');
+    } catch (e) {
+      notify('upload failed: ' + String(e), 'error');
+    } finally {
+      btn.disabled = false;
+      input.value = '';
+    }
+  });
+}
+
 // ---------- New session view ----------
 //
 // Mirrors the regular session detail layout so the page transition after
@@ -228,18 +275,24 @@ export async function showNewSession(opts = {}) {
           <textarea id="prompt" rows="1" placeholder="message…"></textarea>
           <div class="composer-bar">
             <div class="composer-tools">
-              <div class="composer-config-wrap">
-                <button id="new-config" class="composer-picker" type="button"
-                        aria-haspopup="menu" aria-expanded="false"></button>
-                <div id="new-config-menu" class="composer-config-menu" role="menu" hidden></div>
-              </div>
+              <button id="upload-btn" class="upload-btn" type="button" title="upload file">
+                <span class="t-icon">+</span><span class="t-full">upload</span>
+              </button>
+              <input id="upload-input" type="file" hidden>
               <button id="auto-approve-toggle" class="auto-approve-toggle" type="button"
                 aria-pressed="false"
                 title="ask: confirm each tool call · auto: run them automatically">
                 <span class="t-icon">ϟ</span><span class="t-full">approve:</span><span class="toggle-val">ask</span>
               </button>
             </div>
-            <div class="composer-send"><button id="send">send</button></div>
+            <div class="composer-send">
+              <div class="composer-config-wrap">
+                <button id="new-config" class="composer-picker" type="button"
+                        aria-haspopup="menu" aria-expanded="false"></button>
+                <div id="new-config-menu" class="composer-config-menu" role="menu" hidden></div>
+              </div>
+              <button id="send">send</button>
+            </div>
           </div>
         </div>
         <div id="new-session-err" class="err" style="display:none; margin-top:0.5rem"></div>
@@ -262,6 +315,13 @@ export async function showNewSession(opts = {}) {
   } else {
     cwdEl.focus();
   }
+
+  // No transcript to report into; the path in the message box is receipt enough.
+  wireUpload('/api/uploads', promptEl, (content, role) => {
+    if (role !== 'error') return;
+    errEl.textContent = content;
+    errEl.style.display = '';
+  });
 
   let modelCatalogs = {};
   let backends = [];
@@ -302,11 +362,13 @@ export async function showNewSession(opts = {}) {
   const displayName = (choices, id) => (choices.find(c => c.id === id) || {display_name: id}).display_name;
 
   // The whole config collapsed to one word: the agent name, or backend · model
-  // when custom.
+  // when custom. The backend is a span of its own so CSS can drop it on the
+  // narrowest phones, where the picker's color still says which.
   const updateConfigLabel = () => {
     configBtn.parentElement.dataset.backend = backend || 'claude';
-    configBtn.textContent = agentName ||
-      displayName(backendChoices(), backend) + ' · ' + displayName(modelChoices(), model);
+    configBtn.innerHTML = agentName ? esc(agentName)
+      : `<span class="picker-backend">${esc(displayName(backendChoices(), backend))} · </span>` +
+        esc(displayName(modelChoices(), model));
   };
 
   // Saved per-backend model if the catalog still offers it, else the catalog
@@ -801,39 +863,8 @@ export async function showDetail(id) {
     });
   }
 
-  const uploadBtn = document.getElementById('upload-btn');
-  const uploadInput = document.getElementById('upload-input');
-  if (uploadBtn && uploadInput) {
-    uploadBtn.addEventListener('click', () => uploadInput.click());
-    uploadInput.addEventListener('change', async () => {
-      const file = uploadInput.files[0];
-      if (!file) return;
-      uploadBtn.disabled = true;
-      const form = new FormData();
-      form.append('file', file);
-      try {
-        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/upload', {
-          method: 'POST', body: form,
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          appendChatMessage({ role: 'error', content: 'upload failed: ' + (err.error || 'HTTP ' + res.status), ts: new Date().toISOString() });
-          return;
-        }
-        const { path } = await res.json();
-        const prefix = promptEl.value && !promptEl.value.endsWith('\n') ? '\n' : '';
-        promptEl.value += prefix + '[file: ' + path + '] ';
-        promptEl.focus();
-        growPrompt(promptEl);
-        appendChatMessage({ role: 'system', content: 'uploaded ' + file.name, ts: new Date().toISOString() });
-      } catch (e) {
-        appendChatMessage({ role: 'error', content: 'upload failed: ' + String(e), ts: new Date().toISOString() });
-      } finally {
-        uploadBtn.disabled = false;
-        uploadInput.value = '';
-      }
-    });
-  }
+  wireUpload('/api/sessions/' + encodeURIComponent(id) + '/upload', promptEl,
+    (content, role) => appendChatMessage({ role, content, ts: new Date().toISOString() }));
 
   // Keep one send/cancel button stable while its request is in flight.
   let actionPending = null; // null | send | cancel

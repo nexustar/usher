@@ -3,8 +3,10 @@ package web
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -209,6 +211,55 @@ func TestGzipMiddleware(t *testing.T) {
 			t.Errorf("body = %q", rec.Body.String())
 		}
 	})
+}
+
+// Each draft upload gets its own directory, so the same name uploaded twice
+// keeps it both times.
+func TestDraftUploadKeepsFilenamePerUpload(t *testing.T) {
+	s := &Server{attachmentsDir: t.TempDir()}
+	upload := func() string {
+		t.Helper()
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		part, err := mw.CreateFormFile("file", "screenshot.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte("png data")); err != nil {
+			t.Fatal(err)
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/uploads", &body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rec := httptest.NewRecorder()
+		s.handleDraftUpload(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+		}
+		var got struct{ Path string }
+		if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Path
+	}
+
+	first, second := upload(), upload()
+	if first == second {
+		t.Fatalf("both uploads landed on %q", first)
+	}
+	for _, p := range []string{first, second} {
+		if filepath.Base(p) != "screenshot.png" {
+			t.Errorf("path = %q, want it to keep the name screenshot.png", p)
+		}
+		if got, want := filepath.Dir(filepath.Dir(p)), filepath.Join(s.attachmentsDir, draftsDir); got != want {
+			t.Errorf("%q sits in %q, want a subdirectory of %q", p, got, want)
+		}
+		if data, err := os.ReadFile(p); err != nil || string(data) != "png data" {
+			t.Errorf("content of %q = %q (err %v)", p, data, err)
+		}
+	}
 }
 
 func TestHumanizeAge(t *testing.T) {

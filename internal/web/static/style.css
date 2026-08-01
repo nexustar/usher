@@ -848,7 +848,7 @@ td.id { color: var(--text-disabled); }
 .composer-tools { display: flex; align-items: center; gap: 0.5rem; }
 .composer-send { margin-left: auto; display: flex; align-items: center; gap: 0.35rem; }
 .session-usage-wrap { position: relative; display: flex; align-items: center; }
-.composer-send button.session-usage {
+button.session-usage {
   --usage-pct: 0%;
   width: 1.25rem;
   height: 1.25rem;
@@ -858,14 +858,14 @@ td.id { color: var(--text-disabled); }
   background: conic-gradient(var(--accent) var(--usage-pct), var(--border-strong) 0);
   position: relative;
 }
-.composer-send button.session-usage::after {
+button.session-usage::after {
   content: "";
   position: absolute;
   inset: 0.16rem;
   border-radius: 50%;
   background: var(--bg-chrome);
 }
-.composer-send button.session-usage.unknown {
+button.session-usage.unknown {
   background: var(--border-strong);
 }
 .session-usage-detail {
@@ -884,7 +884,8 @@ td.id { color: var(--text-disabled); }
 .session-usage-detail > div { display: flex; align-items: baseline; gap: 0.55rem; }
 .session-usage-detail strong { width: 3.6rem; flex: none; font-weight: 500; color: var(--text-faint); }
 .session-usage-detail span { white-space: nowrap; }
-.composer-send button {
+/* Direct children only: not the model picker or its menu, which sit inside. */
+.composer-send > button {
   padding: 0.32rem 0.8rem;
   border: 1px solid var(--accent);
   background: var(--accent);
@@ -894,7 +895,7 @@ td.id { color: var(--text-disabled); }
   font: inherit;
   line-height: 1.2;
 }
-.composer-send button:disabled {
+.composer-send > button:disabled {
   background: var(--border-strong);
   border-color: var(--border-strong);
   cursor: not-allowed;
@@ -1383,11 +1384,11 @@ pre.raw-markdown {
 .term-input-row button:hover { background: #161b22; }
 .term-input-row button:disabled { opacity: 0.6; cursor: progress; }
 
-.composer-send button.cancel {
+.composer-send > button.cancel {
   border-color: var(--danger);
   background: var(--danger);
 }
-.composer-send button.cancel:disabled {
+.composer-send > button.cancel:disabled {
   background: var(--border-strong);
   border-color: var(--border-strong);
 }
@@ -1570,8 +1571,9 @@ pre.raw-markdown {
   border: none;
   background: transparent;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: var(--font-sm);
+  font-size: var(--font-base);
   text-align: center;
+  white-space: nowrap; /* "Claude · Opus Plan" breaking mid-label grows the bar */
   padding: 0.3rem 0.55rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -1586,13 +1588,16 @@ pre.raw-markdown {
 .composer-picker:hover { background: rgba(110, 118, 129, 0.12); }
 .composer-picker:focus { outline: none; }
 .composer-picker:focus-visible { box-shadow: 0 0 0 2px var(--accent-border); }
+/* Below ~360px "Claude · Opus Plan" pushes send out of the composer. Drop the
+ * backend name there; the picker's color still carries it. */
+@media (max-width: 380px) { .picker-backend { display: none; } }
 /* Positioning shell only — overflow stays visible so the side submenu can
  * hang outside it. It also carries the open animation: the body inside is
  * rebuilt on every toggle and would replay it. */
 .composer-config-menu {
   position: absolute;
   bottom: calc(100% + 0.5rem);
-  left: 0;
+  right: 0; /* the picker sits next to send, at the composer's right edge */
   z-index: 30;
   animation: config-pop 120ms ease-out;
 }
@@ -1613,13 +1618,13 @@ pre.raw-markdown {
  * fresh node each time it opens, so its mount animation is the transition. */
 .config-submenu {
   position: absolute;
-  left: calc(100% + 0.3rem);
+  right: calc(100% + 0.3rem);
   bottom: 0;
   animation: config-pop 120ms ease-out;
 }
 @media (max-width: 720px) {
   /* No side room on phones: stack above the menu instead. */
-  .config-submenu { left: 0; bottom: calc(100% + 0.3rem); }
+  .config-submenu { right: 0; bottom: calc(100% + 0.3rem); }
 }
 .config-row {
   display: flex;

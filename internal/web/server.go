@@ -13,6 +13,7 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -169,6 +170,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	webMux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	webMux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	webMux.HandleFunc("POST /api/uploads", s.handleDraftUpload)
 	webMux.HandleFunc("GET /api/models", s.handleModels)
 	webMux.HandleFunc("GET /api/agents", s.handleAgents)
 	webMux.HandleFunc("POST /api/agents", s.handleCreateAgent)
@@ -951,8 +953,12 @@ func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "not a supported image type")
 		return
 	}
+	// Beyond the cwd: this session's uploads, the pre-session uploads its
+	// first message points at, Codex's generated images.
 	full, ok := pathutil.ResolveImagePath(sess.Cwd, rel,
-		filepath.Join(s.attachmentsDir, id), pathutil.CodexGeneratedImagesDir(id))
+		filepath.Join(s.attachmentsDir, id),
+		filepath.Join(s.attachmentsDir, draftsDir),
+		pathutil.CodexGeneratedImagesDir(id))
 	if !ok {
 		writeErr(w, http.StatusNotFound, "image not found")
 		return
@@ -979,6 +985,10 @@ const (
 	maxUploadMemory = 8 << 20   // spill larger multipart file data to disk
 )
 
+// draftsDir holds uploads made before a session exists, one subdirectory per
+// upload. Session ids are UUIDs, so it can't collide with a session's own.
+const draftsDir = "_drafts"
+
 // handleUpload accepts a multipart file upload and stores it in the session's
 // managed attachment directory. Returns the absolute path so the user can
 // reference it in a prompt for the session agent to read.
@@ -989,7 +999,20 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
+	s.saveUpload(w, r, s.attachmentsDir, id)
+}
 
+// handleDraftUpload does the same for the new-session composer, which has no
+// id to file the upload under yet. Nothing relocates it afterwards: the id is
+// minted in the same call that sends the initial message, which already
+// carries the path. One directory per upload keeps the original filename.
+func (s *Server) handleDraftUpload(w http.ResponseWriter, r *http.Request) {
+	var b [8]byte
+	_, _ = rand.Read(b[:]) // documented never to fail
+	s.saveUpload(w, r, filepath.Join(s.attachmentsDir, draftsDir), fmt.Sprintf("%x", b[:]))
+}
+
+func (s *Server) saveUpload(w http.ResponseWriter, r *http.Request, root, dir string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	if err := r.ParseMultipartForm(maxUploadMemory); err != nil {
 		writeErr(w, http.StatusBadRequest, "file too large or invalid multipart")
@@ -1004,7 +1027,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	dst, err := attachment.Save(s.attachmentsDir, id, header.Filename, file, maxUploadSize)
+	dst, err := attachment.Save(root, dir, header.Filename, file, maxUploadSize)
 	if errors.Is(err, attachment.ErrInvalidName) {
 		writeErr(w, http.StatusBadRequest, "invalid filename")
 		return
