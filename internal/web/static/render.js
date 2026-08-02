@@ -170,11 +170,13 @@ export function renderAssistantParts(parts) {
   }).join('');
 }
 
-export function appendChatMessage(m) {
+// beforeNode inserts ahead of an existing message instead of at the end;
+// prepended history must never stick-scroll.
+export function appendChatMessage(m, beforeNode) {
   const list = document.getElementById('chat-scroll');
   if (!list) return null;
   // Decide stick-to-bottom BEFORE inserting — the insert changes scrollHeight.
-  const stick = !suppressAppendScroll && isNearBottom(list);
+  const stick = !beforeNode && !suppressAppendScroll && isNearBottom(list);
   const div = document.createElement('div');
   const role = m.role || 'agent';
   div.className = 'chat-message ' + role + (m._placeholder ? ' placeholder' : '');
@@ -218,8 +220,8 @@ export function appendChatMessage(m) {
   }
   // send-anchor lives inside chat-scroll (sticky at bottom). Insert
   // new messages before it so it stays the last child.
-  const sendAnchor = list.querySelector(':scope > .send-anchor');
-  if (sendAnchor) list.insertBefore(div, sendAnchor);
+  const anchor = beforeNode || list.querySelector(':scope > .send-anchor');
+  if (anchor) list.insertBefore(div, anchor);
   else list.appendChild(div);
   if (stick) list.scrollTop = list.scrollHeight;
   return div;

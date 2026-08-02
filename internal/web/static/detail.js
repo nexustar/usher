@@ -62,12 +62,15 @@ let liveTurn = null; // { node, parts: [TurnPart], ts }
 // one is promoted in place with zero fetches.
 let liveTurnDirty = false;
 
-// Transcript window: render the most recent `transcriptLimit` turns; "load
-// earlier" grows it by a page and re-fetches. transcriptTotal is the server's
-// full turn count (X-Transcript-Total), used to show/hide the button.
+// Transcript window: render the most recent `transcriptLimit` turns. "load
+// earlier" prepends one page of older turns and widens transcriptLimit so tail
+// refreshes keep covering the whole window. transcriptTotal is the server's
+// full turn count (X-Transcript-Total); windowStart is the absolute index of
+// the oldest rendered turn (X-Transcript-Offset), 0 = whole history loaded.
 const TRANSCRIPT_PAGE = 100;
 let transcriptLimit = TRANSCRIPT_PAGE;
 let transcriptTotal = 0;
+let windowStart = 0;
 
 // Attach a small command palette to a session composer. Command discovery is
 // lazy because Claude only advertises its catalog after the live stream-json
@@ -576,6 +579,7 @@ export async function showDetail(id) {
   liveTurnDirty = false;
   transcriptLimit = TRANSCRIPT_PAGE;
   transcriptTotal = 0;
+  windowStart = 0;
   detailStreaming = false;
   subtitle.textContent = 'session detail';
 
@@ -1568,8 +1572,7 @@ function finalizeTurn(id, d) {
   updateLoadEarlier(id);
 }
 
-async function loadTranscript(id, opts) {
-  opts = opts || {};
+async function loadTranscript(id) {
   try {
     const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/transcript?limit=' + transcriptLimit);
     if (!res.ok) return;
@@ -1578,6 +1581,8 @@ async function loadTranscript(id, opts) {
     if (id !== currentDetailId) return;
     const total = parseInt(res.headers.get('X-Transcript-Total') || '', 10);
     transcriptTotal = Number.isFinite(total) ? total : turns.length;
+    const offset = parseInt(res.headers.get('X-Transcript-Offset') || '', 10);
+    windowStart = Number.isFinite(offset) ? offset : Math.max(0, transcriptTotal - turns.length);
     // Transcripts are append-only, so a change shows up as a longer list or a
     // mutated last turn. Skip the rebuild when nothing changed (no flicker /
     // scroll yank when there's nothing new).
@@ -1642,12 +1647,7 @@ async function loadTranscript(id, opts) {
     } finally {
       setSuppressAppendScroll(false); // never leave it stuck, or future appends won't scroll
     }
-    if (opts.anchorHeight != null) {
-      // "Load earlier" prepended older turns above the viewport: restore the
-      // prior position by the height the prepended content added, so the reader
-      // stays on what they were reading.
-      el.scrollTop = opts.anchorTop + (el.scrollHeight - opts.anchorHeight);
-    } else if (wasAtBottom) {
+    if (wasAtBottom) {
       // Only follow new turns to the bottom if the reader was already there.
       el.scrollTop = el.scrollHeight;
     }
@@ -1695,8 +1695,7 @@ function updateLoadEarlier(id) {
   const el = document.getElementById('chat-scroll');
   if (!el) return;
   let btn = el.querySelector(':scope > .load-earlier');
-  const more = transcriptTotal > renderedTurns.length;
-  if (!more) { if (btn) btn.remove(); return; }
+  if (windowStart <= 0) { if (btn) btn.remove(); return; }
   if (!btn) {
     btn = document.createElement('button');
     btn.className = 'load-earlier';
@@ -1710,17 +1709,45 @@ function updateLoadEarlier(id) {
   btn.textContent = '↑ load earlier (' + renderedTurns.length + '/' + transcriptTotal + ')';
 }
 
-// loadEarlier grows the window by a page and re-fetches, anchoring the scroll so
-// the prepended history doesn't yank the reader. No-op while a turn streams.
+// loadEarlier prepends one page of older turns, anchoring the scroll so the
+// inserted history doesn't yank the reader. It bypasses loadTranscript's
+// reconcile, which aligns both lists from their first turn — wrong once the
+// rendered window starts earlier than a fetch. No-op while a turn streams or
+// a page fetch is already in flight (a double-click would prepend twice).
+let loadingEarlier = false;
 async function loadEarlier(id) {
-  if (detailStreaming) return;
+  if (detailStreaming || loadingEarlier || windowStart <= 0) return;
   const el = document.getElementById('chat-scroll');
   if (!el) return;
-  transcriptLimit += TRANSCRIPT_PAGE;
-  const anchorTop = el.scrollTop;
-  const anchorHeight = el.scrollHeight;
-  lastTranscriptSig = ''; // window changed — force the reconcile past the gate
-  await loadTranscript(id, { anchorTop, anchorHeight });
+  loadingEarlier = true;
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(id) +
+      '/transcript?before=' + windowStart + '&limit=' + TRANSCRIPT_PAGE);
+    if (!res.ok) return;
+    const turns = (await res.json()) || [];
+    if (id !== currentDetailId || !turns.length) return;
+    const anchorTop = el.scrollTop;
+    const anchorHeight = el.scrollHeight;
+    // Insert ahead of the oldest rendered turn, keeping the "load earlier"
+    // button above the prepended page.
+    const before = renderedTurns.length ? renderedTurns[0].node : null;
+    const entries = [];
+    for (const t of turns) {
+      const node = appendChatMessage(t, before);
+      if (!node) continue;
+      const entry = { key: turnKey(t), node };
+      if (t.role === 'assistant') { entry.parts = t.parts; entry.ts = t.ts; }
+      entries.push(entry);
+    }
+    renderedTurns.unshift(...entries);
+    const offset = parseInt(res.headers.get('X-Transcript-Offset') || '', 10);
+    windowStart = Number.isFinite(offset) ? offset : Math.max(0, windowStart - turns.length);
+    // Keep the tail refresh covering everything now on screen.
+    transcriptLimit += turns.length;
+    el.scrollTop = anchorTop + (el.scrollHeight - anchorHeight);
+    updateLoadEarlier(id);
+  } catch {/* window unchanged — the button stays for a retry */}
+  finally { loadingEarlier = false; }
 }
 
 // turnKey identifies a transcript turn for incremental reconcile. For user turns

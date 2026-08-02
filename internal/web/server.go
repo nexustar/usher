@@ -899,10 +899,19 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	turns, total, err := s.router.ReadTurns(id, limit)
+	// ?before=N is the window's exclusive upper bound in absolute turn
+	// indices; absent or unparseable asks for the newest turns.
+	before := -1
+	if v := r.URL.Query().Get("before"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			before = n
+		}
+	}
+	turns, offset, total, err := s.router.ReadTurns(id, before, limit)
 	if errors.Is(err, router.ErrSessionNotFound) {
 		if _, ok := s.router.GetSession(id); ok {
 			w.Header().Set("X-Transcript-Total", "0")
+			w.Header().Set("X-Transcript-Offset", "0")
 			writeJSON(w, http.StatusOK, []core.Turn{})
 			return
 		}
@@ -916,9 +925,10 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	if turns == nil {
 		turns = []core.Turn{}
 	}
-	// Total turn count before the limit trim, so the client knows whether
-	// older turns exist beyond the window (to offer "load earlier").
+	// Total is the turn count before the window trim; Offset is the absolute
+	// index of the window's first turn.
 	w.Header().Set("X-Transcript-Total", strconv.Itoa(total))
+	w.Header().Set("X-Transcript-Offset", strconv.Itoa(offset))
 	writeJSON(w, http.StatusOK, turns)
 }
 

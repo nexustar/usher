@@ -314,15 +314,32 @@ func (r *Router) readTurnsForBackend(path, name string, limit int) ([]core.Turn,
 	return format.ReadTurns(path, limit)
 }
 
-// ReadTurns resolves a session's log path and backend and returns its grouped
-// display turns (and the pre-trim total). Returns ErrSessionNotFound when the
-// session has no log on disk.
-func (r *Router) ReadTurns(id string, limit int) ([]core.Turn, int, error) {
+// ReadTurns returns a window of a session's grouped display turns, the
+// absolute index of the window's first turn, and the full turn count. Indices
+// count from the oldest turn, so they stay stable as the transcript grows.
+// before is the exclusive upper bound of the window; negative asks for the
+// newest turns. Returns ErrSessionNotFound when the session has no log on
+// disk.
+func (r *Router) ReadTurns(id string, before, limit int) ([]core.Turn, int, int, error) {
 	path, ok := r.discovery.Path(id)
 	if !ok {
-		return nil, 0, ErrSessionNotFound
+		return nil, 0, 0, ErrSessionNotFound
 	}
-	return r.readTurnsForBackend(path, r.backendOf(id), limit)
+	// Backends parse the whole log regardless of limit, so windowing here
+	// costs nothing extra.
+	turns, total, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	end := total
+	if before >= 0 && before < end {
+		end = before
+	}
+	start := 0
+	if limit > 0 && end-limit > start {
+		start = end - limit
+	}
+	return turns[start:end], start, total, nil
 }
 
 // backendForModel maps a new-session model choice to its backend. Model names

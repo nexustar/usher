@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -286,6 +287,75 @@ func TestReadTurnsForBackend(t *testing.T) {
 	if wrong, _, _ := (transcript.Codex{}).ReadTurns(claudePath, 0); len(wrong) != 0 {
 		t.Errorf("codex parser should yield nothing from a claude log; got %+v", wrong)
 	}
+}
+
+// TestReadTurnsWindow proves window indices stay stable as a session grows:
+// transcripts only gain turns at the tail, so `before` keeps naming the same
+// turns after more arrive.
+func TestReadTurnsWindow(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "-tmp")
+	logPath := filepath.Join(projectDir, "win.jsonl")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := func(i int) string {
+		return fmt.Sprintf("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"t%d\"}}\n", i)
+	}
+	var log strings.Builder
+	for i := 0; i < 6; i++ {
+		log.WriteString(line(i))
+	}
+	if err := os.WriteFile(logPath, []byte(log.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(logPath)
+	r := New(d, map[string]backend.Backend{
+		"claude": {Transcript: transcript.Claude{}},
+	}, "claude", nil, nil, nil, nil)
+
+	contents := func(turns []core.Turn) []string {
+		out := make([]string, 0, len(turns))
+		for _, turn := range turns {
+			out = append(out, turn.Content)
+		}
+		return out
+	}
+	check := func(name string, before, limit int, want []string, wantOffset, wantTotal int) {
+		t.Helper()
+		turns, offset, total, err := r.ReadTurns("win", before, limit)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := contents(turns); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: turns = %v, want %v", name, got, want)
+		}
+		if offset != wantOffset {
+			t.Errorf("%s: offset = %d, want %d", name, offset, wantOffset)
+		}
+		if total != wantTotal {
+			t.Errorf("%s: total = %d, want %d", name, total, wantTotal)
+		}
+	}
+
+	check("newest page", -1, 2, []string{"t4", "t5"}, 4, 6)
+	check("page before it", 4, 2, []string{"t2", "t3"}, 2, 6)
+
+	log.WriteString(line(6))
+	log.WriteString(line(7))
+	if err := os.WriteFile(logPath, []byte(log.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check("same page after growth", 4, 2, []string{"t2", "t3"}, 2, 8)
+	check("newest page slid", -1, 2, []string{"t6", "t7"}, 6, 8)
+
+	check("clamped at front", 1, 5, []string{"t0"}, 0, 8)
+	check("empty window at front", 0, 5, []string{}, 0, 8)
+	check("before past the end", 99, 2, []string{"t6", "t7"}, 6, 8)
 }
 
 func TestBackendForModel(t *testing.T) {
