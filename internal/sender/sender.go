@@ -546,19 +546,36 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendS
 					emitError(ctx, out, "claude turn failed: "+result.Subtype)
 				}
 			}
-			emitClaudeRuntime(ctx, out, result)
+			emitClaudeRuntime(ctx, out, result, s.claudeEffort(ctx, id))
 		},
 	}), nil
 }
 
-func emitClaudeRuntime(ctx context.Context, out chan<- StreamEvent, result claude.Result) bool {
-	if result.ContextWindow <= 0 {
+// claudeEffort probes the live process, the only place Claude reports effort.
+// A failure leaves the field empty rather than holding up the snapshot.
+func (s *Sender) claudeEffort(ctx context.Context, id string) string {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	settings, err := s.claude.Settings(ctx, id)
+	if err != nil {
+		s.logger.Debug("claude settings probe", "session", id, "err", err)
+		return ""
+	}
+	return settings.Effort
+}
+
+func emitClaudeRuntime(ctx context.Context, out chan<- StreamEvent, result claude.Result, effort string) bool {
+	if result.ContextWindow <= 0 && effort == "" {
 		return true
 	}
-	raw, _ := json.Marshal(map[string]any{
-		"model":          result.Model,
-		"context_window": result.ContextWindow,
-	})
+	fields := map[string]any{"model": result.Model}
+	if result.ContextWindow > 0 {
+		fields["context_window"] = result.ContextWindow
+	}
+	if effort != "" {
+		fields["effort"] = effort
+	}
+	raw, _ := json.Marshal(fields)
 	return sendEvent(ctx, out, StreamEvent{Type: backend.EventRuntime, Raw: raw})
 }
 

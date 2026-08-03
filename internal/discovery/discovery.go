@@ -164,18 +164,24 @@ func (d *Discovery) upsert(path string) {
 		// rename commands also change title after it was first populated.
 		needTitle := existing.Title == ""
 		if meta, err := src.ReadMeta(path); err == nil {
-			// Claude's status-line callback is the authoritative source because
-			// it includes the effective max window. Transcript usage is only a
+			// Claude's live result event is the authoritative source because it
+			// includes the effective max window. Transcript usage is only a
 			// fallback; never let a later fsnotify scan erase a captured window.
 			if existing.Backend == "pi" {
-				// Pi transcript metadata lacks RPC-only context usage. Effort is
-				// persisted, but only once changed, so an empty one means
-				// "unknown here", never "cleared".
+				// Effort is persisted, but only once changed, so an empty one
+				// means "unknown here", never "cleared". Transcript usage is
+				// likewise a cold fallback: pi's own snapshot estimates the
+				// whole branch where the file only counts the last message.
+				// Neither reports anything after a compaction, so filling a
+				// zero cannot resurrect a stale total.
 				if existing.Runtime.Model == "" {
 					existing.Runtime.Model = meta.Runtime.Model
 				}
 				if meta.Runtime.Effort != "" {
 					existing.Runtime.Effort = meta.Runtime.Effort
+				}
+				if existing.Runtime.ContextTokens == 0 {
+					existing.Runtime.ContextTokens = meta.Runtime.ContextTokens
 				}
 			} else if existing.Backend != "claude" || existing.Runtime.ContextWindow == 0 {
 				existing.Runtime = meta.Runtime

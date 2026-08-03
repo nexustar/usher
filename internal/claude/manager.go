@@ -62,7 +62,7 @@ type process struct {
 	mu            sync.Mutex
 	turns         []*turnRequest // nil entry represents a spontaneous turn
 	controls      map[string]context.CancelFunc
-	controlWait   map[string]chan error
+	controlWait   map[string]chan controlResult
 	commands      []Command
 	commandsReady bool
 	initDone      chan struct{}
@@ -71,6 +71,13 @@ type process struct {
 	lastUsed      time.Time
 	stopping      bool
 	done          chan struct{}
+}
+
+// controlResult carries a control response back to its waiting request. Most
+// subtypes answer with an empty payload.
+type controlResult struct {
+	payload json.RawMessage
+	err     error
 }
 
 // Command is one slash command reported by Claude Code's system/init event.
@@ -188,7 +195,7 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 	}
 	p := &process{
 		id: id, cmd: cmd, in: in, cwd: cwd,
-		controls: map[string]context.CancelFunc{}, controlWait: map[string]chan error{},
+		controls: map[string]context.CancelFunc{}, controlWait: map[string]chan controlResult{},
 		initDone: make(chan struct{}), lastUsed: time.Now(), done: make(chan struct{}),
 	}
 	if lease {
@@ -233,8 +240,16 @@ func waitForInitialization(ctx context.Context, p *process) error {
 }
 
 func (m *Manager) initializeProcess(ctx context.Context, p *process) error {
-	requestID := fmt.Sprintf("usher-init-%d", time.Now().UnixNano())
-	result := make(chan error, 1)
+	if _, err := m.controlRequest(ctx, p, map[string]any{"subtype": "initialize", "hooks": nil}); err != nil {
+		return err
+	}
+	_, err := waitForCommands(ctx, p)
+	return err
+}
+
+func (m *Manager) controlRequest(ctx context.Context, p *process, request map[string]any) (json.RawMessage, error) {
+	requestID := fmt.Sprintf("usher-ctl-%d", time.Now().UnixNano())
+	result := make(chan controlResult, 1)
 	p.mu.Lock()
 	p.controlWait[requestID] = result
 	p.mu.Unlock()
@@ -244,23 +259,49 @@ func (m *Manager) initializeProcess(ctx context.Context, p *process) error {
 		p.mu.Unlock()
 	}()
 	if err := write(p, map[string]any{
-		"type": "control_request", "request_id": requestID,
-		"request": map[string]any{"subtype": "initialize", "hooks": nil},
+		"type": "control_request", "request_id": requestID, "request": request,
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	case <-p.done:
-		return errors.New("claude process exited during initialization")
-	case err := <-result:
-		if err != nil {
-			return err
-		}
+		return nil, errors.New("claude process exited during control request")
+	case res := <-result:
+		return res.payload, res.err
 	}
-	_, err := waitForCommands(ctx, p)
-	return err
+}
+
+type Settings struct {
+	Model  string
+	Effort string
+}
+
+// Settings reports what a live process resolved for this session. It is the
+// only reading of effort — Claude writes it to neither the transcript nor any
+// event — and reports none for a model that does not support it.
+func (m *Manager) Settings(ctx context.Context, id string) (Settings, error) {
+	m.mu.Lock()
+	p := m.processes[id]
+	m.mu.Unlock()
+	if p == nil {
+		return Settings{}, fmt.Errorf("claude session %s has no live process", id)
+	}
+	raw, err := m.controlRequest(ctx, p, map[string]any{"subtype": "get_settings"})
+	if err != nil {
+		return Settings{}, err
+	}
+	var payload struct {
+		Applied struct {
+			Model  string `json:"model"`
+			Effort string `json:"effort"`
+		} `json:"applied"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return Settings{}, err
+	}
+	return Settings{Model: payload.Applied.Model, Effort: payload.Applied.Effort}, nil
 }
 
 func scrubEnv(hookSock string) []string {
@@ -539,26 +580,30 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 func (m *Manager) finishControlRequest(p *process, raw []byte) {
 	var msg struct {
 		Response struct {
-			Subtype   string `json:"subtype"`
-			RequestID string `json:"request_id"`
-			Error     string `json:"error"`
-			Response  struct {
-				Commands []struct {
-					Name string `json:"name"`
-				} `json:"commands"`
-			} `json:"response"`
+			Subtype   string          `json:"subtype"`
+			RequestID string          `json:"request_id"`
+			Error     string          `json:"error"`
+			Payload   json.RawMessage `json:"response"`
 		} `json:"response"`
 	}
 	if json.Unmarshal(raw, &msg) != nil || msg.Response.RequestID == "" {
 		return
 	}
+	var body struct {
+		// Initialize reports a list even when it is empty; every other subtype
+		// reports none, which must not read as "this session has no commands".
+		Commands *[]struct {
+			Name string `json:"name"`
+		} `json:"commands"`
+	}
+	_ = json.Unmarshal(msg.Response.Payload, &body)
 	p.mu.Lock()
 	wait := p.controlWait[msg.Response.RequestID]
 	delete(p.controlWait, msg.Response.RequestID)
-	if msg.Response.Subtype == "success" {
-		commands := make([]Command, 0, len(msg.Response.Response.Commands))
-		seen := make(map[string]struct{}, len(msg.Response.Response.Commands))
-		for _, command := range msg.Response.Response.Commands {
+	if msg.Response.Subtype == "success" && body.Commands != nil {
+		commands := make([]Command, 0, len(*body.Commands))
+		seen := make(map[string]struct{}, len(*body.Commands))
+		for _, command := range *body.Commands {
 			name := strings.TrimPrefix(strings.TrimSpace(command.Name), "/")
 			if name == "" {
 				continue
@@ -580,7 +625,7 @@ func (m *Manager) finishControlRequest(p *process, raw []byte) {
 	if msg.Response.Subtype == "error" {
 		err = errors.New(msg.Response.Error)
 	}
-	wait <- err
+	wait <- controlResult{payload: msg.Response.Payload, err: err}
 }
 
 func (m *Manager) finishLifecycle(p *process, uuid, state string) {

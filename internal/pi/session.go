@@ -66,6 +66,19 @@ type message struct {
 	StopReason   string          `json:"stopReason"`
 	ErrorMessage string          `json:"errorMessage"`
 	Timestamp    int64           `json:"timestamp"`
+	Usage        usage           `json:"usage"`
+}
+
+// usage is the provider's token count for one assistant message.
+type usage struct {
+	Input      int64 `json:"input"`
+	Output     int64 `json:"output"`
+	CacheRead  int64 `json:"cacheRead"`
+	CacheWrite int64 `json:"cacheWrite"`
+}
+
+func (u usage) contextTokens() int64 {
+	return u.Input + u.CacheRead + u.CacheWrite + u.Output
 }
 
 type block struct {
@@ -114,6 +127,13 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 			meta.Runtime.Effort = e.ThinkingLevel
 			continue
 		}
+		// Usage recorded before a compaction describes the context it replaced,
+		// so nothing describes the current one until the next assistant message
+		// reports its own. Pi's live snapshot goes quiet in that window too.
+		if e.Type == "compaction" {
+			meta.Runtime.ContextTokens = 0
+			continue
+		}
 		if e.Type != "message" {
 			continue
 		}
@@ -128,8 +148,15 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 			}
 			meta.LastInputAt = entryTime(e, m)
 		}
-		if m.Role == "assistant" && m.Model != "" {
-			meta.Runtime.Model = m.Model
+		if m.Role == "assistant" {
+			if m.Model != "" {
+				meta.Runtime.Model = m.Model
+			}
+			// The provider's count for the newest message approximates the
+			// context; a live worker's own estimate supersedes it.
+			if tokens := m.Usage.contextTokens(); tokens > 0 {
+				meta.Runtime.ContextTokens = tokens
+			}
 		}
 	}
 	return meta, sc.Err()

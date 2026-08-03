@@ -240,6 +240,37 @@ func TestReadSessionMetaThinkingLevel(t *testing.T) {
 	}
 }
 
+// Context usage is readable without a worker: every assistant message carries
+// the provider's own count, and the newest one describes the live context.
+func TestReadSessionMetaContextTokens(t *testing.T) {
+	path := writeFixture(t, `{"type":"session","version":3,"id":"sess-1","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"user","content":"hello"}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T10:00:02Z","message":{"role":"assistant","model":"claude-x","content":[{"type":"text","text":"hi"}],"usage":{"input":10,"output":5,"cacheRead":100,"cacheWrite":20}}}
+{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-07-01T10:00:03Z","message":{"role":"assistant","model":"claude-x","content":[{"type":"text","text":"more"}],"usage":{"input":12,"output":8,"cacheRead":200,"cacheWrite":0}}}
+`)
+	meta, err := ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Runtime.ContextTokens != 220 {
+		t.Fatalf("context tokens = %d, want 220", meta.Runtime.ContextTokens)
+	}
+
+	// A compaction replaced that context, so the count it produced no longer
+	// describes anything until the next assistant message reports its own.
+	compacted := writeFixture(t, `{"type":"session","version":3,"id":"sess-2","timestamp":"2026-07-01T10:00:00Z","cwd":"/work"}
+{"type":"message","id":"a1","parentId":null,"timestamp":"2026-07-01T10:00:01Z","message":{"role":"assistant","model":"claude-x","content":[{"type":"text","text":"hi"}],"usage":{"input":10,"output":5,"cacheRead":100,"cacheWrite":20}}}
+{"type":"compaction","id":"c1","parentId":"a1","timestamp":"2026-07-01T10:00:02Z","summary":"summary"}
+`)
+	meta, err = ReadSessionMeta(compacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Runtime.ContextTokens != 0 {
+		t.Fatalf("context tokens after compaction = %d, want 0", meta.Runtime.ContextTokens)
+	}
+}
+
 func TestTranscriptProjectsCustomMessages(t *testing.T) {
 	// Extension-injected entries: display false is context-only and must stay
 	// out of the transcript; the rest render whether content is a plain string

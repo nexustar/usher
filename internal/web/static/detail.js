@@ -1662,22 +1662,32 @@ function renderSessionRuntime(u) {
   const el = document.getElementById('session-usage');
   const detail = document.getElementById('session-usage-detail');
   if (!el || !detail) return;
-  const context = Number(u && u.context_tokens) || 0;
-  el.hidden = context <= 0;
-  if (context <= 0) return;
+  u = u || {};
+  const context = Number(u.context_tokens) || 0;
   const max = Number(u.context_window) || 0;
-  const pct = max > 0 ? Math.min(100, Math.max(0, context / max * 100)) : 0;
-  el.classList.toggle('unknown', max <= 0);
+  // A session with no live worker often knows its model and effort from the
+  // transcript while its usage stays unknown, and those are worth showing.
+  el.hidden = !u.model && !u.effort && context <= 0;
+  if (el.hidden) return;
+  const measured = context > 0 && max > 0;
+  const pct = measured ? Math.min(100, Math.max(0, context / max * 100)) : 0;
+  el.classList.toggle('unknown', !measured);
   el.style.setProperty('--usage-pct', pct.toFixed(1) + '%');
-  el.setAttribute('aria-label', max > 0
-    ? 'Context ' + Math.round(pct) + '% used; show usage details'
-    : 'Context limit unavailable; show usage details');
-  el.title = max > 0 ? 'Context ' + Math.round(pct) + '% used' : 'Context limit unavailable';
+  el.setAttribute('aria-label', measured
+    ? 'Context ' + Math.round(pct) + '% used; show session details'
+    : 'Context usage unavailable; show session details');
+  el.title = measured ? 'Context ' + Math.round(pct) + '% used' : 'Context usage unavailable';
 
+  let usage = 'unavailable';
+  if (context > 0) {
+    usage = formatTokenCount(context) + ' / ' + (measured
+      ? formatTokenCount(max) + ' · ' + Math.round(pct) + '%'
+      : 'unavailable');
+  }
   const rows = [];
   if (u.model) rows.push(`<div><strong>Model</strong><span>${esc(u.model)}</span></div>`);
   if (u.effort) rows.push(`<div><strong>Effort</strong><span>${esc(u.effort)}</span></div>`);
-  rows.push(`<div><strong>Context</strong><span>${max > 0 ? esc(formatTokenCount(context) + ' / ' + formatTokenCount(max) + ' · ' + Math.round(pct) + '%') : esc(formatTokenCount(context) + ' / unavailable')}</span></div>`);
+  rows.push(`<div><strong>Context</strong><span>${esc(usage)}</span></div>`);
   detail.innerHTML = rows.join('');
 }
 
