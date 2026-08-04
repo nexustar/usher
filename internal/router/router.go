@@ -883,7 +883,6 @@ func applyTurnTimestamps(payload map[string]any, turns []core.Turn) {
 	if turns[last].Role == "assistant" {
 		payload["assistant_ts"] = turns[last].Time
 		payload["assistant_uuid"] = turns[last].UUID
-		// For turn timing; assistant_ts stays the turn start (web keys on it).
 		if !turns[last].EndTime.IsZero() {
 			payload["assistant_end_ts"] = turns[last].EndTime
 		}
@@ -1145,7 +1144,11 @@ func (r *Router) ReadSessionTranscript(id string, limit int) ([]core.TranscriptT
 	}
 	out := make([]core.TranscriptTurn, len(turns))
 	for i, t := range turns {
-		out[i] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.Time}
+		ts := t.Time
+		if t.Role == "assistant" && !t.EndTime.IsZero() {
+			ts = t.EndTime
+		}
+		out[i] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: ts}
 	}
 	return out, nil
 }
@@ -1174,7 +1177,11 @@ func (r *Router) ReadSessionTranscriptPage(id string, offset, limit int) ([]core
 	out := make([]core.TranscriptTurn, end-start)
 	for i := start; i < end; i++ {
 		t := turns[i]
-		out[i-start] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.Time}
+		ts := t.Time
+		if t.Role == "assistant" && !t.EndTime.IsZero() {
+			ts = t.EndTime
+		}
+		out[i-start] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: ts}
 	}
 	return out, start, total, nil
 }

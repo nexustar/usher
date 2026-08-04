@@ -302,7 +302,6 @@ body {
  * it's clear they aren't part of the default view. Link stays clickable. */
 .sidebar-list li.archived-row a { color: var(--text-disabled); }
 .sidebar-list li.archived-row a .running-dot { color: var(--text-disabled); }
-.sidebar-list li.archived-row .auto-dot { color: var(--text-disabled); }
 
 /* Per-cwd archived disclosure. Expanded groups keep collapse available while
  * a second control progressively reveals another batch of rows. */
@@ -705,11 +704,22 @@ td.id { color: var(--text-disabled); }
   padding: 0;
   font-size: inherit;
 }
+.diff-add { color: #3fb950; }
+.diff-del { color: #f85149; }
+.diff-hunk { color: #8b949e; }
 .content ul, .content ol { margin: 0.4rem 0; padding-left: 1.4rem; }
 .content li { margin: 0.15rem 0; }
 .content a { color: var(--accent); text-decoration: underline; }
 
 /* Tool and local-Markdown images: fit the column and open full size on click. */
+.img-failed {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-faint);
+  font-size: var(--font-base);
+}
 .tool-image, .markdown-image { display: block; margin: 0.5rem 0; }
 .tool-image a, .markdown-image a { display: inline-block; line-height: 0; text-decoration: none; }
 .tool-image img, .markdown-image img {
@@ -717,9 +727,7 @@ td.id { color: var(--text-disabled); }
   max-height: 480px;
   width: auto;
   height: auto;
-  border: 1px solid var(--border-muted);
   border-radius: var(--radius);
-  background: var(--bg-subtle);
   cursor: zoom-in;
 }
 
@@ -980,11 +988,10 @@ button.session-usage.unknown {
  * `.content pre`, so cascade order wins. Otherwise raw mode inherits the
  * dark code-block background and the entire transcript looks like code. */
 pre.raw-markdown {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-muted);
-  padding: 0.5rem 0.6rem;
+  background: transparent;
+  padding: 0;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: var(--font-sm);
+  font-size: var(--font-base);
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
@@ -1000,20 +1007,32 @@ pre.raw-markdown {
   .session-cwd, .session-id { display: none; }
 }
 
-.chat-message { padding: 0.5rem 0.25rem; border-bottom: 1px dashed var(--border-muted); min-width: 0; }
-.chat-message:last-child { border-bottom: 0; }
-/* :last-child above never fires in composer views (.send-anchor is always
- * the true last child) — .optimistic covers those: no divider until settled. */
-.chat-message.optimistic { border-bottom: 0; }
-.chat-message.awaiting-output .role { display: none; }
+.chat-message { padding: 0.5rem 0.25rem; min-width: 0; }
+.chat-message.awaiting-output .turn-footer { display: none; }
 .chat-message .role {
   font-size: var(--font-meta);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-faint);
-  margin-bottom: 0.2rem;
+  margin-top: 0.25rem;
 }
-.chat-message.user .role { color: var(--accent); }
+/* User turns: right-aligned accent bubble. The bubble itself marks the
+   speaker, so the role header carries only the timestamp — and hides while
+   an optimistic send has no ts yet. */
+.chat-message.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.chat-message .role:empty { display: none; }
+.chat-message.user .role .ts { margin-left: 0; }
+.chat-message.user .content {
+  background: var(--accent-bg);
+  border-radius: 20px;
+  padding: 0.45rem 0.75rem;
+  max-width: min(85%, 640px);
+  width: fit-content;
+}
 .chat-message.agent .role { color: var(--purple); }
 .chat-message.error .role { color: var(--danger); }
 .chat-message.system.compaction {
@@ -1021,7 +1040,6 @@ pre.raw-markdown {
   align-items: center;
   gap: 0.6rem;
   padding: 0.65rem 0.25rem;
-  border-bottom: 0;
   color: var(--text-faint);
   font-size: var(--font-meta);
   text-transform: uppercase;
@@ -1056,8 +1074,18 @@ pre.raw-markdown {
 .chat-message.assistant .tool-details {
   margin: 0.4rem 0;
   border: 1px solid var(--border-muted);
-  border-radius: var(--radius-sm);
-  background: var(--bg-subtle);
+  border-radius: 12px;
+}
+/* Consecutive tool calls merge into one visual group. */
+.chat-message.assistant .tool-details + .tool-details {
+  margin-top: -1px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.chat-message.assistant .tool-details:has(+ .tool-details) {
+  margin-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 .chat-message.assistant .tool-details summary {
   cursor: pointer;
@@ -1096,20 +1124,26 @@ pre.raw-markdown {
 /* The button ends the summary line, so the mark can't shift content after it. */
 .chat-message.assistant .tool-details .tool-copy.copied::after { content: ' ✓'; }
 .chat-message.assistant .tool-details .tool-body {
-  padding: 0 0.5rem 0.4rem;
   color: var(--text-muted);
   overflow-x: auto;
   min-width: 0;
+}
+.chat-message.assistant .tool-details .tool-body > :not(pre) {
+  padding: 0 0.5rem;
 }
 .chat-message.assistant .tool-details .tool-body pre {
   background: var(--code-block-bg);
   color: var(--code-block-text);
   padding: 0.6rem 0.75rem;
   overflow-x: auto;
-  margin: 0.5rem 0;
+  margin: 0;
+  border-radius: 0 0 12px 12px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--font-sm);
   line-height: 1.4;
+}
+.chat-message.assistant .tool-details:has(+ .tool-details) .tool-body pre {
+  border-radius: 0;
 }
 .chat-message.assistant .tool-details .tool-body pre code {
   background: transparent;
@@ -1148,20 +1182,21 @@ pre.raw-markdown {
   text-transform: none;
   letter-spacing: 0;
 }
-/* Fork control: quiet text pinned to the turn card's bottom-right, flush with
-   the divider where the branch happens. Out of flow so it adds no height (a
-   full-width last content line may run under it — accepted). Always visible:
-   touch devices have no hover to reveal it. */
-.chat-message.assistant { position: relative; }
+/* Footer row: role+timestamp left, fork right — sits below content. */
+.chat-message .turn-footer {
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  margin-top: 0.25rem;
+}
+.chat-message .turn-footer .role { margin-top: 0; }
+.chat-message .turn-footer .role .ts { margin-left: 0; }
 .chat-message .turn-fork {
-  position: absolute;
-  right: 0.25rem;
-  bottom: 0;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--text-disabled);
-  font-size: var(--font-meta); /* matches the sidebar's "show archived" tier */
+  font-size: var(--font-meta);
   line-height: 1.4;
   cursor: pointer;
 }
@@ -1196,11 +1231,6 @@ pre.raw-markdown {
   .running-dot.executing { animation: none; opacity: 1; }
 }
 
-.auto-dot {
-  margin-right: 0.25rem;
-  color: var(--warning-border);
-  font-size: var(--font-meta);
-}
 .pinned-label {
   color: var(--text-disabled);
 }

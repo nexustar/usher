@@ -1401,7 +1401,7 @@ function adoptLastTurnAsLive() {
   if (!last.node.classList.contains('assistant')) return false;
   const forkBtn = last.node.querySelector('.turn-fork');
   if (forkBtn) forkBtn.remove(); // stale fork point; finalize re-adds a current one
-  const partNodes = [...last.node.children].filter(c => !c.classList.contains('role'));
+  const partNodes = [...last.node.children].filter(c => !c.classList.contains('role') && !c.classList.contains('turn-footer'));
   renderedTurns.pop();
   last.node.classList.add('optimistic');
   liveTurn = {
@@ -1445,7 +1445,9 @@ function appendLiveDelta(d) {
   if (!lt.preview) {
     lt.preview = document.createElement('div');
     lt.preview.className = 'content stream-preview';
-    lt.node.appendChild(lt.preview);
+    const footer = lt.node.querySelector('.turn-footer');
+    if (footer) lt.node.insertBefore(lt.preview, footer);
+    else lt.node.appendChild(lt.preview);
   }
   lt.previewText += d.delta;
   if (lt.previewRAF) return;
@@ -1521,7 +1523,9 @@ function appendLivePart(d) {
     oldNode.replaceWith(partNode);
     lt.partNodes[enrichIndex] = partNode;
   } else {
-    lt.node.appendChild(partNode);
+    const footer = lt.node.querySelector('.turn-footer');
+    if (footer) lt.node.insertBefore(partNode, footer);
+    else lt.node.appendChild(partNode);
     lt.partNodes.push(partNode);
   }
   if (stick && chat) chat.scrollTop = chat.scrollHeight;
@@ -1556,15 +1560,14 @@ function finalizeTurn(id, d) {
     lt.node.remove();
     return;
   }
-  // Prefer the canonical turn timestamp from the exit payload (it is read
-  // from the jsonl, so the key matches a later transcript fetch exactly);
-  // fall back to the first part's ts.
-  const ts = (d && d.assistant_ts) || lt.ts;
+  const ts = (d && d.assistant_end_ts) || (d && d.assistant_ts) || lt.ts;
   updateMessageTs(lt.node, ts);
   // The promote path renders no fork control of its own; arm it from the
   // exit payload's fork point (a transcript refetch would deliver the same).
   if (d && d.assistant_uuid && !lt.node.querySelector('.turn-fork')) {
-    lt.node.insertAdjacentHTML('beforeend', forkBtnHTML(d.assistant_uuid));
+    const footer = lt.node.querySelector('.turn-footer');
+    if (footer) footer.insertAdjacentHTML('beforeend', forkBtnHTML(d.assistant_uuid));
+    else lt.node.insertAdjacentHTML('beforeend', forkBtnHTML(d.assistant_uuid));
   }
   lt.node.classList.remove('optimistic');
   renderedTurns.push({ key: turnKey({ role: 'assistant', ts, parts: lt.parts }), node: lt.node });

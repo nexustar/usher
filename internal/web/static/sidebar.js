@@ -116,19 +116,16 @@ export function renderSidebarSessions(allSessions) {
       : isUnread(s)
         ? '<span class="running-dot unread" title="new response">●</span>'
         : statusDot(s.status);
-    const auto = s.auto_approve
-      ? '<span class="auto-dot" title="auto-approve enabled">ϟ</span>'
-      : '';
     const title = s.title || '(untitled)';
     if (child) {
       return `<li class="sidebar-item subagent-row">
-        <a href="${esc(href)}" data-route="s:${esc(s.id)}" title="${esc(title)}">${dot}${auto}${esc(title)}</a>
+        <a href="${esc(href)}" data-route="s:${esc(s.id)}" title="${esc(title)}">${dot}${esc(title)}</a>
       </li>`;
     }
     const liClass = s.archived ? 'sidebar-item archived-row' : 'sidebar-item';
     const subs = children.get(s.id) || [];
     return `<li class="${liClass}">
-      <a href="${esc(href)}" data-route="s:${esc(s.id)}" title="${esc(title)}">${dot}${auto}${esc(title)}</a>
+      <a href="${esc(href)}" data-route="s:${esc(s.id)}" title="${esc(title)}">${dot}${esc(title)}</a>
       <button class="kebab-btn" type="button"
         data-id="${esc(s.id)}" data-archived="${s.archived ? '1' : '0'}"
         data-pinned="${s.pinned ? '1' : '0'}"

@@ -28,6 +28,19 @@ window.marked.use({
   breaks: true,
   silent: true,
   renderer: {
+    code(token) {
+      if (/^diff\b/.test(token.lang)) {
+        const lines = String(token.text).split('\n').map(line => {
+          const e = esc(line);
+          if (line.startsWith('+')) return '<span class="diff-add">' + e + '</span>';
+          if (line.startsWith('-')) return '<span class="diff-del">' + e + '</span>';
+          if (line.startsWith('@@')) return '<span class="diff-hunk">' + e + '</span>';
+          return e;
+        }).join('\n');
+        return '<pre><code>' + lines + '</code></pre>';
+      }
+      return false;
+    },
     html(token) { return esc(typeof token === 'string' ? token : token.text); },
     image(token) {
       const href = String(token.href || '');
@@ -42,9 +55,9 @@ window.marked.use({
           '/image?path=' + encodeURIComponent(href);
         return '<span class="markdown-image"><a href="' + esc(src) +
           '" target="_blank" rel="noopener"><img loading="lazy" decoding="async" alt="' +
-          esc(alt) + '" src="' + esc(src) + '"' + title + '></a></span>';
+          esc(alt) + '" src="' + esc(src) + '"' + title + imgFallback + '></a></span>';
       }
-      return '<img src="' + esc(href) + '" alt="' + esc(alt) + '"' + title + '>';
+      return '<img src="' + esc(href) + '" alt="' + esc(alt) + '"' + title + imgFallback + '>';
     },
   },
 });
@@ -96,6 +109,20 @@ if (renderPillMd && renderPillRaw) {
   updateRenderModeBtn();
 }
 
+function onImgError(img) {
+  if (img.dataset.failed) return;
+  img.dataset.failed = '1';
+  const el = document.createElement('span');
+  el.className = 'img-failed';
+  el.textContent = (img.alt || 'image') + ' — failed to load';
+  const wrapper = img.closest('.markdown-image, .tool-image');
+  const link = wrapper && img.closest('a');
+  if (link) link.replaceWith(el);
+  else img.replaceWith(el);
+}
+window._onImgError = onImgError;
+const imgFallback = ' onerror="window._onImgError(this)"';
+
 // ---------- Rendering turns ----------
 
 // renderToolPart renders a single tool part as a collapsible <details> element.
@@ -133,7 +160,7 @@ export function renderToolPart(p) {
     // <a> opens the full-size image (inline view is capped via .tool-image CSS).
     return '<div class="tool-image">' +
       '<a href="' + esc(src) + '" target="_blank" rel="noopener">' +
-      '<img loading="lazy" decoding="async" alt="' + esc(fname) + '" src="' + esc(src) + '"' + dimAttrs + '>' +
+      '<img loading="lazy" decoding="async" alt="' + esc(fname) + '" src="' + esc(src) + '"' + dimAttrs + imgFallback + '>' +
       '</a></div>';
   }
   const expandByDefault = /^(Edit|Write)$/i.test(name);
@@ -159,7 +186,7 @@ export function renderToolPart(p) {
 // the last turn: fork the current state). data-uuid is the fork point the
 // server expects; clicks are handled by a document-level delegate.
 export function forkBtnHTML(uuid) {
-  return `<button class="turn-fork" type="button" data-uuid="${esc(uuid)}" title="Fork: branch a new session from this point">⑂ fork</button>`;
+  return `<button class="turn-fork" type="button" data-uuid="${esc(uuid)}" title="Fork: branch a new session from this point">⑃ fork</button>`;
 }
 
 // renderAssistantParts renders the parts array of a grouped assistant turn.
@@ -185,6 +212,8 @@ export function appendChatMessage(m, beforeNode) {
   // A relay message is a session's own reply forwarded verbatim into the main
   // chat — label it as the session speaking, linked to its detail view.
   let roleLabel = esc(role);
+  // The user bubble (CSS) marks the speaker itself; keep only the ts.
+  if (role === 'user' || role === 'assistant') roleLabel = '';
   if (role === 'relay') {
     roleLabel = m.source_session
       ? `<a class="relay-source" href="#/s/${esc(m.source_session)}">session ${esc(m.source_session.slice(0, 8))}</a>`
@@ -200,9 +229,11 @@ export function appendChatMessage(m, beforeNode) {
     // it (a flat .content div here would misrender the first tool part).
     // Completed turns close with the fork control at the card's bottom edge.
     div.innerHTML =
-      `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
       renderAssistantParts(m.parts) +
-      (m.uuid ? forkBtnHTML(m.uuid) : '');
+      `<div class="turn-footer">` +
+      `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
+      (m.uuid ? forkBtnHTML(m.uuid) : '') +
+      `</div>`;
   } else if (role === 'summary') {
     // Compaction marker: earlier turns were folded into this standing
     // summary (model-side only — the full history stays above). Collapsed
@@ -215,8 +246,8 @@ export function appendChatMessage(m, beforeNode) {
   } else {
     // User, error, agent, relay, or streaming placeholder (flat content).
     div.innerHTML =
-      `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
-      `<div class="content" data-raw="${esc(m.content || '')}">${renderMarkdown(m.content || '')}</div>`;
+      `<div class="content" data-raw="${esc(m.content || '')}">${renderMarkdown(m.content || '')}</div>` +
+      `<div class="role"${modelAttr}>${roleLabel}${ts}</div>`;
   }
   // send-anchor lives inside chat-scroll (sticky at bottom). Insert
   // new messages before it so it stays the last child.
