@@ -41,6 +41,15 @@ type Turn struct {
 	EndTime time.Time  `json:"-"`
 }
 
+// DisplayTime is the timestamp a client shows for the turn: an assistant turn
+// reads as when it finished, every other role as its single event.
+func (t Turn) DisplayTime() time.Time {
+	if t.Role == "assistant" && !t.EndTime.IsZero() {
+		return t.EndTime
+	}
+	return t.Time
+}
+
 // Touch advances the server-side end timestamp when ts is usable.
 func (t *Turn) Touch(ts time.Time) {
 	if t != nil && !ts.IsZero() {

@@ -358,6 +358,64 @@ func TestReadTurnsWindow(t *testing.T) {
 	check("before past the end", 99, 2, []string{"t6", "t7"}, 6, 8)
 }
 
+// TestReadTurnsAssistantEndTime proves an assistant turn's wire timestamp is
+// when it finished — the same value the exit payload's assistant_end_ts carries.
+func TestReadTurnsAssistantEndTime(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "-tmp")
+	logPath := filepath.Join(projectDir, "end.jsonl")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","message":{"role":"user","content":"run ls"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"file1.txt"}]}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+	}
+	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(logPath)
+	r := New(d, map[string]backend.Backend{
+		"claude": {Transcript: transcript.Claude{}},
+	}, "claude", nil, nil, nil, nil)
+
+	turns, _, _, err := r.ReadTurns("end", -1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("got %d turns, want 2: %+v", len(turns), turns)
+	}
+	if want := time.Date(2026, 4, 26, 10, 0, 0, 0, time.UTC); !turns[0].Time.Equal(want) {
+		t.Errorf("user ts = %v, want %v", turns[0].Time, want)
+	}
+	if want := time.Date(2026, 4, 26, 10, 0, 3, 0, time.UTC); !turns[1].Time.Equal(want) {
+		t.Errorf("assistant ts = %v, want %v (turn end)", turns[1].Time, want)
+	}
+
+	// Same projection through the agent-facing transcript readers.
+	tt, err := r.ReadSessionTranscript("end", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tt) != 2 || !tt[1].Time.Equal(turns[1].Time) {
+		t.Errorf("ReadSessionTranscript ts = %v, want %v", tt, turns[1].Time)
+	}
+	page, _, _, err := r.ReadSessionTranscriptPage("end", 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || !page[1].Time.Equal(turns[1].Time) {
+		t.Errorf("ReadSessionTranscriptPage ts = %v, want %v", page, turns[1].Time)
+	}
+}
+
 func TestBackendForModel(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.5":           "codex",

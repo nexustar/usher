@@ -339,7 +339,13 @@ func (r *Router) ReadTurns(id string, before, limit int) ([]core.Turn, int, int,
 	if limit > 0 && end-limit > start {
 		start = end - limit
 	}
-	return turns[start:end], start, total, nil
+	// EndTime never reaches the wire, and clients key turns on ts — which must
+	// match what the exit payload's assistant_end_ts produced.
+	out := turns[start:end]
+	for i := range out {
+		out[i].Time = out[i].DisplayTime()
+	}
+	return out, start, total, nil
 }
 
 // backendForModel maps a new-session model choice to its backend. Model names
@@ -1144,11 +1150,7 @@ func (r *Router) ReadSessionTranscript(id string, limit int) ([]core.TranscriptT
 	}
 	out := make([]core.TranscriptTurn, len(turns))
 	for i, t := range turns {
-		ts := t.Time
-		if t.Role == "assistant" && !t.EndTime.IsZero() {
-			ts = t.EndTime
-		}
-		out[i] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: ts}
+		out[i] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.DisplayTime()}
 	}
 	return out, nil
 }
@@ -1177,11 +1179,7 @@ func (r *Router) ReadSessionTranscriptPage(id string, offset, limit int) ([]core
 	out := make([]core.TranscriptTurn, end-start)
 	for i := start; i < end; i++ {
 		t := turns[i]
-		ts := t.Time
-		if t.Role == "assistant" && !t.EndTime.IsZero() {
-			ts = t.EndTime
-		}
-		out[i-start] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: ts}
+		out[i-start] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.DisplayTime()}
 	}
 	return out, start, total, nil
 }
