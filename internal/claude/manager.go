@@ -109,13 +109,13 @@ func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, interact
 }
 
 // ensureProcess resolves id's live process, spawning a cold one when needed.
-// appendSystemPrompt only reaches a spawn — a live process keeps the prompt it
-// started with. With lease, the process is pinned against eviction while a
+// appendSystemPrompt and extraArgs only reach a spawn — a live process keeps
+// what it started with. With lease, the process is pinned against eviction while a
 // send preflight runs: the lease is taken under the same lock that resolves
 // the process, so there is no window where a caller holds a process that
 // another spawn may already have evicted. A successful send becomes
 // eviction-safe through its queued turn before the lease is released.
-func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSystemPrompt string, resume, lease bool) (*process, bool, error) {
+func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSystemPrompt string, extraArgs []string, resume, lease bool) (*process, bool, error) {
 	m.mu.Lock()
 	if p := m.processes[id]; p != nil {
 		p.mu.Lock()
@@ -174,6 +174,8 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 		args = append(args, "--settings", m.settings)
 	}
 	args = append(args, m.mcpArgs...)
+	// Last, so a repeated flag from the session's agent profile wins.
+	args = append(args, extraArgs...)
 	cmd := exec.CommandContext(context.Background(), m.bin, args...)
 	procutil.ConfigureGroup(cmd)
 	cmd.Dir = cwd
@@ -325,8 +327,8 @@ func scrubEnv(hookSock string) []string {
 	return out
 }
 
-func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model, appendSystemPrompt string, resume bool) (<-chan Result, <-chan Delta, bool, int, error) {
-	p, fresh, err := m.ensureProcess(ctx, id, cwd, model, appendSystemPrompt, resume, true)
+func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model, appendSystemPrompt string, extraArgs []string, resume bool) (<-chan Result, <-chan Delta, bool, int, error) {
+	p, fresh, err := m.ensureProcess(ctx, id, cwd, model, appendSystemPrompt, extraArgs, resume, true)
 	if err != nil {
 		return nil, nil, false, 0, err
 	}
@@ -416,8 +418,8 @@ func waitForCommands(ctx context.Context, p *process) ([]Command, error) {
 
 // Resume starts an idle process for an existing session without submitting a
 // user turn. It is idempotent when the process is already live.
-func (m *Manager) Resume(ctx context.Context, id, cwd, appendSystemPrompt string) error {
-	_, _, err := m.ensureProcess(ctx, id, cwd, "", appendSystemPrompt, true, false)
+func (m *Manager) Resume(ctx context.Context, id, cwd, appendSystemPrompt string, extraArgs []string) error {
+	_, _, err := m.ensureProcess(ctx, id, cwd, "", appendSystemPrompt, extraArgs, true, false)
 	return err
 }
 

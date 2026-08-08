@@ -3,6 +3,8 @@ package sender
 import (
 	"log/slog"
 	"testing"
+
+	"github.com/nexustar/usher/internal/codex"
 )
 
 func TestCodexMCPConfigUsesNativeValues(t *testing.T) {
@@ -23,7 +25,7 @@ func TestCodexMCPConfigUsesNativeValues(t *testing.T) {
 }
 
 func TestCodexHeadlessParams(t *testing.T) {
-	sandbox, cfg := codexHeadlessParams([]string{"--sandbox=read-only", "-c", "model_reasoning_effort=high", "-c", "features.foo=true"}, slog.Default())
+	sandbox, cfg := codex.ParseHeadlessArgs([]string{"--sandbox=read-only", "-c", "model_reasoning_effort=high", "-c", "features.foo=true"}, slog.Default())
 	if sandbox["sandbox"] != "read-only" || cfg["model_reasoning_effort"] != "high" || cfg["features.foo"] != true {
 		t.Fatalf("sandbox=%#v config=%#v", sandbox, cfg)
 	}

@@ -505,6 +505,7 @@ type Runtime struct {
 	mu               sync.Mutex
 	workers          map[string]*worker
 	systemPrompt     func(string) string
+	extraArgs        func(string) []string
 }
 
 // Rename uses RPC when live and native metadata when idle.
@@ -542,6 +543,31 @@ func (r *Runtime) promptFor(id string) string {
 	r.mu.Unlock()
 	if lookup == nil {
 		return ""
+	}
+	return lookup(id)
+}
+
+var _ backend.ExtraArgser = (*Runtime)(nil)
+
+func (r *Runtime) SetExtraArgsLookup(lookup func(string) []string) {
+	r.mu.Lock()
+	r.extraArgs = lookup
+	r.mu.Unlock()
+}
+
+// spawnArgs is the full extra-flag set for one session's worker: the
+// runtime-wide flags plus the session's agent-profile flags, profile last so
+// its repeats win.
+func (r *Runtime) spawnArgs(perSession []string) []string {
+	return append(append([]string(nil), r.extra...), perSession...)
+}
+
+func (r *Runtime) argsFor(id string) []string {
+	r.mu.Lock()
+	lookup := r.extraArgs
+	r.mu.Unlock()
+	if lookup == nil {
+		return nil
 	}
 	return lookup(id)
 }
@@ -721,7 +747,7 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	if model == "default" {
 		model = ""
 	}
-	c, err := startClientWithSystemPrompt(r.bin, req.Cwd, "", r.sessionsDir, model, req.AppendSystemPrompt, r.extra)
+	c, err := startClientWithSystemPrompt(r.bin, req.Cwd, "", r.sessionsDir, model, req.AppendSystemPrompt, r.spawnArgs(req.ExtraArgs))
 	if err != nil {
 		return "", nil, err
 	}
@@ -774,7 +800,7 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 			return nil, fmt.Errorf("pi session %s not found", id)
 		}
 		c, err := startClientWithSystemPrompt(
-			r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.extra)
+			r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.spawnArgs(r.argsFor(id)))
 		if err != nil {
 			return nil, err
 		}
@@ -876,7 +902,7 @@ func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
 		return fmt.Errorf("pi session %s not found", id)
 	}
 	c, err := startClientWithSystemPrompt(
-		r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.extra)
+		r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.spawnArgs(r.argsFor(id)))
 	if err != nil {
 		return err
 	}

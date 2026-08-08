@@ -2,6 +2,7 @@ package sessionmeta
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -116,6 +117,28 @@ func TestForgetDropsAppendSystemPrompt(t *testing.T) {
 	s.Forget("a")
 	if got := s.AppendSystemPrompt("a"); got != "" {
 		t.Fatalf("append system prompt after Forget = %q", got)
+	}
+}
+
+func TestExtraArgsPersistAndForget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	s1 := New(path, sevenDays)
+	s1.SetExtraArgs("a", []string{"-c", "approval_policy=untrusted"})
+
+	s2 := New(path, sevenDays)
+	if got := s2.ExtraArgs("a"); !reflect.DeepEqual(got, []string{"-c", "approval_policy=untrusted"}) {
+		t.Fatalf("extra args = %v after rehydrate", got)
+	}
+	s2.SetExtraArgs("a", nil)
+	s3 := New(path, sevenDays)
+	if got := s3.ExtraArgs("a"); len(got) != 0 {
+		t.Fatalf("extra args = %v after clearing", got)
+	}
+
+	s3.SetExtraArgs("b", []string{"--flag"})
+	s3.Forget("b")
+	if got := s3.ExtraArgs("b"); len(got) != 0 {
+		t.Fatalf("extra args after Forget = %v", got)
 	}
 }
 

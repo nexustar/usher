@@ -117,7 +117,7 @@ func TestManagerLRUEvictsIdleWorkerAndColdResumes(t *testing.T) {
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, err := m.StartThread(ctx, "/tmp", "", "")
+	id, err := m.StartThread(ctx, "/tmp", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestStartThreadPassesDeveloperInstructions(t *testing.T) {
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := m.StartThread(ctx, "/tmp", "", "Be concise."); err != nil {
+	if _, err := m.StartThread(ctx, "/tmp", "", "Be concise.", nil); err != nil {
 		t.Fatal(err)
 	}
 	m.Shutdown()
@@ -186,6 +186,49 @@ func TestColdResumeRestoresDeveloperInstructions(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `-c developer_instructions="Persisted prompt." app-server`) {
 		t.Fatalf("worker log = %q", data)
+	}
+}
+
+func TestNewClientMergesPerSessionExtraArgs(t *testing.T) {
+	m := NewManager("unused", nil,
+		map[string]any{"sandbox": "read-only"},
+		map[string]any{"approval_policy": "never", "model_reasoning_effort": "high"},
+		nil, 1, nil)
+	c := m.newClient("", []string{"--sandbox", "workspace-write", "-c", "approval_policy=untrusted"})
+	p := c.threadParams("/tmp", "")
+	if p["sandbox"] != "workspace-write" {
+		t.Fatalf("sandbox = %v, want the per-session override", p["sandbox"])
+	}
+	cfg := p["config"].(map[string]any)
+	if cfg["approval_policy"] != "untrusted" || cfg["model_reasoning_effort"] != "high" {
+		t.Fatalf("config = %v, want per-session override atop manager config", cfg)
+	}
+	if m.sandbox["sandbox"] != "read-only" || m.config["approval_policy"] != "never" {
+		t.Fatalf("manager-wide maps mutated: sandbox=%v config=%v", m.sandbox, m.config)
+	}
+}
+
+func TestColdResumeAppliesExtraArgsLookup(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	m.SetExtraArgsLookup(func(id string) []string {
+		if id == "cold-thread" {
+			return []string{"-c", "approval_policy=untrusted"}
+		}
+		return nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.Resume(ctx, "cold-thread", "/tmp"); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	w := m.workers["cold-thread"]
+	m.mu.Unlock()
+	t.Cleanup(m.Shutdown)
+	cfg := w.client.threadParams("/tmp", "")["config"].(map[string]any)
+	if cfg["approval_policy"] != "untrusted" {
+		t.Fatalf("resumed worker config = %v, want the session's extra args applied", cfg)
 	}
 }
 
@@ -247,7 +290,7 @@ func TestManagerWorkerFailureIsIsolated(t *testing.T) {
 
 func TestManagerMaxLiveRejectsWhenAllWorkersBusy(t *testing.T) {
 	m := NewManager("unused", nil, nil, nil, nil, 1, nil)
-	m.workers["busy"] = &worker{client: m.newClient(""), busy: true, lastUsed: time.Now()}
+	m.workers["busy"] = &worker{client: m.newClient("", nil), busy: true, lastUsed: time.Now()}
 	if _, err := m.reserve(); err == nil || !strings.Contains(err.Error(), "all busy") {
 		t.Fatalf("reserve error = %v, want all busy", err)
 	}

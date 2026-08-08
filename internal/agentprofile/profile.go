@@ -19,12 +19,13 @@ import (
 // in chat and the API all use it. Empty fields are intentionally allowed, so a
 // profile can pin a backend and model while leaving cwd to the caller.
 type Profile struct {
-	Name               string `json:"name"`
-	Cwd                string `json:"cwd,omitempty"`
-	Backend            string `json:"backend,omitempty"`
-	Model              string `json:"model,omitempty"`
-	AppendSystemPrompt string `json:"append_system_prompt,omitempty"`
-	AutoApprove        bool   `json:"auto_approve,omitempty"`
+	Name               string   `json:"name"`
+	Cwd                string   `json:"cwd,omitempty"`
+	Backend            string   `json:"backend,omitempty"`
+	Model              string   `json:"model,omitempty"`
+	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
+	ExtraArgs          []string `json:"extra_args,omitempty"`
+	AutoApprove        bool     `json:"auto_approve,omitempty"`
 }
 
 type fileFormat struct {
@@ -116,6 +117,18 @@ func validate(p Profile) (Profile, error) {
 	}
 	if p.Name == "." || p.Name == ".." {
 		return Profile{}, errors.New(`name may not be "." or ".."`)
+	}
+	var args []string
+	for _, a := range p.ExtraArgs {
+		if a != "" {
+			args = append(args, a)
+		}
+	}
+	p.ExtraArgs = args
+	// Extra args are backend CLI flags; without a pinned backend they would go
+	// to whichever backend the create request picks and break its spawn.
+	if len(p.ExtraArgs) > 0 && p.Backend == "" {
+		return Profile{}, errors.New("extra_args requires a backend")
 	}
 	return p, nil
 }
@@ -267,6 +280,7 @@ func (s *Store) Resolve(name, cwd, backend, model string) (core.CreateOptions, e
 	}
 	return core.CreateOptions{
 		Backend: p.Backend, Cwd: p.Cwd, Model: p.Model,
-		AppendSystemPrompt: p.AppendSystemPrompt, AutoApprove: p.AutoApprove,
+		AppendSystemPrompt: p.AppendSystemPrompt, ExtraArgs: p.ExtraArgs,
+		AutoApprove: p.AutoApprove,
 	}, nil
 }

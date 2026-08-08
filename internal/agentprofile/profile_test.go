@@ -3,6 +3,7 @@ package agentprofile
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -30,8 +31,39 @@ func TestLoadAndResolve(t *testing.T) {
 		Backend: "codex", Cwd: override, Model: "gpt-test",
 		AppendSystemPrompt: "Be careful.",
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, want %+v", got, want)
+	}
+}
+
+func TestExtraArgsRequireBackend(t *testing.T) {
+	store, err := Load(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Profile{Name: "loose", ExtraArgs: []string{"--flag"}}); err == nil {
+		t.Fatal("extra_args without a backend accepted")
+	}
+	// Empty entries are dropped, and dropping them all lifts the requirement.
+	if _, err := store.Create(Profile{Name: "blank", ExtraArgs: []string{"", ""}}); err != nil {
+		t.Fatalf("all-empty extra_args rejected: %v", err)
+	}
+	created, err := store.Create(Profile{
+		Name: "yolo", Backend: "claude",
+		ExtraArgs: []string{"--permission-mode", "", "plan"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(created.ExtraArgs, []string{"--permission-mode", "plan"}) {
+		t.Fatalf("ExtraArgs = %v, want empty entries dropped", created.ExtraArgs)
+	}
+	got, err := store.Resolve("yolo", "/w", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.ExtraArgs, []string{"--permission-mode", "plan"}) {
+		t.Fatalf("Resolve.ExtraArgs = %v", got.ExtraArgs)
 	}
 }
 
@@ -56,7 +88,7 @@ func TestResolveUnknown(t *testing.T) {
 func TestResolveWithoutAgentPassesRequestThrough(t *testing.T) {
 	got, err := New(nil).Resolve("", "/w", "codex", "gpt-test")
 	want := core.CreateOptions{Backend: "codex", Cwd: "/w", Model: "gpt-test"}
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
 	}
 }
@@ -106,7 +138,7 @@ func TestCRUDPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := reloaded.List()
-	if len(got) != 1 || got[0] != updated {
+	if len(got) != 1 || !reflect.DeepEqual(got[0], updated) {
 		t.Fatalf("reloaded = %+v, want %+v", got, updated)
 	}
 	if err := reloaded.Delete("dev"); err != nil {

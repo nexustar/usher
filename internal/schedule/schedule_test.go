@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -224,7 +225,7 @@ func TestCheckFiresCronOncePerWindow(t *testing.T) {
 	runner.check(at(t, "2026-07-28 02:59"), at(t, "2026-07-28 03:01"))
 	got := starter.calls()
 	want := core.CreateOptions{Cwd: "/work", Backend: "claude", InitialMessage: "Run the tests"}
-	if len(got) != 1 || got[0] != want {
+	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("StartSession(%+v), want one call with %+v", got, want)
 	}
 	runner.check(at(t, "2026-07-28 03:01"), at(t, "2026-07-28 03:03"))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 
 	"os"
 	"path/filepath"
@@ -194,7 +195,7 @@ func TestStartSessionRoundTrip(t *testing.T) {
 	want := core.CreateOptions{
 		Backend: "codex", Cwd: "/tmp/work", InitialMessage: "hello", Model: "codex-test",
 	}
-	if len(started) != 1 || started[0] != want {
+	if len(started) != 1 || !reflect.DeepEqual(started[0], want) {
 		t.Fatalf("started = %+v, want %+v", started, want)
 	}
 
@@ -224,7 +225,7 @@ func TestStartSessionWithAgent(t *testing.T) {
 		Backend: "codex", Cwd: "/work/dev", InitialMessage: "hello",
 		Model: "codex-override", AppendSystemPrompt: "Be careful.",
 	}
-	if len(started) != 1 || started[0] != want {
+	if len(started) != 1 || !reflect.DeepEqual(started[0], want) {
 		t.Fatalf("started = %+v, want %+v", started, want)
 	}
 }

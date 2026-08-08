@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -141,7 +142,7 @@ func TestScheduleResolvesAgentOnRun(t *testing.T) {
 		t.Fatalf("run status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	want := core.CreateOptions{Backend: "codex", Cwd: "/work/dev", InitialMessage: "Run the tests"}
-	if starter.opts != want {
+	if !reflect.DeepEqual(starter.opts, want) {
 		t.Fatalf("StartSession(%+v), want %+v", starter.opts, want)
 	}
 }

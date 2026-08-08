@@ -1959,6 +1959,16 @@ pre.raw-markdown {
 }
 .cfg-form .cfg-form-check input { width: auto; }
 .cfg-form .cfg-form-check > span { color: var(--text); }
+/* Advanced fold: the free-form expert fields. renderForm sets `open` when a
+ * field has a value, so editing never hides existing configuration. Margins,
+ * not flex, keep the form's spacing: display:flex on <details> loses the
+ * disclosure marker in Safari. */
+.cfg-form-advanced summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.cfg-form-advanced[open] summary { margin-bottom: 1.15rem; }
+.cfg-form-advanced label + label { margin-top: 1.15rem; }
 .cfg-field-hint {
   color: var(--text-faint);
   line-height: 1.5;

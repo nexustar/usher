@@ -53,7 +53,7 @@ func TestLongRunningProcessServesMultipleTurns(t *testing.T) {
 	os.Setenv("FAKE_CLAUDE_LOG", log)
 	t.Cleanup(func() { os.Unsetenv("FAKE_CLAUDE_LOG"); m.Shutdown() })
 	for i := 0; i < 2; i++ {
-		ch, _, fresh, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", false)
+		ch, _, fresh, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -94,7 +94,7 @@ func TestAppendSystemPromptPassedOnFreshSpawn(t *testing.T) {
 	t.Setenv("FAKE_CLAUDE_LOG", log)
 	t.Cleanup(m.Shutdown)
 	ch, _, _, _, err := m.Send(
-		context.Background(), "sid", "hello", "/tmp", "", "Be concise.", false)
+		context.Background(), "sid", "hello", "/tmp", "", "Be concise.", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +108,35 @@ func TestAppendSystemPromptPassedOnFreshSpawn(t *testing.T) {
 	}
 }
 
+func TestExtraArgsPassedOnSpawn(t *testing.T) {
+	bin, log := fakeClaude(t)
+	m := New(bin, `{"hooks":{}}`, "/tmp/h.sock", []string{"--permission-mode", "default"}, 4, nil, nil)
+	t.Setenv("FAKE_CLAUDE_LOG", log)
+	t.Cleanup(m.Shutdown)
+	ch, _, _, _, err := m.Send(
+		context.Background(), "sid", "hello", "/tmp", "", "",
+		[]string{"--permission-mode", "plan"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ch
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Per-session flags must land after the manager-wide ones so a repeat wins.
+	if !strings.Contains(string(data), "--permission-mode default --permission-mode plan") {
+		t.Fatalf("args = %s", data)
+	}
+}
+
 func TestResumePassesPersistedSystemPrompt(t *testing.T) {
 	bin, log := fakeClaude(t)
 	m := New(bin, `{"hooks":{}}`, "/tmp/h.sock", nil, 4, nil, nil)
 	t.Setenv("FAKE_CLAUDE_LOG", log)
 	t.Cleanup(m.Shutdown)
 	if err := m.Resume(
-		context.Background(), "sid", "/tmp", "Persisted prompt."); err != nil {
+		context.Background(), "sid", "/tmp", "Persisted prompt.", nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(log)
@@ -134,7 +156,7 @@ func TestRenameUsesInitializedCommandCatalog(t *testing.T) {
 	t.Setenv("FAKE_CLAUDE_LOG", log)
 	t.Cleanup(m.Shutdown)
 
-	ch, _, _, _, err := m.Send(context.Background(), "sid", "/rename hhh", "/tmp", "", "", false)
+	ch, _, _, _, err := m.Send(context.Background(), "sid", "/rename hhh", "/tmp", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +271,7 @@ func TestPermissionPromptToolFlagWhenHandlerConfigured(t *testing.T) {
 	defer os.Unsetenv("FAKE_CLAUDE_LOG")
 	m := New(bin, "", "", nil, 4, interaction.New(""), nil)
 	defer m.Shutdown()
-	ch, _, _, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", false)
+	ch, _, _, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +304,7 @@ func TestClaudePermissionControlE2E(t *testing.T) {
 	m := New("claude", "", "", []string{"--permission-mode", "default"}, 1, h, nil)
 	defer m.Shutdown()
 	result, _, _, _, err := m.Send(context.Background(), id,
-		"Use Edit to replace the exact text before with after in "+path+", then reply only done.", dir, "", "", false)
+		"Use Edit to replace the exact text before with after in "+path+", then reply only done.", dir, "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +345,7 @@ func TestResumeUsesResumeFlag(t *testing.T) {
 	defer os.Unsetenv("FAKE_CLAUDE_LOG")
 	m := New(bin, "", "", nil, 4, nil, nil)
 	defer m.Shutdown()
-	ch, _, _, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", true)
+	ch, _, _, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +604,7 @@ func TestLateResultDoesNotContaminateUnstartedNextTurn(t *testing.T) {
 func TestMaxLiveDoesNotGrowWhenAllProcessesBusy(t *testing.T) {
 	m := New("missing", "", "", nil, 1, nil, nil)
 	m.processes["busy"] = &process{id: "busy", turns: []*turnRequest{nil}}
-	if _, _, err := m.ensureProcess(context.Background(), "new", "/tmp", "", "", true, false); err == nil {
+	if _, _, err := m.ensureProcess(context.Background(), "new", "/tmp", "", "", nil, true, false); err == nil {
 		t.Fatal("expected max-live busy error")
 	}
 	if len(m.processes) != 1 {
@@ -594,13 +616,13 @@ func TestMaxLiveDoesNotEvictLeasedProcess(t *testing.T) {
 	m := New("missing", "", "", nil, 1, nil, nil)
 	p := &process{id: "leased"}
 	m.processes[p.id] = p
-	got, fresh, err := m.ensureProcess(context.Background(), p.id, "/tmp", "", "", true, true)
+	got, fresh, err := m.ensureProcess(context.Background(), p.id, "/tmp", "", "", nil, true, true)
 	if err != nil || got != p || fresh || p.leases != 1 {
 		t.Fatalf("leased ensure = (%p, %v, %v), leases=%d; want existing process with one lease", got, fresh, err, p.leases)
 	}
 	// Assert the reason: spawning the missing binary would also error, which
 	// would let this pass even if the lease guard had failed.
-	_, _, err = m.ensureProcess(context.Background(), "new", "/tmp", "", "", true, false)
+	_, _, err = m.ensureProcess(context.Background(), "new", "/tmp", "", "", nil, true, false)
 	if err == nil || !strings.Contains(err.Error(), "all busy") {
 		t.Fatalf("ensure alongside a leased process = %v, want all busy", err)
 	}

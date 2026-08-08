@@ -46,6 +46,7 @@ type Sender struct {
 	tail         tailConfig
 	promptMu     sync.Mutex
 	systemPrompt func(string) string
+	extraArgs    func(string) []string
 }
 
 // Rename uses Codex RPC when live. Claude and idle Codex use native metadata;
@@ -203,7 +204,7 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 	if injectMCPTools {
 		appConfig = codexMCPConfig(logger)
 	}
-	sandbox, config := codexHeadlessParams(sandboxArgs, logger)
+	sandbox, config := codex.ParseHeadlessArgs(sandboxArgs, logger)
 	for k, v := range appConfig {
 		config[k] = v
 	}
@@ -221,40 +222,6 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 	}
 }
 
-func codexHeadlessParams(args []string, logger *slog.Logger) (map[string]any, map[string]any) {
-	p, cfg := map[string]any{}, map[string]any{}
-	for i := 0; i < len(args); i++ {
-		switch {
-		case (args[i] == "--sandbox" || args[i] == "-s") && i+1 < len(args):
-			p["sandbox"] = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "--sandbox="):
-			p["sandbox"] = strings.TrimPrefix(args[i], "--sandbox=")
-		case args[i] == "-c" && i+1 < len(args):
-			kv := strings.SplitN(args[i+1], "=", 2)
-			if len(kv) == 2 {
-				cfg[kv[0]] = codexConfigValue(kv[1])
-			} else {
-				logger.Warn("headless codex: invalid -c override", "value", args[i+1])
-			}
-			i++
-		default:
-			logger.Warn("headless codex: unsupported --codex-args option", "option", args[i])
-		}
-	}
-	return p, cfg
-}
-
-// Codex's common TOML literals (strings, booleans, numbers and arrays) are
-// also valid JSON. Preserve bare TOML words as strings.
-func codexConfigValue(raw string) any {
-	var v any
-	if json.Unmarshal([]byte(raw), &v) == nil {
-		return v
-	}
-	return raw
-}
-
 // Send injects prompt into the session's live interactive claude (resuming /
 // spawning it as needed) and streams the resulting turn's events. The channel
 // closes when the turn ends or ctx is cancelled.
@@ -264,7 +231,7 @@ func (s *Sender) Send(ctx context.Context, sessionID, prompt, cwd string) (<-cha
 	}
 	if s.claude != nil {
 		return s.claudeTurn(
-			ctx, sessionID, prompt, cwd, "", s.promptFor(sessionID), true)
+			ctx, sessionID, prompt, cwd, "", s.promptFor(sessionID), s.argsFor(sessionID), true)
 	}
 	return nil, errors.New("sender has no headless backend")
 }
@@ -333,14 +300,14 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 	if s.claude != nil {
 		id := newSessionID()
 		s.setAutoApprove(id, req.AutoApprove)
-		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, false)
+		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, false)
 		if err != nil {
 			s.clearAutoApprove(id, req.AutoApprove)
 		}
 		return id, ch, err
 	}
 	if s.app != nil {
-		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt)
+		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs)
 		if err != nil {
 			return "", nil, err
 		}
@@ -402,7 +369,7 @@ func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
 		return s.app.Resume(ctx, sessionID, cwd)
 	}
 	if s.claude != nil {
-		return s.claude.Resume(ctx, sessionID, cwd, s.promptFor(sessionID))
+		return s.claude.Resume(ctx, sessionID, cwd, s.promptFor(sessionID), s.argsFor(sessionID))
 	}
 	return errors.New("sender has no headless backend")
 }
@@ -424,6 +391,27 @@ func (s *Sender) promptFor(id string) string {
 	s.promptMu.Unlock()
 	if lookup == nil {
 		return ""
+	}
+	return lookup(id)
+}
+
+var _ backend.ExtraArgser = (*Sender)(nil)
+
+func (s *Sender) SetExtraArgsLookup(lookup func(string) []string) {
+	s.promptMu.Lock()
+	s.extraArgs = lookup
+	s.promptMu.Unlock()
+	if s.app != nil {
+		s.app.SetExtraArgsLookup(lookup)
+	}
+}
+
+func (s *Sender) argsFor(id string) []string {
+	s.promptMu.Lock()
+	lookup := s.extraArgs
+	s.promptMu.Unlock()
+	if lookup == nil {
+		return nil
 	}
 	return lookup(id)
 }
@@ -519,7 +507,7 @@ func (s *Sender) Shutdown() {
 	}
 }
 
-func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendSystemPrompt string, resume bool) (<-chan StreamEvent, error) {
+func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendSystemPrompt string, extraArgs []string, resume bool) (<-chan StreamEvent, error) {
 	path := s.locate(id)
 	var offset int64
 	if path != "" {
@@ -527,7 +515,7 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendS
 			offset = fi.Size()
 		}
 	}
-	done, deltas, fresh, queuedAhead, err := s.claude.Send(ctx, id, prompt, cwd, model, appendSystemPrompt, resume)
+	done, deltas, fresh, queuedAhead, err := s.claude.Send(ctx, id, prompt, cwd, model, appendSystemPrompt, extraArgs, resume)
 	if err != nil {
 		return nil, err
 	}

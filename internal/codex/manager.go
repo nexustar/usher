@@ -35,6 +35,7 @@ type Manager struct {
 	workers      map[string]*worker
 	starting     int
 	systemPrompt func(string) string
+	extraArgs    func(string) []string
 }
 
 func NewManager(bin string, interactions *interaction.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
@@ -47,13 +48,27 @@ func NewManager(bin string, interactions *interaction.Manager, sandbox, config m
 	return &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}}
 }
 
-func (m *Manager) newClient(instructions string) *Client {
+// newClient builds one session's worker. extra follows --codex-args
+// vocabulary (--sandbox / -c key=value) and overrides the manager-wide
+// sandbox and config for this worker only.
+func (m *Manager) newClient(instructions string, extra []string) *Client {
 	var args []string
 	if instructions != "" {
 		quoted, _ := json.Marshal(instructions)
 		args = []string{"-c", "developer_instructions=" + string(quoted)}
 	}
-	return New(m.bin, m.interactions, m.sandbox, m.config, m.env, args, m.logger)
+	sandbox, config := m.sandbox, m.config
+	if len(extra) > 0 {
+		extraSandbox, extraConfig := ParseHeadlessArgs(extra, m.logger)
+		sandbox, config = cloneMap(sandbox), cloneMap(config)
+		for k, v := range extraSandbox {
+			sandbox[k] = v
+		}
+		for k, v := range extraConfig {
+			config[k] = v
+		}
+	}
+	return New(m.bin, m.interactions, sandbox, config, m.env, args, m.logger)
 }
 
 func (m *Manager) SetSystemPromptLookup(lookup func(string) string) {
@@ -68,6 +83,22 @@ func (m *Manager) promptFor(id string) string {
 	m.mu.Unlock()
 	if lookup == nil {
 		return ""
+	}
+	return lookup(id)
+}
+
+func (m *Manager) SetExtraArgsLookup(lookup func(string) []string) {
+	m.mu.Lock()
+	m.extraArgs = lookup
+	m.mu.Unlock()
+}
+
+func (m *Manager) argsFor(id string) []string {
+	m.mu.Lock()
+	lookup := m.extraArgs
+	m.mu.Unlock()
+	if lookup == nil {
+		return nil
 	}
 	return lookup(id)
 }
@@ -109,7 +140,7 @@ func (m *Manager) finishStart() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions string) (string, error) {
+func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions string, extraArgs []string) (string, error) {
 	victim, err := m.reserve()
 	if err != nil {
 		return "", err
@@ -117,7 +148,7 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions stri
 	if victim != nil {
 		victim.Shutdown()
 	}
-	c := m.newClient(instructions)
+	c := m.newClient(instructions, extraArgs)
 	id, err := c.StartThread(ctx, cwd, model)
 	if err != nil {
 		m.finishStart()
@@ -190,7 +221,7 @@ func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, err
 			victim.Shutdown()
 		}
 		ready := make(chan struct{})
-		w := &worker{client: m.newClient(m.promptFor(id)), ready: ready, lastUsed: time.Now()}
+		w := &worker{client: m.newClient(m.promptFor(id), m.argsFor(id)), ready: ready, lastUsed: time.Now()}
 		m.mu.Lock()
 		m.starting--
 		if existing := m.workers[id]; existing != nil {

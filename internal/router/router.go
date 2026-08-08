@@ -119,6 +119,9 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 			if setter, ok := backend.Runtime.(backendpkg.SystemPrompter); ok {
 				setter.SetSystemPromptLookup(meta.AppendSystemPrompt)
 			}
+			if setter, ok := backend.Runtime.(backendpkg.ExtraArgser); ok {
+				setter.SetExtraArgsLookup(meta.ExtraArgs)
+			}
 		}
 	}
 	return r
@@ -463,6 +466,7 @@ func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 	}
 	if r.meta != nil {
 		r.meta.SetAppendSystemPrompt(newID, r.meta.AppendSystemPrompt(srcID))
+		r.meta.SetExtraArgs(newID, r.meta.ExtraArgs(srcID))
 	}
 	// Auto-approve is deliberately not inherited: a branch is a new conversation.
 	// Ingest synchronously so the id resolves the moment the client navigates
@@ -1570,13 +1574,14 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 	}
 	id, ch, err := r.senderForBackend(o.Backend).Start(ctx, backendpkg.StartRequest{
 		Cwd: o.Cwd, Prompt: o.InitialMessage, Model: o.Model, AppendSystemPrompt: o.AppendSystemPrompt,
-		AutoApprove: o.AutoApprove,
+		ExtraArgs: o.ExtraArgs, AutoApprove: o.AutoApprove,
 	})
 	if err != nil {
 		return "", nil, nil, err
 	}
 	if r.meta != nil {
 		r.meta.SetAppendSystemPrompt(id, o.AppendSystemPrompt)
+		r.meta.SetExtraArgs(id, o.ExtraArgs)
 	}
 	tok := &sendToken{cancel: cancel}
 	now := time.Now()

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -25,6 +26,7 @@ type fileFormat struct {
 	Pinned             []string                   `json:"pinned,omitempty"`
 	Titles             map[string]string          `json:"titles,omitempty"`
 	AppendSystemPrompt map[string]string          `json:"append_system_prompt,omitempty"`
+	ExtraArgs          map[string][]string        `json:"extra_args,omitempty"`
 }
 
 type Store struct {
@@ -36,6 +38,7 @@ type Store struct {
 	pinned             map[string]bool
 	titles             map[string]string
 	appendSystemPrompt map[string]string
+	extraArgs          map[string][]string
 }
 
 func New(path string, autoAfter time.Duration) *Store {
@@ -49,6 +52,7 @@ func New(path string, autoAfter time.Duration) *Store {
 		pinned:             map[string]bool{},
 		titles:             map[string]string{},
 		appendSystemPrompt: map[string]string{},
+		extraArgs:          map[string][]string{},
 	}
 	s.load()
 	return s
@@ -86,6 +90,11 @@ func (s *Store) load() {
 	for id, prompt := range f.AppendSystemPrompt {
 		s.appendSystemPrompt[id] = prompt
 	}
+	for id, args := range f.ExtraArgs {
+		if len(args) > 0 {
+			s.extraArgs[id] = args
+		}
+	}
 }
 
 func (s *Store) persist() {
@@ -104,9 +113,13 @@ func (s *Store) persist() {
 	if len(s.appendSystemPrompt) > 0 {
 		prompts = s.appendSystemPrompt
 	}
+	var extraArgs map[string][]string
+	if len(s.extraArgs) > 0 {
+		extraArgs = s.extraArgs
+	}
 	data, err := json.Marshal(fileFormat{
 		Archived: s.archived, Pinned: pinned, Titles: titles,
-		AppendSystemPrompt: prompts,
+		AppendSystemPrompt: prompts, ExtraArgs: extraArgs,
 	})
 	if err != nil {
 		slog.Warn("sessionmeta: encode", "err", err)
@@ -243,6 +256,29 @@ func (s *Store) AppendSystemPrompt(id string) string {
 	return s.appendSystemPrompt[id]
 }
 
+func (s *Store) SetExtraArgs(id string, args []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(args) == 0 {
+		if _, ok := s.extraArgs[id]; !ok {
+			return
+		}
+		delete(s.extraArgs, id)
+	} else {
+		if slices.Equal(s.extraArgs[id], args) {
+			return
+		}
+		s.extraArgs[id] = append([]string(nil), args...)
+	}
+	s.persist()
+}
+
+func (s *Store) ExtraArgs(id string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.extraArgs[id]...)
+}
+
 // Forget drops all state for id.
 func (s *Store) Forget(id string) {
 	s.mu.Lock()
@@ -251,12 +287,14 @@ func (s *Store) Forget(id string) {
 	hasPin := s.pinned[id]
 	_, hasTitle := s.titles[id]
 	_, hasPrompt := s.appendSystemPrompt[id]
-	if !hasArchive && !hasPin && !hasTitle && !hasPrompt {
+	_, hasArgs := s.extraArgs[id]
+	if !hasArchive && !hasPin && !hasTitle && !hasPrompt && !hasArgs {
 		return
 	}
 	delete(s.archived, id)
 	delete(s.pinned, id)
 	delete(s.titles, id)
 	delete(s.appendSystemPrompt, id)
+	delete(s.extraArgs, id)
 	s.persist()
 }

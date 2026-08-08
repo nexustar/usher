@@ -103,6 +103,7 @@ type StartRequest struct {
 	Prompt             string
 	Model              string
 	AppendSystemPrompt string
+	ExtraArgs          []string
 	AutoApprove        bool
 }
 
@@ -160,6 +161,13 @@ type Renamer interface {
 // the prompt on respawn.
 type SystemPrompter interface {
 	SetSystemPromptLookup(lookup func(sessionID string) string)
+}
+
+// ExtraArgser is the same capability for a session's extra spawn arguments
+// (agent-profile flags): StartRequest carries them into a brand-new session,
+// and respawns must ask for them again by session id.
+type ExtraArgser interface {
+	SetExtraArgsLookup(lookup func(sessionID string) []string)
 }
 
 // Model is the backend-neutral model-picker projection.

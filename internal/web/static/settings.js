@@ -223,9 +223,17 @@ function renderForm(agent, copy = false) {
         <input type="checkbox" name="auto_approve"${value.auto_approve ? ' checked' : ''}>
         <span>Auto-approve tool calls</span>
       </label>
-      <label><span>Append system prompt</span>
-        <textarea name="append_system_prompt" rows="6" placeholder="Additional instructions for sessions created with this agent…">${esc(value.append_system_prompt || '')}</textarea>
-      </label>
+      <details class="cfg-form-advanced"${value.append_system_prompt || (value.extra_args || []).length ? ' open' : ''}>
+        <summary>Advanced</summary>
+        <label><span>Append system prompt</span>
+          <textarea name="append_system_prompt" rows="6" placeholder="Additional instructions for sessions created with this agent…">${esc(value.append_system_prompt || '')}</textarea>
+        </label>
+        <label><span>Extra CLI flags</span>
+          <input name="extra_args" class="mono" value="${esc((value.extra_args || []).join(' '))}"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 placeholder="Space-separated flags added when spawning this agent's backend">
+        </label>
+      </details>
       <div class="cfg-form-error err" hidden></div>
       <div class="cfg-form-actions">
         ${creating ? '' : '<button type="button" class="danger agent-delete">Delete</button><button type="button" class="agent-copy">Duplicate</button>'}
@@ -256,6 +264,9 @@ function renderForm(agent, copy = false) {
     const payload = Object.fromEntries(new FormData(form));
     // FormData reports the checkbox as "on" or omits it; the API wants a bool.
     payload.auto_approve = form.elements.auto_approve.checked;
+    // The API wants an array; an empty field must not send [""].
+    const extraArgs = form.elements.extra_args.value.trim();
+    payload.extra_args = extraArgs ? extraArgs.split(/\s+/) : undefined;
     const response = await fetch(creating ? '/api/agents' : '/api/agents/' + encodeURIComponent(value.name), {
       method: creating ? 'POST' : 'PUT',
       headers: {'Content-Type': 'application/json'},
