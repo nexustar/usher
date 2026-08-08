@@ -1454,10 +1454,13 @@ function appendLiveDelta(d) {
   lt.previewRAF = requestAnimationFrame(() => {
     lt.previewRAF = 0;
     if (!lt.preview) return;
+    // Sampled before the preview grows: a delta batch taller than the
+    // threshold would otherwise read as the reader having scrolled up.
+    const chat = document.getElementById('chat-scroll');
+    const stick = chat && isNearBottom(chat);
     lt.preview.dataset.raw = lt.previewText;
     lt.preview.innerHTML = renderMarkdown(lt.previewText);
-    const chat = document.getElementById('chat-scroll');
-    if (chat && isNearBottom(chat)) chat.scrollTop = chat.scrollHeight;
+    if (stick) chat.scrollTop = chat.scrollHeight;
   });
 }
 
