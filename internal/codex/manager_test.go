@@ -120,7 +120,7 @@ func TestManagerLRUEvictsIdleWorkerAndColdResumes(t *testing.T) {
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, err := m.StartThread(ctx, "/tmp", "", "", nil)
+	id, err := m.StartThread(ctx, "/tmp", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestStartThreadPassesDeveloperInstructions(t *testing.T) {
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := m.StartThread(ctx, "/tmp", "", "Be concise.", nil); err != nil {
+	if _, err := m.StartThread(ctx, "/tmp", "", "Be concise.", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	m.Shutdown()
@@ -192,12 +192,59 @@ func TestColdResumeRestoresDeveloperInstructions(t *testing.T) {
 	}
 }
 
+// TestRouterConfigSelection: the router thread gets the routing-tools config —
+// fresh by intent (its id is not minted yet), cold resume by designated id.
+func TestRouterConfigSelection(t *testing.T) {
+	m := NewManager("unused", nil, nil,
+		map[string]any{"mcp_servers.usher.args": []string{"mcp-stdio"}}, nil, 1, nil)
+	m.SetRouterConfig(map[string]any{"mcp_servers.usher.args": []string{"mcp-stdio", "--router-tools"}})
+
+	cfg := m.newClient("", "", nil, true).threadParams("/tmp", "")["config"].(map[string]any)
+	if !reflect.DeepEqual(cfg["mcp_servers.usher.args"], []string{"mcp-stdio", "--router-tools"}) {
+		t.Fatalf("fresh router config = %v", cfg)
+	}
+	cfg = m.newClient("", "", nil, false).threadParams("/tmp", "")["config"].(map[string]any)
+	if !reflect.DeepEqual(cfg["mcp_servers.usher.args"], []string{"mcp-stdio"}) {
+		t.Fatalf("ordinary config = %v", cfg)
+	}
+
+	m.SetRouterSession("r1")
+	if !m.isRouter("r1") || m.isRouter("other") || m.isRouter("") {
+		t.Fatal("designation lookup wrong")
+	}
+}
+
+// A router-designated fresh thread records its minted id, so cold resumes
+// re-select the router config, and its thread/start carries that config.
+func TestStartThreadRouterDesignation(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	m.SetRouterConfig(map[string]any{"router_marker": true})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, err := m.StartThread(ctx, "/tmp", "", "", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Shutdown()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"router_marker":true`) {
+		t.Fatalf("thread/start missing router config: %q", data)
+	}
+	if !m.isRouter(id) {
+		t.Fatal("router thread was not designated for future cold resumes")
+	}
+}
+
 func TestNewClientMergesPerSessionExtraArgs(t *testing.T) {
 	m := NewManager("unused", nil,
 		map[string]any{"sandbox": "read-only"},
 		map[string]any{"approval_policy": "never", "model_reasoning_effort": "high"},
 		nil, 1, nil)
-	c := m.newClient("sid", "", []string{"--sandbox", "workspace-write", "-c", "approval_policy=untrusted"})
+	c := m.newClient("sid", "", []string{"--sandbox", "workspace-write", "-c", "approval_policy=untrusted"}, false)
 	p := c.threadParams("/tmp", "")
 	if p["sandbox"] != "workspace-write" {
 		t.Fatalf("sandbox = %v, want the per-session override", p["sandbox"])
@@ -293,7 +340,7 @@ func TestManagerWorkerFailureIsIsolated(t *testing.T) {
 
 func TestManagerMaxLiveRejectsWhenAllWorkersBusy(t *testing.T) {
 	m := NewManager("unused", nil, nil, nil, nil, 1, nil)
-	m.workers["busy"] = &worker{client: m.newClient("busy", "", nil), busy: true, lastUsed: time.Now()}
+	m.workers["busy"] = &worker{client: m.newClient("busy", "", nil, false), busy: true, lastUsed: time.Now()}
 	if _, err := m.reserve(); err == nil || !strings.Contains(err.Error(), "all busy") {
 		t.Fatalf("reserve error = %v, want all busy", err)
 	}
@@ -303,7 +350,7 @@ func TestManagerMaxLiveRejectsWhenAllWorkersBusy(t *testing.T) {
 // its worker: evicting it would kill the agent with the app-server.
 func TestManagerAgentTurnPinsIdleRoot(t *testing.T) {
 	m := NewManager("unused", nil, nil, nil, nil, 1, nil)
-	c := m.newClient("root", "", nil)
+	c := m.newClient("root", "", nil, false)
 	c.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"agent-1","turn":{"id":"t1"}}`)})
 	m.workers["root"] = &worker{client: c, lastUsed: time.Now()}
 	if _, err := m.reserve(); err == nil || !strings.Contains(err.Error(), "all busy") {

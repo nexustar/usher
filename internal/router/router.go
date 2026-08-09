@@ -1712,11 +1712,11 @@ func (r *Router) prepare(ctx context.Context, o core.CreateOptions) (core.Create
 	}
 	o.Cwd = cwd
 	o.Backend, err = r.resolveCreateBackend(ctx, o.Backend, o.Model)
-	if err == nil && o.Router && o.Backend != "claude" {
-		// Codex and pi fix a session's MCP configuration when the process that
-		// owns it starts, which is inside id assignment — too late to key the
-		// routing tools by the id usher is about to learn.
-		return o, fmt.Errorf("router sessions are Claude Code only, not %q", o.Backend)
+	if err == nil && o.Router && o.Backend != "claude" && o.Backend != "codex" {
+		// Claude receives the routing tools as spawn args keyed by its
+		// pre-minted id; codex receives them in thread/start config params.
+		// pi has no usher MCP injection at all — nothing to hand the tools to.
+		return o, fmt.Errorf("router sessions are not supported for %q", o.Backend)
 	}
 	return o, err
 }

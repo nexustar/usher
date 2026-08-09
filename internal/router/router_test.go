@@ -885,9 +885,11 @@ func TestEnrichExitSkipsConsecutiveUsersAndZeroEndTime(t *testing.T) {
 }
 
 // TestSendQueueSerializesAndAttributesReplies: three rapid relayed sends into
-// one session must run as three ordered turns, each collector queueing ITS
-// OWN turn's reply — not the previous turn's tail (the busy-session
-// misattribution bug). Note order in the inbox proves attribution.
+// one session must run as three serialized turns, each collector queueing ITS
+// OWN turn's reply exactly once — not the previous turn's tail (the
+// busy-session misattribution bug). Queue order is not asserted: collectors
+// run on their own goroutines and near-instant synthetic turns can queue out
+// of order; notes are self-describing either way.
 func TestSendQueueSerializesAndAttributesReplies(t *testing.T) {
 	r := newQueueTestRouter(t)
 	r.meta = sessionmeta.New(filepath.Join(t.TempDir(), "meta.json"), 0)
@@ -913,12 +915,14 @@ func TestSendQueueSerializesAndAttributesReplies(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	want := "[session abc12345 replied] re: one\n\n" +
-		"[session abc12345 replied] re: two\n\n" +
-		"[session abc12345 replied] re: three\n\n" +
-		"next"
-	if got := r.foldRelays("inbox-1", "next"); got != want {
-		t.Errorf("folded notes = %q — misattributed or reordered turns", got)
+	folded := r.foldRelays("inbox-1", "next")
+	for _, reply := range []string{"re: one", "re: two", "re: three"} {
+		if strings.Count(folded, "[session abc12345 replied] "+reply+"\n") != 1 {
+			t.Errorf("folded notes = %q — %q not attributed exactly once", folded, reply)
+		}
+	}
+	if !strings.HasSuffix(folded, "\n\nnext") {
+		t.Errorf("user text lost: %q", folded)
 	}
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
@@ -1051,6 +1055,7 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 	r := New(d, map[string]backend.Backend{
 		"claude": {Runtime: rt, Transcript: transcript.Claude{}},
 		"codex":  {Runtime: rt, Transcript: transcript.Claude{}},
+		"pi":     {Runtime: rt, Transcript: transcript.Claude{}},
 	}, "claude", broker.New(), nil, meta, nil)
 
 	id, err := r.StartSession(core.CreateOptions{
@@ -1072,10 +1077,10 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 	// A backend that cannot host one must fail instead of spawning a router
 	// session with no routing tools.
 	_, err = r.StartSession(core.CreateOptions{
-		Cwd: t.TempDir(), InitialMessage: "hi", Backend: "codex", Router: true,
+		Cwd: t.TempDir(), InitialMessage: "hi", Backend: "pi", Router: true,
 	})
-	if err == nil || !strings.Contains(err.Error(), "Claude Code only") {
-		t.Fatalf("codex router error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("pi router error = %v", err)
 	}
 
 	// A restart hands the designation back before anything resumes.

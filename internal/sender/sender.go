@@ -183,7 +183,10 @@ func claudeHookSettings(hookSock string, logger *slog.Logger) string {
 	return string(b)
 }
 
-func codexMCPConfig(logger *slog.Logger) map[string]any {
+// codexMCPConfig is the usher MCP registration as codex config overrides,
+// passed per thread in thread/start and thread/resume params. With
+// routerTools it is the router-session variant with the routing tools on.
+func codexMCPConfig(routerTools bool, logger *slog.Logger) map[string]any {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.Abs(exe)
@@ -192,9 +195,13 @@ func codexMCPConfig(logger *slog.Logger) map[string]any {
 		logger.Warn("mcp: cannot resolve usher executable; show_image disabled", "err", err)
 		return nil
 	}
+	args := []string{"mcp-stdio"}
+	if routerTools {
+		args = append(args, "--router-tools")
+	}
 	return map[string]any{
 		"mcp_servers.usher.command":                     exe,
-		"mcp_servers.usher.args":                        []string{"mcp-stdio"},
+		"mcp_servers.usher.args":                        args,
 		"mcp_servers.usher.env_vars":                    []string{"USHER_HOOK_SOCK"},
 		"mcp_servers.usher.default_tools_approval_mode": "approve",
 		// Codex's default callable MCP namespace keeps the legacy mcp__ prefix;
@@ -230,16 +237,28 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 		env = append(env, "USHER_HOOK_SOCK="+hookSock)
 	}
 	t := timing{poll: 150 * time.Millisecond}
-	appConfig := map[string]any{}
-	if injectMCPTools {
-		appConfig = codexMCPConfig(logger)
-	}
 	sandbox, config := codex.ParseHeadlessArgs(sandboxArgs, logger)
-	for k, v := range appConfig {
-		config[k] = v
+	// The router variant is the same registration with the routing tools on;
+	// the manager applies it to the thread designated as usher's router.
+	var routerConfig map[string]any
+	if mcp := codexMCPConfig(false, logger); injectMCPTools && mcp != nil {
+		routerConfig = make(map[string]any, len(config)+len(mcp))
+		for k, v := range config {
+			routerConfig[k] = v
+		}
+		for k, v := range codexMCPConfig(true, logger) {
+			routerConfig[k] = v
+		}
+		for k, v := range mcp {
+			config[k] = v
+		}
+	}
+	mgr := codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger)
+	if routerConfig != nil {
+		mgr.SetRouterConfig(routerConfig)
 	}
 	return &Sender{
-		app:          codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger),
+		app:          mgr,
 		interactions: interactions,
 		locateFn:     func(id string) string { return locateCodex(sessionsDir, id) },
 		indexPath:    filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
@@ -354,10 +373,7 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 		return id, ch, err
 	}
 	if s.app != nil {
-		if req.Router {
-			return "", nil, errors.New("router sessions are Claude Code only")
-		}
-		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs)
+		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, req.Router)
 		if err != nil {
 			return "", nil, err
 		}
@@ -427,12 +443,14 @@ func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
 var _ backend.RouterDesignator = (*Sender)(nil)
 
 // SetRouterSession restores the routing tools onto usher's designated router
-// after a restart, so its next cold worker spawns with them. Codex has no
-// equivalent: its per-session MCP configuration is fixed when app-server
-// starts, which is inside thread creation.
+// after a restart, so its next cold worker spawns with them — as spawn args
+// for claude, as thread/resume config params for codex.
 func (s *Sender) SetRouterSession(sessionID string) {
 	if s.claude != nil {
 		s.claude.SetRouterSession(sessionID)
+	}
+	if s.app != nil {
+		s.app.SetRouterSession(sessionID)
 	}
 }
 

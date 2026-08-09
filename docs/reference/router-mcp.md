@@ -9,11 +9,12 @@
 - `set_auto_approve`, `set_archived`
 
 The flag is intentionally absent from the MCP configuration usher injects into
-ordinary coding sessions. usher writes a second configuration with it —
-`mcp-router.json`, next to `mcp.json` in the data dir — and passes that one only
-to the session designated as its router. Set the designation with a
-[router agent](agents.md#router-agents); the flag stays available by hand for
-driving a `claude` started outside usher.
+ordinary coding sessions. Only the session designated as usher's router gets a
+registration with it: for Claude a second config file — `mcp-router.json`,
+next to `mcp.json` in the data dir — passed as spawn arguments; for Codex the
+same registration as config overrides in its thread/start and thread/resume
+params. Set the designation with a [router agent](agents.md#router-agents);
+the flag stays available by hand for driving a `claude` started outside usher.
 
 ## Replies come back asynchronously — and not through the model
 
@@ -80,7 +81,7 @@ curl -sS -X POST localhost:8080/api/sessions \
   -d '{"agent":"main","initial_message":"List my active sessions."}'
 ```
 
-usher spawns it with `mcp-router.json`, designates it, and relays every routed
+usher spawns it with the routing tools, designates it, and relays every routed
 reply back into it. Its own jsonl makes it a session like any other, so it
 appears in its own `list_sessions` output — it must not route work to itself.
 

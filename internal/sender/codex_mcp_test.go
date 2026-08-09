@@ -8,7 +8,7 @@ import (
 )
 
 func TestCodexMCPConfigUsesNativeValues(t *testing.T) {
-	cfg := codexMCPConfig(slog.Default())
+	cfg := codexMCPConfig(false, slog.Default())
 	if _, ok := cfg["mcp_servers.usher.command"].(string); !ok {
 		t.Fatalf("command: %#v", cfg)
 	}
@@ -21,6 +21,15 @@ func TestCodexMCPConfigUsesNativeValues(t *testing.T) {
 	direct, ok := cfg["features.code_mode.direct_only_tool_namespaces"].([]string)
 	if !ok || len(direct) != 2 || direct[0] != "mcp__usher" || direct[1] != "usher" {
 		t.Fatalf("usher namespace must bypass deferred loading: %#v", direct)
+	}
+}
+
+// The router variant is the same registration with the routing tools on.
+func TestCodexMCPConfigRouterTools(t *testing.T) {
+	cfg := codexMCPConfig(true, slog.Default())
+	args, ok := cfg["mcp_servers.usher.args"].([]string)
+	if !ok || len(args) != 2 || args[0] != "mcp-stdio" || args[1] != "--router-tools" {
+		t.Fatalf("router args = %#v", cfg["mcp_servers.usher.args"])
 	}
 }
 

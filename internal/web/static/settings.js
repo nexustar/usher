@@ -228,7 +228,7 @@ function renderForm(agent, copy = false) {
       </label>
       <label class="cfg-form-check">
         <input type="checkbox" name="router"${value.router ? ' checked' : ''}>
-        <span>Router session (Claude only, one at a time)</span>
+        <span>Router session (one at a time; Claude or Codex)</span>
       </label>
       <details class="cfg-form-advanced"${value.append_system_prompt || (value.extra_args || []).length ? ' open' : ''}>
         <summary>Advanced</summary>
