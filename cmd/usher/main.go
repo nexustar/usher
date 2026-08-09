@@ -90,6 +90,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  setup --remove     remove interactions installed by older usher releases")
 	fmt.Fprintln(os.Stderr, "  set-password       set/change the web UI password (required for non-loopback bind)")
 	fmt.Fprintln(os.Stderr, "  hook <event-name>  invoked by Claude Code; not for direct use")
+	fmt.Fprintln(os.Stderr, "  mcp-stdio         serve usher MCP tools over stdio; --router-tools opts into router controls")
 	fmt.Fprintln(os.Stderr, "  version            print version")
 }
 

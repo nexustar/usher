@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,19 +98,134 @@ func (c *Client) SendToSession(id, text string) error {
 	return c.post(ctx, "/v1/sessions/"+id+"/send", sendReq{Text: text})
 }
 
-// StartSession asks the router to spawn a brand-new session. An empty Backend
-// preserves model inference/default behavior; see CreateRequest for how Agent
-// interacts with the other fields.
-func (c *Client) StartSession(req CreateRequest) (string, error) {
+// ListSessions returns every session with usher's own flags attached. The
+// flags come back in the same batch as the sessions on purpose: probing
+// archive/auto-approve per session would be one round trip each.
+func (c *Client) ListSessions() ([]SessionView, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	var out []SessionView
+	if err := c.getJSON(ctx, "/v1/sessions", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SendToSessionRelayed routes a prompt and returns as soon as it is accepted.
+// When the turn completes, its reply is delivered into usher's router session
+// as an ordinary user message — the same relay the main chat has always used.
+// The returned Delivery says whether a relay was actually attached: usher
+// resolves the inbox itself, and there may not be a router session.
+func (c *Client) SendToSessionRelayed(id, text string) (Delivery, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	var out Delivery
+	err := c.postJSON(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/send",
+		sendReq{Text: text, Relay: true}, &out, http.StatusAccepted)
+	return out, err
+}
+
+// CreateSession spawns a session and returns as soon as its process is up. An
+// empty Backend preserves model inference/default behavior; see CreateRequest
+// for how Agent interacts with the other fields, and for how Relay routes the
+// new session's first reply into usher's router session.
+func (c *Client) CreateSession(req CreateRequest) (Delivery, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
-	var out struct {
-		ID string `json:"id"`
+	var out Delivery
+	err := c.postJSON(ctx, "/v1/sessions", req, &out, http.StatusAccepted)
+	return out, err
+}
+
+// Delivery is the ack for a prompt that was accepted but not waited on.
+// Relayed reports whether its reply will come back by itself.
+type Delivery struct {
+	SessionID string `json:"session_id"`
+	Relayed   bool   `json:"relayed"`
+}
+
+// ReadSessionTranscriptPage reads one page of a session's transcript. A
+// negative offset asks for the most recent page.
+func (c *Client) ReadSessionTranscriptPage(id string, offset, limit int) (TranscriptPage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	path := "/v1/sessions/" + neturl.PathEscape(id) + "/transcript?limit=" + strconv.Itoa(limit)
+	if offset >= 0 {
+		path += "&offset=" + strconv.Itoa(offset)
 	}
-	if err := c.postJSON(ctx, "/v1/sessions", req, &out, http.StatusAccepted); err != nil {
-		return "", err
+	var out TranscriptPage
+	err := c.getJSON(ctx, path, &out)
+	return out, err
+}
+
+// SearchSessions searches one session's transcript when id is set, or ranks
+// matching sessions across the machine when it is empty.
+func (c *Client) SearchSessions(id, query string, limit, contextChars int) (SearchResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	values := neturl.Values{}
+	values.Set("q", query)
+	values.Set("limit", strconv.Itoa(limit))
+	values.Set("context_chars", strconv.Itoa(contextChars))
+	if id != "" {
+		values.Set("session_id", id)
 	}
-	return out.ID, nil
+	var out SearchResult
+	err := c.getJSON(ctx, "/v1/search?"+values.Encode(), &out)
+	return out, err
+}
+
+// SetArchived archives or unarchives a session.
+func (c *Client) SetArchived(id string, archived bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	return c.post(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/archive",
+		map[string]bool{"archived": archived})
+}
+
+// SetAutoApprove toggles usher's permission auto-approval for a session.
+func (c *Client) SetAutoApprove(id string, enabled bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	return c.post(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/auto-approve",
+		map[string]bool{"enabled": enabled})
+}
+
+// ListPendingInteractions returns the currently-pending prompts as a snapshot.
+// SubscribePendingInteractions is the streaming form; a caller that cannot
+// hold a stream open (an MCP tool call) uses this one.
+func (c *Client) ListPendingInteractions() ([]interaction.Pending, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	var out []interaction.Pending
+	if err := c.getJSON(ctx, "/v1/interactions/pending", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SessionView is a session plus the flags usher keeps outside the jsonl.
+type SessionView struct {
+	core.Session
+	Archived    bool `json:"archived"`
+	AutoApprove bool `json:"auto_approve"`
+}
+
+// TranscriptPage is a core.TranscriptPage on the wire, plus the precomputed
+// has_more so the MCP consumer never derives it.
+type TranscriptPage struct {
+	core.TranscriptPage
+	HasMore bool `json:"has_more"`
+}
+
+// SearchResult carries both search shapes: Hits when a session id scoped the
+// search to one transcript, Results when it ranged over every session.
+type SearchResult struct {
+	Scope     string                     `json:"scope"`
+	SessionID string                     `json:"session_id,omitempty"`
+	Hits      []core.TranscriptSearchHit `json:"hits,omitempty"`
+	Results   []core.SessionSearchResult `json:"results,omitempty"`
+	Truncated bool                       `json:"truncated"`
 }
 
 // UploadAttachment streams a file into an existing session's managed

@@ -17,8 +17,8 @@ import (
 
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/imutil"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/pluginapi"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -248,16 +248,16 @@ func (f *fakeRouter) UploadAttachment(id, filename string, src io.Reader) (strin
 	return path, nil
 }
 
-func (f *fakeRouter) StartSession(req pluginapi.CreateRequest) (string, error) {
+func (f *fakeRouter) CreateSession(req pluginapi.CreateRequest) (pluginapi.Delivery, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.startErr != nil {
-		return "", f.startErr
+		return pluginapi.Delivery{}, f.startErr
 	}
 	id := "guest_" + strconv.Itoa(len(f.started)+1)
 	f.started = append(f.started, req)
 	f.sessions[id] = core.Session{ID: id, Cwd: req.Cwd}
-	return id, nil
+	return pluginapi.Delivery{SessionID: id}, nil
 }
 
 func (f *fakeRouter) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
