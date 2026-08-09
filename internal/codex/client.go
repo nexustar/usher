@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/procutil"
 )
@@ -110,6 +111,34 @@ func New(bin string, interactions *interaction.Manager, sandbox, config map[stri
 	return &Client{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), args: append([]string(nil), args...), logger: logger, pending: map[string]chan response{}, turns: map[string]*turnStream{}, active: map[string]string{}, threads: map[string]string{}}
 }
 
+// log returns the current logger under mu: bindSession swaps it after codex
+// assigns the thread id, and readLoop logs concurrently.
+func (c *Client) log() *slog.Logger {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.logger
+}
+
+// bindSession tags all further logs with the session id codex assigned. Only
+// fresh threads need it — resumed workers are built with the id already bound.
+func (c *Client) bindSession(id string) {
+	c.mu.Lock()
+	c.logger = c.logger.With("session", id)
+	c.mu.Unlock()
+}
+
+// redactConfig mirrors RedactSpawnArgs for the config map: a profile can set
+// developer_instructions through -c, which lands here rather than the argv.
+func redactConfig(m map[string]any) map[string]any {
+	v, ok := m["developer_instructions"].(string)
+	if !ok {
+		return m
+	}
+	out := cloneMap(m)
+	out["developer_instructions"] = fmt.Sprintf("[%d chars]", len(v))
+	return out
+}
+
 func scrubEnv() []string {
 	out := make([]string, 0, len(os.Environ()))
 	for _, e := range os.Environ() {
@@ -157,6 +186,9 @@ func (c *Client) ensure(ctx context.Context) error {
 	waitDone := make(chan struct{})
 	c.cmd, c.in, c.init, c.waitDone = cmd, in, state, waitDone
 	c.mu.Unlock()
+	// sandbox and config never reach the argv — they ride thread/start and
+	// thread/resume params — so log them alongside for the full picture.
+	c.log().Info("spawn", "args", backend.RedactSpawnArgs(cmd.Args), "sandbox", c.sandbox, "config", redactConfig(c.config))
 	go c.readLoop(cmd, out)
 	go func() {
 		err := cmd.Wait()
@@ -178,7 +210,7 @@ func (c *Client) ensure(ctx context.Context) error {
 		return err
 	}
 	c.finishInit(cmd, nil)
-	c.logger.Info("codex app-server initialized", "server", init.UserAgent)
+	c.log().Info("app-server initialized", "server", init.UserAgent)
 	return nil
 }
 
@@ -373,7 +405,7 @@ func (c *Client) handleServerRequest(m rpcMessage) {
 	case "attestation/generate":
 		c.replyError(m.ID, -32000, "client attestation is not supported by this usher client")
 	default:
-		c.logger.Warn("rejecting unknown app-server request", "method", m.Method)
+		c.log().Warn("rejecting unknown app-server request", "method", m.Method)
 		c.replyError(m.ID, -32601, "unsupported app-server request: "+m.Method)
 	}
 }

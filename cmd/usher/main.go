@@ -93,6 +93,22 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  version            print version")
 }
 
+func newLogger(level, format string) (*slog.Logger, error) {
+	var l slog.Level
+	if err := l.UnmarshalText([]byte(level)); err != nil {
+		return nil, fmt.Errorf("--log-level: %w", err)
+	}
+	opts := &slog.HandlerOptions{Level: l}
+	switch format {
+	case "text":
+		return slog.New(slog.NewTextHandler(os.Stderr, opts)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts)), nil
+	default:
+		return nil, fmt.Errorf("--log-format must be text or json (got %q)", format)
+	}
+}
+
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:7777", "listen address")
@@ -148,6 +164,8 @@ func serve(args []string) error {
 		"forum supergroup chat id to mirror sessions into; set the bot token in $TELEGRAM_BOT_TOKEN to enable")
 	tgAllowedUsers := fs.String("telegram-allowed-user-ids", "",
 		"comma-separated Telegram user ids allowed to drive sessions; empty = any member of the group")
+	logLevel := fs.String("log-level", "info", "log verbosity (debug|info|warn|error)")
+	logFormat := fs.String("log-format", "text", "log output format (text|json)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -155,7 +173,13 @@ func serve(args []string) error {
 		return fmt.Errorf("--auto-archive-days must be ≥ 0 (got %d)", *autoArchiveDays)
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger, err := newLogger(*logLevel, *logFormat)
+	if err != nil {
+		return err
+	}
+	// Packages without an injected logger (interaction, sessionmeta) log via
+	// the slog default; align it so every line shares one handler and format.
+	slog.SetDefault(logger)
 
 	if *dataDir == "" {
 		return fmt.Errorf("could not resolve data dir; pass --data-dir")

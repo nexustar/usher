@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,5 +276,17 @@ func TestMcpInputFormIsNotAcceptedWithoutAnswers(t *testing.T) {
 	})
 	if !strings.Contains(out.String(), `"action":"decline"`) || !strings.Contains(out.String(), `"content":null`) {
 		t.Fatalf("response = %s", out.String())
+	}
+}
+
+func TestBindSessionTagsLaterClientLogs(t *testing.T) {
+	var buf bytes.Buffer
+	c := New("unused", nil, nil, nil, nil, nil,
+		slog.New(slog.NewTextHandler(&buf, nil)))
+	c.bindSession("new-thread")
+	c.handleServerRequest(rpcMessage{ID: json.RawMessage("7"), Method: "bogus/method"})
+	if got := buf.String(); !strings.Contains(got, "session=new-thread") ||
+		!strings.Contains(got, "rejecting unknown app-server request") {
+		t.Fatalf("log = %q", got)
 	}
 }

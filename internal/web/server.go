@@ -454,6 +454,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
+	// 4xx is the client's mistake and comes back in its response body; 5xx is
+	// ours, so leave a server-side trace too.
+	if status >= 500 {
+		slog.Warn("request failed", "status", status, "err", msg)
+	}
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 

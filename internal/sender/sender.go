@@ -106,6 +106,7 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("backend", "claude")
 	var extra []string
 	if permissionMode != "" {
 		extra = []string{"--permission-mode", permissionMode}
@@ -137,7 +138,7 @@ func claudeHookSettings(hookSock string, logger *slog.Logger) string {
 		exe, err = filepath.Abs(exe)
 	}
 	if err != nil {
-		logger.Warn("claude hook: cannot resolve usher executable", "err", err)
+		logger.Warn("hook: cannot resolve usher executable", "err", err)
 		return ""
 	}
 	hookCommand := func(event string) string {
@@ -170,7 +171,7 @@ func codexMCPConfig(logger *slog.Logger) map[string]any {
 		exe, err = filepath.Abs(exe)
 	}
 	if err != nil {
-		logger.Warn("codex mcp: cannot resolve usher executable; show_image disabled", "err", err)
+		logger.Warn("mcp: cannot resolve usher executable; show_image disabled", "err", err)
 		return nil
 	}
 	return map[string]any{
@@ -195,6 +196,7 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("backend", "codex")
 	var env []string
 	if hookSock != "" {
 		env = append(env, "USHER_HOOK_SOCK="+hookSock)
@@ -453,7 +455,7 @@ func (s *Sender) ComposerItems(ctx context.Context, sessionID, cwd string) (back
 	}
 	skills, available, err := s.app.SkillsIfLive(ctx, sessionID, cwd)
 	if err != nil {
-		s.logger.Warn("codex skill discovery failed", "session", sessionID, "err", err)
+		s.logger.Warn("skill discovery failed", "session", sessionID, "err", err)
 		return backend.ComposerCatalog{}, err
 	}
 	for _, skill := range skills {
@@ -546,7 +548,7 @@ func (s *Sender) claudeEffort(ctx context.Context, id string) string {
 	defer cancel()
 	settings, err := s.claude.Settings(ctx, id)
 	if err != nil {
-		s.logger.Debug("claude settings probe", "session", id, "err", err)
+		s.logger.Debug("settings probe", "session", id, "err", err)
 		return ""
 	}
 	return settings.Effort

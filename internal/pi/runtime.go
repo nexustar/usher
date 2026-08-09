@@ -243,7 +243,7 @@ func (r *Runtime) checkBinding(id string, w *worker, st workerState) bool {
 	if st.sessionID == "" || st.sessionID == id {
 		return true
 	}
-	r.logger.Warn("pi worker switched sessions; dropping it",
+	r.logger.Warn("worker switched sessions; dropping it",
 		"session", id, "now", st.sessionID, "file", st.file)
 	r.mu.Lock()
 	if r.workers[id] == w {
@@ -264,7 +264,7 @@ func (r *Runtime) finishOperation(ctx context.Context, id string, w *worker, out
 	cancel()
 	switch {
 	case err != nil:
-		r.logger.Warn("pi runtime snapshot", "session", id, "err", err)
+		r.logger.Warn("runtime snapshot", "session", id, "err", err)
 	case !r.checkBinding(id, w, st):
 		raw, _ := json.Marshal(backend.ErrorPayload{Message: "A pi command switched this worker to another session. " +
 			"usher released it; the next message starts a fresh worker for this session."})
@@ -526,6 +526,7 @@ func NewRuntime(bin, sessionsDir string, extra []string, max int, models Models,
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("backend", "pi")
 	return &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, interactions: interactions, logger: logger, workers: map[string]*worker{}}
 }
 
@@ -577,7 +578,7 @@ func (r *Runtime) refreshModels(ctx context.Context, c *client) {
 		return
 	}
 	if err := r.models.refresh(ctx, c); err != nil {
-		r.logger.Debug("pi model catalog refresh failed", "err", err)
+		r.logger.Debug("model catalog refresh failed", "err", err)
 	}
 }
 
@@ -689,7 +690,7 @@ func (r *Runtime) handleExtensionUI(ctx context.Context, sessionID string, w *wo
 		fields["type"] = "extension_ui_response"
 		fields["id"] = req.ID
 		if err := w.c.send(fields); err != nil {
-			r.logger.Warn("pi extension UI response failed", "session", sessionID, "err", err)
+			r.logger.Warn("extension UI response failed", "session", sessionID, "err", err)
 		}
 	}
 	// Pi keeps no pending id for these and drops whatever comes back.
@@ -711,7 +712,7 @@ func (r *Runtime) handleExtensionUI(ctx context.Context, sessionID string, w *wo
 	ev, ok := dialogEvent(sessionID, w.cwd, req)
 	if !ok {
 		// Still has to be resolved, or pi waits forever.
-		r.logger.Warn("pi extension dialog not renderable; cancelled",
+		r.logger.Warn("extension dialog not renderable; cancelled",
 			"session", sessionID, "method", req.Method)
 		respond(map[string]any{"cancelled": true})
 		return
@@ -751,6 +752,7 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	if err != nil {
 		return "", nil, err
 	}
+	r.logger.Info("spawn", "cwd", req.Cwd, "args", backend.RedactSpawnArgs(c.cmd.Args))
 	data, err := c.request(ctx, "get_state", nil)
 	if err != nil {
 		c.stop()
@@ -804,6 +806,7 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 		if err != nil {
 			return nil, err
 		}
+		r.logger.Info("spawn", "session", id, "args", backend.RedactSpawnArgs(c.cmd.Args))
 		r.refreshModels(ctx, c)
 		w = &worker{c: c, cwd: cwd, path: path, last: time.Now(), leases: 1}
 		if err = r.add(id, w); err != nil {
@@ -906,6 +909,7 @@ func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
 	if err != nil {
 		return err
 	}
+	r.logger.Info("spawn", "session", id, "args", backend.RedactSpawnArgs(c.cmd.Args))
 	r.refreshModels(ctx, c)
 	w = &worker{c: c, cwd: cwd, path: path, last: time.Now()}
 	if err := r.add(id, w); err != nil {
@@ -969,7 +973,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 		emitTail := func() bool {
 			grew, err := tailPiJSONL(tailCtx, w.path, &offset, out)
 			if err != nil {
-				r.logger.Warn("pi session tail", "session", id, "err", err)
+				r.logger.Warn("session tail", "session", id, "err", err)
 				raw, _ := json.Marshal(backend.ErrorPayload{Message: "pi session tail: " + err.Error()})
 				out <- backend.Event{Type: backend.EventError, Raw: raw}
 			}
@@ -1008,7 +1012,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 				defer timer.Stop()
 				done, grace, tailCtx = nil, timer.C, context.WithoutCancel(ctx)
 			case <-grace:
-				r.logger.Warn("pi cancelled turn finalized without agent_settled", "session", id)
+				r.logger.Warn("cancelled turn finalized without agent_settled", "session", id)
 				emitTail()
 				emitAborted()
 				emitExit("")
@@ -1262,6 +1266,7 @@ func (r *Runtime) add(id string, w *worker) error {
 		}
 		delete(r.workers, victimID)
 		go victim.c.stop()
+		r.logger.Info("worker evicted", "session", victimID, "for", id)
 	}
 	r.workers[id] = w
 	go r.pump(id, w)

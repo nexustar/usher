@@ -145,7 +145,7 @@ func finishCancelled[R, D any](out chan<- StreamEvent, cfg loggedTurnConfig[R, D
 			cfg.result(ctx, out, result)
 			waiting = false
 		case <-grace.C:
-			cfg.logger.Warn(cfg.backend+" cancelled turn finalized without a backend result", cfg.idKey, cfg.id)
+			cfg.logger.Warn("cancelled turn finalized without a backend result", cfg.idKey, cfg.id)
 			waiting = false
 		}
 	}

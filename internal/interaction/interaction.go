@@ -199,6 +199,7 @@ func (m *Manager) QuickDecide(ev Request) (Response, bool) {
 		return Response{}, false
 	}
 	if m.IsAutoApprove(ev.SessionID) {
+		slog.Info("interaction auto-approved", "session", ev.SessionID, "tool", ev.ToolName)
 		return Response{
 			Behavior: "allow",
 			Reason:   "auto-approve",
@@ -262,6 +263,7 @@ func (m *Manager) submit(ctx context.Context, ev Request) (Response, error) {
 	m.pending[p.ID] = p
 	m.mu.Unlock()
 	m.notifyPending(p.Pending)
+	slog.Info("interaction requested", "session", ev.SessionID, "kind", p.Kind, "tool", ev.ToolName)
 
 	defer func() {
 		m.mu.Lock()
@@ -271,8 +273,13 @@ func (m *Manager) submit(ctx context.Context, ev Request) (Response, error) {
 
 	select {
 	case r := <-p.response:
+		slog.Info("interaction resolved",
+			"session", ev.SessionID, "kind", p.Kind, "tool", ev.ToolName,
+			"behavior", r.Behavior, "scope", r.Scope,
+			"waited", time.Since(p.CreatedAt).Round(time.Millisecond))
 		return r, nil
 	case <-ctx.Done():
+		slog.Info("interaction abandoned", "session", ev.SessionID, "kind", p.Kind, "tool", ev.ToolName, "err", ctx.Err())
 		return Response{}, ctx.Err()
 	}
 }

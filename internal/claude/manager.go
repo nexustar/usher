@@ -59,6 +59,7 @@ type process struct {
 	cmd           *exec.Cmd
 	in            io.WriteCloser
 	cwd           string
+	logger        *slog.Logger
 	mu            sync.Mutex
 	turns         []*turnRequest // nil entry represents a spontaneous turn
 	controls      map[string]context.CancelFunc
@@ -150,6 +151,7 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 		if victim != nil {
 			delete(m.processes, victim.id)
 			go stop(victim)
+			m.logger.Info("worker evicted", "session", victim.id, "for", id)
 		} else {
 			m.mu.Unlock()
 			return nil, false, fmt.Errorf("maximum live Claude sessions (%d) are all busy", m.maxLive)
@@ -196,7 +198,7 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 		return nil, false, err
 	}
 	p := &process{
-		id: id, cmd: cmd, in: in, cwd: cwd,
+		id: id, cmd: cmd, in: in, cwd: cwd, logger: m.logger.With("session", id),
 		controls: map[string]context.CancelFunc{}, controlWait: map[string]chan controlResult{},
 		initDone: make(chan struct{}), lastUsed: time.Now(), done: make(chan struct{}),
 	}
@@ -205,6 +207,7 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 	}
 	m.processes[id] = p
 	m.mu.Unlock()
+	p.logger.Info("spawn", "args", backend.RedactSpawnArgs(cmd.Args))
 	go m.readLoop(p, out)
 	go func() { err := cmd.Wait(); m.died(p, err) }()
 	err = m.initializeProcess(ctx, p)
@@ -572,7 +575,7 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		p.mu.Unlock()
 	}
 	if err := s.Err(); err != nil {
-		m.logger.Warn("claude stream-json read failed", "session", p.id, "err", err)
+		p.logger.Warn("stream-json read failed", "err", err)
 		if p.cmd.Process != nil {
 			_ = procutil.KillGroup(p.cmd)
 		}
@@ -838,7 +841,7 @@ func (m *Manager) died(p *process, err error) {
 		}
 	}
 	if err != nil && !wasStopping {
-		m.logger.Warn("claude process exited", "session", p.id, "err", err)
+		p.logger.Warn("process exited", "err", err)
 	}
 }
 func (m *Manager) Interrupt(id string) error {

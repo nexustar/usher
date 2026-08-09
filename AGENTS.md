@@ -52,6 +52,14 @@ needed, vendor a popular, self-contained, minimal one.
   per-breakpoint font/padding overrides of the same selector.
 - UI copy is always English.
 
+## Logging
+
+Log through the nearest scoped logger — worker objects carry `backend` and
+`session` via `With`, so don't repeat those as attrs or message prefixes;
+package-level `slog.*` is for code with no session context. Info = state
+changes worth an audit trail, Debug = per-turn and other high-frequency
+events. Never log prompt or transcript text (`backend.RedactSpawnArgs`).
+
 ## Product boundaries
 
 - **usher renders conversations; it does not browse the machine.** It may

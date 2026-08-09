@@ -88,6 +88,7 @@ func NewHub(client *Client, router RouterAPI, cfg Config, logger *slog.Logger) (
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("component", "telegram")
 	store, err := newTopicStore(cfg.StatePath)
 	if err != nil {
 		return nil, err
@@ -116,9 +117,9 @@ func (h *Hub) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	h.logger.Info("telegram hub started", "bot", me.Username, "group", h.group)
+	h.logger.Info("hub started", "bot", me.Username, "group", h.group)
 	if len(h.allowed) == 0 {
-		h.logger.Warn("telegram: no --telegram-allowed-user-ids set; any member of the group can drive sessions")
+		h.logger.Warn("no --telegram-allowed-user-ids set; any member of the group can drive sessions")
 	}
 
 	go h.pollLoop(ctx)
@@ -160,7 +161,7 @@ func (h *Hub) dispatchLoop(ctx context.Context) error {
 			select {
 			case ch <- ev:
 			default:
-				h.logger.Warn("telegram: mirror queue full, dropping event",
+				h.logger.Warn("mirror queue full, dropping event",
 					"session", ev.SessionID, "type", ev.Type)
 			}
 		}
@@ -197,7 +198,7 @@ func (h *Hub) pollLoop(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			h.logger.Warn("telegram: getUpdates", "err", err)
+			h.logger.Warn("getUpdates", "err", err)
 			if !sleepCtx(ctx, 3*time.Second) {
 				return
 			}
@@ -240,14 +241,14 @@ func (h *Hub) reconcile(ctx context.Context) {
 			continue
 		}
 		if err := h.client.CloseForumTopic(ctx, h.group, thread); err != nil {
-			h.logger.Warn("telegram: close topic", "session", sessionID, "thread", thread, "err", err)
+			h.logger.Warn("close topic", "session", sessionID, "thread", thread, "err", err)
 		}
 		// Drop the mapping regardless: if the close failed because the topic was
 		// already closed/deleted, retrying forever helps no one.
 		if err := h.store.delete(sessionID); err != nil {
-			h.logger.Warn("telegram: drop topic mapping", "session", sessionID, "err", err)
+			h.logger.Warn("drop topic mapping", "session", sessionID, "err", err)
 		}
-		h.logger.Info("telegram: closed topic for deleted session", "session", sessionID, "thread", thread)
+		h.logger.Info("closed topic for deleted session", "session", sessionID, "thread", thread)
 	}
 }
 
@@ -285,7 +286,7 @@ func (h *Hub) permissionLoop(ctx context.Context) {
 func (h *Hub) postPermission(ctx context.Context, p interaction.Pending) {
 	thread, err := h.topicFor(ctx, p.SessionID)
 	if err != nil {
-		h.logger.Warn("telegram: permission topic", "session", p.SessionID, "err", err)
+		h.logger.Warn("permission topic", "session", p.SessionID, "err", err)
 		return
 	}
 	// Questions need their options as buttons; a plain "allow" carries no
@@ -309,7 +310,7 @@ func (h *Hub) postPermission(ctx context.Context, p interaction.Pending) {
 		ParseMode:       "HTML",
 		ReplyMarkup:     &InlineKeyboardMarkup{InlineKeyboard: buttons},
 	}); err != nil {
-		h.logger.Warn("telegram: post permission", "session", p.SessionID, "err", err)
+		h.logger.Warn("post permission", "session", p.SessionID, "err", err)
 	}
 }
 
@@ -347,7 +348,7 @@ func (h *Hub) handleCallback(ctx context.Context, cb *CallbackQuery) {
 	_ = h.client.AnswerCallbackQuery(ctx, cb.ID, toast)
 	// Strip the buttons regardless, so a stale prompt can't be tapped again.
 	if err := h.client.EditMessageReplyMarkup(ctx, cb.Message.Chat.ID, cb.Message.MessageID, nil); err != nil {
-		h.logger.Debug("telegram: clear keyboard", "err", err)
+		h.logger.Debug("clear keyboard", "err", err)
 	}
 }
 
@@ -366,7 +367,7 @@ func (h *Hub) handleInbound(ctx context.Context, m *Message) {
 	// (the session is blocked waiting), rather than starting a new prompt.
 	if h.answerByText(ctx, m.MessageThreadID, m.Text) {
 		if err := h.client.SetMessageReaction(ctx, m.Chat.ID, m.MessageID, ackReaction); err != nil {
-			h.logger.Debug("telegram: ack reaction", "err", err)
+			h.logger.Debug("ack reaction", "err", err)
 		}
 		return
 	}
@@ -378,13 +379,13 @@ func (h *Hub) handleInbound(ctx context.Context, m *Message) {
 	// event (the user already sees what they typed here).
 	h.recordSent(sessionID, m.Text)
 	if err := h.router.SendToSession(sessionID, m.Text); err != nil {
-		h.logger.Warn("telegram: send to session", "session", sessionID, "err", err)
+		h.logger.Warn("send to session", "session", sessionID, "err", err)
 		h.notifyTopic(m.MessageThreadID, "⚠️ couldn't deliver: "+err.Error())
 		return
 	}
 	// React 👀 to confirm the message reached the session (no extra message).
 	if err := h.client.SetMessageReaction(ctx, m.Chat.ID, m.MessageID, ackReaction); err != nil {
-		h.logger.Debug("telegram: ack reaction", "session", sessionID, "err", err)
+		h.logger.Debug("ack reaction", "session", sessionID, "err", err)
 	}
 }
 
@@ -418,7 +419,7 @@ func (h *Hub) notifyTopic(thread int64, text string) {
 		MessageThreadID: thread,
 		Text:            text,
 	}); err != nil {
-		h.logger.Warn("telegram: notify topic", "thread", thread, "err", err)
+		h.logger.Warn("notify topic", "thread", thread, "err", err)
 	}
 }
 
@@ -448,7 +449,7 @@ func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 	}
 	thread, err := h.topicFor(ctx, ev.SessionID)
 	if err != nil {
-		h.logger.Warn("telegram: prompt topic", "session", ev.SessionID, "err", err)
+		h.logger.Warn("prompt topic", "session", ev.SessionID, "err", err)
 		return
 	}
 	// Expandable blockquote (long prompts collapse) + caption. Over the length
@@ -456,7 +457,7 @@ func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 	quoted := "<blockquote expandable>" + html.EscapeString(text) + "</blockquote>\n" + promptCaption
 	if len([]rune(quoted)) <= telegramMaxMessage {
 		if err := h.sendSilentHTML(ctx, thread, quoted, text+"\n"+promptCaption); err != nil {
-			h.logger.Warn("telegram: echo prompt", "session", ev.SessionID, "err", err)
+			h.logger.Warn("echo prompt", "session", ev.SessionID, "err", err)
 		}
 		return
 	}
@@ -467,7 +468,7 @@ func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 			Text:                chunk,
 			DisableNotification: true,
 		}); err != nil {
-			h.logger.Warn("telegram: echo prompt", "session", ev.SessionID, "err", err)
+			h.logger.Warn("echo prompt", "session", ev.SessionID, "err", err)
 			return
 		}
 	}
@@ -483,7 +484,7 @@ func (h *Hub) mirrorAssistant(ctx context.Context, ev broker.Event) {
 	}
 	thread, err := h.topicFor(ctx, ev.SessionID)
 	if err != nil {
-		h.logger.Warn("telegram: ensure topic", "session", ev.SessionID, "err", err)
+		h.logger.Warn("ensure topic", "session", ev.SessionID, "err", err)
 		return
 	}
 	if text != "" {
@@ -491,7 +492,7 @@ func (h *Hub) mirrorAssistant(ctx context.Context, ev broker.Event) {
 			if err := h.sendProse(ctx, thread, chunk); err != nil {
 				// Give up on the remaining text, but still mirror any images —
 				// they're independent of a text-send failure.
-				h.logger.Warn("telegram: send", "session", ev.SessionID, "err", err)
+				h.logger.Warn("send", "session", ev.SessionID, "err", err)
 				break
 			}
 		}
@@ -527,7 +528,7 @@ func (h *Hub) sendSilentHTML(ctx context.Context, thread int64, htmlText, plain 
 		if !errors.As(err, &apiErr) || apiErr.Code != 400 {
 			return err // a real failure (network, etc.), not an HTML parse error
 		}
-		h.logger.Debug("telegram: HTML rejected, retrying plain", "err", err)
+		h.logger.Debug("HTML rejected, retrying plain", "err", err)
 	}
 	_, err := h.client.SendMessage(ctx, SendMessageParams{
 		ChatID:              h.group,
@@ -546,7 +547,7 @@ func (h *Hub) mirrorImage(ctx context.Context, sessionID string, thread int64, r
 	}
 	full, ok := pathutil.ResolveImagePath(sess.Cwd, ref, pathutil.CodexGeneratedImagesDir(sessionID))
 	if !ok {
-		h.logger.Warn("telegram: image outside allowed dirs", "session", sessionID, "path", ref)
+		h.logger.Warn("image outside allowed dirs", "session", sessionID, "path", ref)
 		return
 	}
 	if !imutil.ImageExts[strings.ToLower(filepath.Ext(full))] {
@@ -561,7 +562,7 @@ func (h *Hub) mirrorImage(ctx context.Context, sessionID string, thread int64, r
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
-		h.logger.Warn("telegram: read image", "session", sessionID, "path", full, "err", err)
+		h.logger.Warn("read image", "session", sessionID, "path", full, "err", err)
 		return
 	}
 	if _, err := h.client.SendPhoto(ctx, SendPhotoParams{
@@ -569,7 +570,7 @@ func (h *Hub) mirrorImage(ctx context.Context, sessionID string, thread int64, r
 		MessageThreadID:     thread,
 		DisableNotification: true,
 	}, name, data); err != nil {
-		h.logger.Warn("telegram: send photo", "session", sessionID, "path", full, "err", err)
+		h.logger.Warn("send photo", "session", sessionID, "path", full, "err", err)
 		h.imageFailNotice(ctx, thread, name, err.Error())
 	}
 }
@@ -583,7 +584,7 @@ func (h *Hub) imageFailNotice(ctx context.Context, thread int64, name, reason st
 		Text:                "🖼️ couldn't send image " + name + " (" + reason + ")",
 		DisableNotification: true,
 	}); err != nil {
-		h.logger.Warn("telegram: image-fail notice", "thread", thread, "err", err)
+		h.logger.Warn("image-fail notice", "thread", thread, "err", err)
 	}
 }
 
@@ -614,7 +615,7 @@ func (h *Hub) notifyTurnComplete(ctx context.Context, ev broker.Event) {
 		MessageThreadID: thread,
 		Text:            text,
 	}); err != nil {
-		h.logger.Warn("telegram: turn-complete ping", "session", ev.SessionID, "err", err)
+		h.logger.Warn("turn-complete ping", "session", ev.SessionID, "err", err)
 	}
 }
 
@@ -635,7 +636,7 @@ func (h *Hub) notifyTurnError(ctx context.Context, ev broker.Event) {
 		MessageThreadID: thread,
 		Text:            "⚠️ " + payload.Message,
 	}); err != nil {
-		h.logger.Warn("telegram: turn-error notice", "session", ev.SessionID, "err", err)
+		h.logger.Warn("turn-error notice", "session", ev.SessionID, "err", err)
 	}
 }
 
@@ -679,9 +680,9 @@ func (h *Hub) topicFor(ctx context.Context, sessionID string) (int64, error) {
 		return 0, err
 	}
 	if err := h.store.put(sessionID, topic.MessageThreadID); err != nil {
-		h.logger.Warn("telegram: persist topic map", "session", sessionID, "err", err)
+		h.logger.Warn("persist topic map", "session", sessionID, "err", err)
 	}
-	h.logger.Info("telegram: created topic", "session", sessionID, "thread", topic.MessageThreadID)
+	h.logger.Info("created topic", "session", sessionID, "thread", topic.MessageThreadID)
 	return topic.MessageThreadID, nil
 }
 

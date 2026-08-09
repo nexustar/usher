@@ -85,7 +85,7 @@ func (h *Hub) sendAskPrompt(ctx context.Context, thread int64, id, text string, 
 		ParseMode:       "HTML",
 		ReplyMarkup:     markup,
 	}); err != nil {
-		h.logger.Warn("telegram: post ask", "id", id, "err", err)
+		h.logger.Warn("post ask", "id", id, "err", err)
 		h.takeAsk(id)
 	}
 }
@@ -112,7 +112,7 @@ func (h *Hub) answerByText(ctx context.Context, thread int64, text string) bool 
 		Answers:  map[string]string{entry.question: strings.TrimSpace(text)},
 	}
 	if err := h.router.RespondInteraction(id, resp); err != nil {
-		h.logger.Debug("telegram: answer ask by text", "id", id, "err", err)
+		h.logger.Debug("answer ask by text", "id", id, "err", err)
 	}
 	return true
 }
@@ -186,6 +186,6 @@ func (h *Hub) clearKeyboard(ctx context.Context, cb *CallbackQuery) {
 		return
 	}
 	if err := h.client.EditMessageReplyMarkup(ctx, cb.Message.Chat.ID, cb.Message.MessageID, nil); err != nil {
-		h.logger.Debug("telegram: clear keyboard", "err", err)
+		h.logger.Debug("clear keyboard", "err", err)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/nexustar/usher/internal/backend"
 )
 
 type rpcEntry struct {
@@ -107,6 +109,7 @@ func (r *Runtime) Fork(ctx context.Context, sourceID, path, afterID string) (str
 		if err != nil {
 			return "", "", err
 		}
+		r.logger.Info("spawn", "session", sourceID, "args", backend.RedactSpawnArgs(c.cmd.Args))
 		w = &worker{c: c, cwd: meta.Cwd, last: time.Now()}
 	}
 	switched := false

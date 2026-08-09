@@ -50,16 +50,21 @@ func NewManager(bin string, interactions *interaction.Manager, sandbox, config m
 
 // newClient builds one session's worker. extra follows --codex-args
 // vocabulary (--sandbox / -c key=value) and overrides the manager-wide
-// sandbox and config for this worker only.
-func (m *Manager) newClient(instructions string, extra []string) *Client {
+// sandbox and config for this worker only. id is empty for a fresh thread —
+// codex assigns one only after the worker is up.
+func (m *Manager) newClient(id, instructions string, extra []string) *Client {
 	var args []string
 	if instructions != "" {
 		quoted, _ := json.Marshal(instructions)
 		args = []string{"-c", "developer_instructions=" + string(quoted)}
 	}
+	logger := m.logger
+	if id != "" {
+		logger = logger.With("session", id)
+	}
 	sandbox, config := m.sandbox, m.config
 	if len(extra) > 0 {
-		extraSandbox, extraConfig := ParseHeadlessArgs(extra, m.logger)
+		extraSandbox, extraConfig := ParseHeadlessArgs(extra, logger)
 		sandbox, config = cloneMap(sandbox), cloneMap(config)
 		for k, v := range extraSandbox {
 			sandbox[k] = v
@@ -68,7 +73,7 @@ func (m *Manager) newClient(instructions string, extra []string) *Client {
 			config[k] = v
 		}
 	}
-	return New(m.bin, m.interactions, sandbox, config, m.env, args, m.logger)
+	return New(m.bin, m.interactions, sandbox, config, m.env, args, logger)
 }
 
 func (m *Manager) SetSystemPromptLookup(lookup func(string) string) {
@@ -131,6 +136,7 @@ func (m *Manager) reserve() (*Client, error) {
 	}
 	delete(m.workers, victimID)
 	m.starting++
+	m.logger.Info("worker evicted", "session", victimID)
 	return victim.client, nil
 }
 
@@ -148,13 +154,14 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions stri
 	if victim != nil {
 		victim.Shutdown()
 	}
-	c := m.newClient(instructions, extraArgs)
+	c := m.newClient("", instructions, extraArgs)
 	id, err := c.StartThread(ctx, cwd, model)
 	if err != nil {
 		m.finishStart()
 		c.Shutdown()
 		return "", err
 	}
+	c.bindSession(id)
 	m.mu.Lock()
 	m.starting--
 	m.workers[id] = &worker{client: c, lastUsed: time.Now()}
@@ -221,7 +228,7 @@ func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, err
 			victim.Shutdown()
 		}
 		ready := make(chan struct{})
-		w := &worker{client: m.newClient(m.promptFor(id), m.argsFor(id)), ready: ready, lastUsed: time.Now()}
+		w := &worker{client: m.newClient(id, m.promptFor(id), m.argsFor(id)), ready: ready, lastUsed: time.Now()}
 		m.mu.Lock()
 		m.starting--
 		if existing := m.workers[id]; existing != nil {

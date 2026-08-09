@@ -194,7 +194,7 @@ func TestNewClientMergesPerSessionExtraArgs(t *testing.T) {
 		map[string]any{"sandbox": "read-only"},
 		map[string]any{"approval_policy": "never", "model_reasoning_effort": "high"},
 		nil, 1, nil)
-	c := m.newClient("", []string{"--sandbox", "workspace-write", "-c", "approval_policy=untrusted"})
+	c := m.newClient("sid", "", []string{"--sandbox", "workspace-write", "-c", "approval_policy=untrusted"})
 	p := c.threadParams("/tmp", "")
 	if p["sandbox"] != "workspace-write" {
 		t.Fatalf("sandbox = %v, want the per-session override", p["sandbox"])
@@ -290,7 +290,7 @@ func TestManagerWorkerFailureIsIsolated(t *testing.T) {
 
 func TestManagerMaxLiveRejectsWhenAllWorkersBusy(t *testing.T) {
 	m := NewManager("unused", nil, nil, nil, nil, 1, nil)
-	m.workers["busy"] = &worker{client: m.newClient("", nil), busy: true, lastUsed: time.Now()}
+	m.workers["busy"] = &worker{client: m.newClient("busy", "", nil), busy: true, lastUsed: time.Now()}
 	if _, err := m.reserve(); err == nil || !strings.Contains(err.Error(), "all busy") {
 		t.Fatalf("reserve error = %v, want all busy", err)
 	}

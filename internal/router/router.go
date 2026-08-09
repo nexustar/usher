@@ -81,7 +81,8 @@ func (r *Router) startTurn(ctx context.Context, sessionID, prompt, cwd string, t
 // finishing goroutine only deletes its own entry — never the entry of a
 // later send that replaced it.
 type sendToken struct {
-	cancel context.CancelFunc
+	cancel  context.CancelFunc
+	started time.Time
 }
 
 // pendingSend is one send waiting in a session's FIFO queue behind an
@@ -468,6 +469,7 @@ func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 		r.meta.SetAppendSystemPrompt(newID, r.meta.AppendSystemPrompt(srcID))
 		r.meta.SetExtraArgs(newID, r.meta.ExtraArgs(srcID))
 	}
+	slog.Info("session forked", "source", srcID, "session", newID)
 	// Auto-approve is deliberately not inherited: a branch is a new conversation.
 	// Ingest synchronously so the id resolves the moment the client navigates
 	// to it, instead of racing the fsnotify watcher.
@@ -568,6 +570,7 @@ func (r *Router) DeleteSession(id string) error {
 	r.discovery.Remove(id)
 	r.meta.Forget(id)
 	r.interactions.SetAutoApprove(id, false)
+	slog.Info("session deleted", "session", id)
 	return nil
 }
 
@@ -688,13 +691,16 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 			return errors.New("send queue full for session")
 		}
 		r.sendQueue[id] = append(r.sendQueue[id], pendingSend{text: text, pre: pre, abort: abort})
+		queued := len(r.sendQueue[id])
 		r.sendMu.Unlock()
+		slog.Debug("turn queued", "session", id, "queue_len", queued)
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	tok := &sendToken{cancel: cancel}
+	tok := &sendToken{cancel: cancel, started: time.Now()}
 	r.activeSend[id] = tok
 	r.sendMu.Unlock()
+	slog.Debug("turn start", "session", id, "prompt_len", len(text))
 
 	if pre != nil {
 		pre()
@@ -928,7 +934,7 @@ func (r *Router) releaseSend(sessionID string, tok *sendToken) {
 				r.sendQueue[sessionID] = q[1:]
 			}
 			ctx, cancel := context.WithCancel(context.Background())
-			nextTok = &sendToken{cancel: cancel}
+			nextTok = &sendToken{cancel: cancel, started: time.Now()}
 			nextCtx = ctx
 			r.activeSend[sessionID] = nextTok
 		}
@@ -951,6 +957,7 @@ func (r *Router) releaseSend(sessionID string, tok *sendToken) {
 	if next.pre != nil {
 		next.pre()
 	}
+	slog.Debug("turn start", "session", sess.ID, "prompt_len", len(next.text))
 	r.startTurn(nextCtx, sess.ID, next.text, sess.Cwd, nextTok)
 }
 
@@ -981,6 +988,9 @@ func (r *Router) markSendIdle(sessionID string, tok *sendToken) {
 	}
 	if ok {
 		delete(r.activeSend, sessionID)
+		if !cur.started.IsZero() {
+			slog.Debug("turn settled", "session", sessionID, "duration", time.Since(cur.started))
+		}
 	}
 	// This turn's log lines are usher's own (already relayed by its
 	// collector) — move the foreign watcher's baseline past them.
@@ -1003,6 +1013,7 @@ func (r *Router) CancelSend(sessionID string) error {
 	if !ok {
 		return errors.New("no active send")
 	}
+	slog.Debug("turn cancelled", "session", sessionID)
 	// Cancel means stop: drop queued follow-ups too, before cancelling the
 	// turn, so releaseSend finds nothing to promote.
 	r.flushSendQueue(sessionID, errors.New("cancelled"))
@@ -1583,7 +1594,8 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 		r.meta.SetAppendSystemPrompt(id, o.AppendSystemPrompt)
 		r.meta.SetExtraArgs(id, o.ExtraArgs)
 	}
-	tok := &sendToken{cancel: cancel}
+	slog.Info("session created", "session", id, "backend", o.Backend, "cwd", o.Cwd)
+	tok := &sendToken{cancel: cancel, started: time.Now()}
 	now := time.Now()
 	r.sendMu.Lock()
 	r.activeSend[id] = tok

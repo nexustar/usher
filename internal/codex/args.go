@@ -26,11 +26,11 @@ func ParseHeadlessArgs(args []string, logger *slog.Logger) (sandbox, config map[
 			if len(kv) == 2 {
 				config[kv[0]] = configValue(kv[1])
 			} else {
-				logger.Warn("headless codex: invalid -c override", "value", args[i+1])
+				logger.Warn("invalid -c override", "value", args[i+1])
 			}
 			i++
 		default:
-			logger.Warn("headless codex: unsupported extra codex option", "option", args[i])
+			logger.Warn("unsupported extra codex option", "option", args[i])
 		}
 	}
 	return sandbox, config
