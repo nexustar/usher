@@ -164,6 +164,8 @@ func serve(args []string) error {
 		"forum supergroup chat id to mirror sessions into; set the bot token in $TELEGRAM_BOT_TOKEN to enable")
 	tgAllowedUsers := fs.String("telegram-allowed-user-ids", "",
 		"comma-separated Telegram user ids allowed to drive sessions; empty = any member of the group")
+	insecure := fs.Bool("insecure", false,
+		"allow binding a non-loopback address without a password")
 	logLevel := fs.String("log-level", "info", "log verbosity (debug|info|warn|error)")
 	logFormat := fs.String("log-format", "text", "log output format (text|json)")
 	if err := fs.Parse(args); err != nil {
@@ -202,11 +204,16 @@ func serve(args []string) error {
 		return err
 	}
 	if !authStore.IsConfigured() && !addrIsLoopback(*addr) {
-		return fmt.Errorf(
-			"refusing to bind non-loopback %q without a password.\n"+
-				"  run `usher set-password` first, or bind to 127.0.0.1 / localhost for local-only access.",
-			*addr,
-		)
+		if !*insecure {
+			return fmt.Errorf(
+				"refusing to bind non-loopback %q without a password.\n"+
+					"  run `usher set-password` to set one,\n"+
+					"  or bind to 127.0.0.1 / localhost for local-only access,\n"+
+					"  or pass --insecure to skip this check (not recommended unless access is enforced elsewhere).",
+				*addr,
+			)
+		}
+		logger.Warn("binding non-loopback address without a password (--insecure)", "addr", *addr)
 	}
 
 	// Each backend is enabled only when its session dir exists (created once that
