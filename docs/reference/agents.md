@@ -96,9 +96,9 @@ own instead of handing them to a session.
 usher keeps one router at a time: creating another session from a router agent
 repoints the designation, and the previous router becomes an ordinary session
 from its next cold start. The designation is persisted, so it survives a
-restart. Claude Code and Codex can host one — Claude receives the tools as
-spawn arguments (`mcp-router.json`), Codex in its thread/start config params.
-pi cannot: it has no usher MCP injection at all. See
+restart. Every backend can host one: Claude receives the tools as spawn
+arguments (`mcp-router.json`), Codex in its thread/start config params, and pi
+through a generated bridge extension that spawns the same MCP server. See
 [Router MCP](router-mcp.md) for what the tools promise.
 
 The resolved `append_system_prompt` is snapshotted in usher's session metadata,

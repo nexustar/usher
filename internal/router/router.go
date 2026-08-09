@@ -1712,12 +1712,6 @@ func (r *Router) prepare(ctx context.Context, o core.CreateOptions) (core.Create
 	}
 	o.Cwd = cwd
 	o.Backend, err = r.resolveCreateBackend(ctx, o.Backend, o.Model)
-	if err == nil && o.Router && o.Backend != "claude" && o.Backend != "codex" {
-		// Claude receives the routing tools as spawn args keyed by its
-		// pre-minted id; codex receives them in thread/start config params.
-		// pi has no usher MCP injection at all — nothing to hand the tools to.
-		return o, fmt.Errorf("router sessions are not supported for %q", o.Backend)
-	}
 	return o, err
 }
 

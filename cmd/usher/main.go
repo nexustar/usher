@@ -256,18 +256,27 @@ func serve(args []string) error {
 	if dir := *piSessionsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewPiSource(dir))
 		extra := strings.Fields(*piArgs)
-		// Read-only never spawns pi, and skipping the write keeps a shared
-		// data-dir's extension file untouched while the live instance spawns.
+		// Read-only never spawns pi, and skipping the writes keeps a shared
+		// data-dir's extension files untouched while the live instance spawns.
+		routerExtension := ""
 		if !*disableUsherTools && !*readOnly {
 			if extensionPath, extensionErr := piagent.PrepareUsherExtension(*dataDir); extensionErr != nil {
 				logger.Warn("pi extension: write failed; show_image disabled", "err", extensionErr)
 			} else {
 				extra = append(extra, "--extension", extensionPath)
 			}
+			if path, routerErr := piagent.PrepareUsherRouterExtension(*dataDir, hookSockPath(*dataDir)); routerErr != nil {
+				logger.Warn("pi router extension: write failed; router sessions get no routing tools", "err", routerErr)
+			} else {
+				routerExtension = path
+			}
 		}
 		piModels := piagent.Models{Path: filepath.Join(*dataDir, "pi-models.json")}
 		piRuntime := piagent.NewRuntime(*piCmd, dir, extra, *maxLiveSessions, piModels, h, logger)
 		piRuntime.SetAutoPause(*autoPause)
+		if routerExtension != "" {
+			piRuntime.SetRouterExtension(routerExtension)
+		}
 		backends["pi"] = backend.Backend{Runtime: piRuntime, Transcript: piagent.Transcript{}, Forker: piRuntime, Renamer: piRuntime, Models: piModels}
 		if defaultBackend == "" {
 			defaultBackend = "pi"

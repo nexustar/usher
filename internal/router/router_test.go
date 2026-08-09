@@ -1074,15 +1074,6 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 		t.Fatalf("persisted router = %q (%v), want %q", got, ok, id)
 	}
 
-	// A backend that cannot host one must fail instead of spawning a router
-	// session with no routing tools.
-	_, err = r.StartSession(core.CreateOptions{
-		Cwd: t.TempDir(), InitialMessage: "hi", Backend: "pi", Router: true,
-	})
-	if err == nil || !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("pi router error = %v", err)
-	}
-
 	// A restart hands the designation back before anything resumes.
 	rt2 := &routerDesignationRuntime{newID: "router-2"}
 	New(d, map[string]backend.Backend{
