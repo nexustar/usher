@@ -1578,7 +1578,7 @@ function appendLivePart(d) {
   }
   const tmpl = document.createElement('template');
   tmpl.innerHTML = p.type === 'tool'
-    ? renderToolPart(p)
+    ? renderToolPart(p, new Date().toISOString())
     : `<div class="content" data-raw="${esc(p.content || '')}">${renderMarkdown(p.content || '')}</div>`;
   const partNode = tmpl.content.firstElementChild;
   if (enrichTool && lt.partNodes.length) {
@@ -2010,3 +2010,43 @@ function legacyCopy(s) {
   ta.remove();
   return ok;
 }
+
+// Routed-reply expander. usher — not the router model — puts the routed
+// session's answer in front of the user: on first open we fetch that session's
+// transcript and show the turn its dispatch produced, verbatim. Document-level
+// delegate for the same reason as .turn-fork: transcript nodes get re-rendered.
+document.addEventListener('toggle', async (e) => {
+  const box = e.target.closest?.('.routed-part');
+  if (!box || !box.open || box.dataset.loaded) return;
+  box.dataset.loaded = '1';
+  const body = box.querySelector('.routed-reply');
+  const id = box.dataset.session;
+  if (!body || !id) return;
+  body.textContent = 'loading…';
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/transcript?limit=200');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const { turns } = await res.json();
+    const after = Date.parse(box.dataset.after || '') || 0;
+    // The turn this dispatch produced is the first assistant turn that landed
+    // after it. Anything else driving that session in between (the user typing
+    // into it, a second router) can make this the wrong one — the "open ↗"
+    // link is the way out, and the session's own pane is always authoritative.
+    const reply = (turns || []).find(t =>
+      t.role === 'assistant' && (Date.parse(t.ts || '') || 0) > after);
+    if (!reply) {
+      body.innerHTML = '<span class="routed-empty">no reply yet</span>';
+      return;
+    }
+    const text = (reply.parts || [])
+      .filter(p => p.type !== 'tool')
+      .map(p => p.content || '')
+      .join('\n\n')
+      .trim() || reply.content || '';
+    body.dataset.raw = text;
+    body.innerHTML = renderMarkdown(text) ||
+      '<span class="routed-empty">(no text in that turn)</span>';
+  } catch (err) {
+    body.innerHTML = '<span class="routed-empty">could not load: ' + esc(String(err)) + '</span>';
+  }
+}, true);

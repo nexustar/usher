@@ -161,6 +161,7 @@ type Manager struct {
 	bin          string
 	settings     string
 	mcpArgs      []string
+	routerArgs   []string
 	hookSock     string
 	maxLive      int
 	logger       *slog.Logger
@@ -174,6 +175,7 @@ type Manager struct {
 	stopOnce  sync.Once
 	mu        sync.Mutex
 	processes map[string]*process
+	routerID  string
 }
 
 // SetAutoPause stops a process once it has held nothing for d; zero keeps
@@ -247,6 +249,32 @@ func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, interact
 	m := &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, interactions: interactions, logger: logger, processes: map[string]*process{}, stop: make(chan struct{})}
 	go m.reapLoop()
 	return m
+}
+
+// SetRouterArgs supplies the spawn arguments that replace mcpArgs for usher's
+// router session — the same MCP registration with the routing tools switched
+// on. Empty leaves routers indistinguishable from ordinary sessions.
+func (m *Manager) SetRouterArgs(args []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routerArgs = append([]string(nil), args...)
+}
+
+// SetRouterSession designates id as usher's router session. One at a time,
+// mirroring the persisted designation: a new router repoints it and the
+// previous session spawns as an ordinary one from its next cold start.
+func (m *Manager) SetRouterSession(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routerID = id
+}
+
+// spawnArgs returns the MCP arguments for id, held under m.mu by the caller.
+func (m *Manager) spawnArgs(id string) []string {
+	if id != "" && id == m.routerID && len(m.routerArgs) > 0 {
+		return m.routerArgs
+	}
+	return m.mcpArgs
 }
 
 // ensureProcess resolves id's live process, spawning a cold one when needed.
@@ -324,7 +352,7 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 	if m.settings != "" {
 		args = append(args, "--settings", m.settings)
 	}
-	args = append(args, m.mcpArgs...)
+	args = append(args, m.spawnArgs(id)...)
 	// Last, so a repeated flag from the session's agent profile wins.
 	args = append(args, extraArgs...)
 	cmd := exec.CommandContext(context.Background(), m.bin, args...)

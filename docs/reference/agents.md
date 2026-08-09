@@ -72,6 +72,34 @@ GUI and API changes are written atomically and take effect immediately.
 Unknown agent names, unavailable backends, and invalid models cause session
 creation to fail rather than falling back silently.
 
+## Router agents
+
+An agent with `"router": true` creates usher's **router session**: it spawns
+with the session-routing MCP tools (`list_sessions`, `send_to_session`,
+`create_session`, …) instead of the ordinary `show_image`-only registration,
+and every session it routes work to delivers its reply back into it. Give it
+the routing persona through `append_system_prompt` — the tools describe
+themselves, but only the prompt keeps the model from answering questions on its
+own instead of handing them to a session.
+
+```json
+{
+  "id": "main",
+  "cwd": "/home/dev",
+  "backend": "claude",
+  "model": "sonnet",
+  "router": true,
+  "append_system_prompt": "You are usher's session router. Never answer a substantive question yourself — route it to a session."
+}
+```
+
+usher keeps one router at a time: creating another session from a router agent
+repoints the designation, and the previous router becomes an ordinary session
+from its next cold start. The designation is persisted, so it survives a
+restart. Claude Code only — Codex fixes a session's MCP configuration when its
+app-server process starts, which is inside thread creation, too late for usher
+to know the id. See [Router MCP](router-mcp.md) for what the tools promise.
+
 The resolved `append_system_prompt` is snapshotted in usher's session metadata,
 so editing or removing the agent later does not change an existing session.
 For Codex, each session's dedicated app-server process starts with

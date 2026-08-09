@@ -98,6 +98,15 @@ type TranscriptTurn struct {
 	Time    time.Time `json:"ts"`
 }
 
+// TranscriptPage is one window of a transcript. Offset is the absolute index
+// of Turns[0] (0-based from the start of the session); with Total it lets a
+// caller page in either direction and know when it has reached an end.
+type TranscriptPage struct {
+	Turns  []TranscriptTurn `json:"turns"`
+	Offset int              `json:"offset"`
+	Total  int              `json:"total"`
+}
+
 // SessionRuntime is the latest model configuration and active context recorded
 // for a session. Account-wide limits deliberately do not belong here.
 type SessionRuntime struct {
@@ -145,4 +154,8 @@ type CreateOptions struct {
 	AppendSystemPrompt string
 	ExtraArgs          []string
 	AutoApprove        bool
+	// Router designates the new session as usher's router: it spawns with the
+	// session-routing MCP tools and becomes the inbox for relayed replies,
+	// replacing any previous designation.
+	Router bool
 }

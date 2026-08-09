@@ -102,10 +102,10 @@ func (f *fakeAgentAPI) ReadSessionTranscript(id string, limit int) ([]core.Trans
 	}
 	return turns, nil
 }
-func (f *fakeAgentAPI) ReadSessionTranscriptPage(id string, offset, limit int) ([]core.TranscriptTurn, int, int, error) {
+func (f *fakeAgentAPI) ReadSessionTranscriptPage(id string, offset, limit int) (core.TranscriptPage, error) {
 	turns, ok := f.transcripts[id]
 	if !ok {
-		return nil, 0, 0, errors.New("session not found")
+		return core.TranscriptPage{}, errors.New("session not found")
 	}
 	total := len(turns)
 	if limit <= 0 {
@@ -125,7 +125,7 @@ func (f *fakeAgentAPI) ReadSessionTranscriptPage(id string, offset, limit int) (
 	if end > total {
 		end = total
 	}
-	return turns[start:end], start, total, nil
+	return core.TranscriptPage{Turns: turns[start:end], Offset: start, Total: total}, nil
 }
 func (f *fakeAgentAPI) SearchSessionTranscript(id, query string, maxHits, _ int) ([]core.TranscriptSearchHit, bool, error) {
 	turns, ok := f.transcripts[id]

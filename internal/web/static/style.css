@@ -2030,6 +2030,20 @@ pre.raw-markdown {
 }
 .cfg-form-advanced[open] summary { margin-bottom: 1.15rem; }
 .cfg-form-advanced label + label { margin-top: 1.15rem; }
+/* A routing tool call stands in for the reply it caused: usher fetches that
+ * reply on expand, so the router model never has to repeat it. */
+.routed-part > summary { color: var(--text-muted); }
+.routed-open {
+  margin-left: 0.5rem;
+  font-size: var(--font-meta);
+  color: var(--text-faint);
+}
+.routed-reply {
+  padding: 0.4rem 0.65rem 0.55rem;
+  border-left: 2px solid var(--border);
+  margin-left: 0.35rem;
+}
+.routed-empty { color: var(--text-faint); }
 .cfg-field-hint {
   color: var(--text-faint);
   line-height: 1.5;

@@ -159,9 +159,49 @@ function toolBodyHTML(p) {
   return '<pre>' + (p.content_kind === 'diff' ? diffHTML(p.content) : esc(p.content)) + '</pre>';
 }
 
-export function renderToolPart(p) {
+// parseRoutedSession pulls the target session id out of a routing tool's JSON
+// result (the same "first {…} span" trick parseImageDims uses). The id is only
+// in the result, never the arguments: create_session doesn't know it yet when
+// it is called.
+function parseRoutedSession(content) {
+  if (!content) return '';
+  const a = content.indexOf('{');
+  const b = content.lastIndexOf('}');
+  if (a < 0 || b <= a) return '';
+  try {
+    const o = JSON.parse(content.slice(a, b + 1));
+    return typeof o.session_id === 'string' ? o.session_id : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+// renderRoutedPart renders a routing tool call as the reply's own place in the
+// transcript: usher fetches the routed session's answer and shows it verbatim
+// on expand. The model is never the courier — it only dispatched.
+function renderRoutedPart(p, ts) {
+  const id = parseRoutedSession(p.content);
+  if (!id) return '';
+  const short = id.slice(0, 8);
+  const link = '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) +
+    '" title="Open this session">open ↗</a>';
+  return '<details class="tool-details routed-part" data-session="' + esc(id) +
+    '" data-after="' + esc(ts || '') + '">' +
+    '<summary>routed to <span class="tool-target">' + esc(short) + '</span>' + link + '</summary>' +
+    '<div class="routed-reply">…</div>' +
+    '</details>';
+}
+
+export function renderToolPart(p, ts) {
   const name = p.tool_name || 'tool';
   const target = p.tool_target || '';
+  // Routing tools: usher resolves and shows the reply itself (see
+  // renderRoutedPart). Falls through to the plain tool block if the result
+  // carried no session id — a rejected call, or an older transcript.
+  if (/(^|__)(send_to_session|create_session)$/.test(name)) {
+    const routed = renderRoutedPart(p, ts);
+    if (routed) return routed;
+  }
   // show_image renders as an inline image (not a collapsible tool block). The
   // path travels only as an encodeURIComponent'd query param, so it can't break
   // out of the attribute; /image resolves+validates it against the session cwd.
@@ -218,10 +258,12 @@ export function forkBtnHTML(uuid) {
   return `<button class="turn-fork" type="button" data-uuid="${esc(uuid)}" title="Fork: branch a new session from this point">⑃ fork</button>`;
 }
 
-// renderAssistantParts renders the parts array of a grouped assistant turn.
-export function renderAssistantParts(parts) {
+// renderAssistantParts renders the parts array of a grouped assistant turn. ts
+// is the turn's timestamp, which routing parts need to find the reply they
+// caused among the target session's turns.
+export function renderAssistantParts(parts, ts) {
   return (parts || []).map(p => {
-    if (p.type === 'tool') return renderToolPart(p);
+    if (p.type === 'tool') return renderToolPart(p, ts);
     return `<div class="content" data-raw="${esc(p.content || '')}">${renderMarkdown(p.content || '')}</div>`;
   }).join('');
 }
@@ -258,7 +300,7 @@ export function appendChatMessage(m, beforeNode) {
     // it (a flat .content div here would misrender the first tool part).
     // Completed turns close with the fork control at the card's bottom edge.
     div.innerHTML =
-      renderAssistantParts(m.parts) +
+      renderAssistantParts(m.parts, m.ts) +
       `<div class="turn-footer">` +
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
       (m.uuid ? forkBtnHTML(m.uuid) : '') +

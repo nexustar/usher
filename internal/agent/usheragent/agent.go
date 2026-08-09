@@ -50,10 +50,10 @@ type AgentAPI interface {
 
 	// ReadSessionTranscriptPage returns one page of the transcript: up to
 	// limit turns starting at absolute index offset (negative offset = the
-	// most recent page), plus the resolved start offset and the total turn
-	// count. This is how a caller pages past ReadSessionTranscript's last-N
-	// window to reach a deep search hit — no hard depth wall, just page size.
-	ReadSessionTranscriptPage(id string, offset, limit int) ([]core.TranscriptTurn, int, int, error)
+	// most recent page). This is how a caller pages past
+	// ReadSessionTranscript's last-N window to reach a deep search hit — no
+	// hard depth wall, just page size.
+	ReadSessionTranscriptPage(id string, offset, limit int) (core.TranscriptPage, error)
 
 	// SearchSessionTranscript scans the entire transcript for a
 	// case-insensitive substring of query in the user/assistant text and

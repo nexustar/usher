@@ -12,7 +12,7 @@ import (
 func TestMCPConfigArgs(t *testing.T) {
 	dir := t.TempDir()
 	hookSock := filepath.Join(dir, "hook.sock")
-	args := claudeMCPConfigArgs(hookSock, slog.Default())
+	args := claudeMCPConfigArgs(hookSock, false, slog.Default())
 
 	if len(args) != 2 || args[0] != "--mcp-config" {
 		t.Fatalf("expected [--mcp-config <path>], got %v", args)
@@ -51,9 +51,37 @@ func TestMCPConfigArgs(t *testing.T) {
 	}
 }
 
+// The router variant is a separate file, so an ordinary session can never load
+// the routing tools by picking up the config usher writes for everyone.
+func TestMCPConfigArgs_RouterTools(t *testing.T) {
+	dir := t.TempDir()
+	hookSock := filepath.Join(dir, "hook.sock")
+	plain := claudeMCPConfigArgs(hookSock, false, slog.Default())
+	args := claudeMCPConfigArgs(hookSock, true, slog.Default())
+
+	if len(args) != 2 || args[1] == plain[1] {
+		t.Fatalf("router config must be its own file: %v vs %v", args, plain)
+	}
+	raw, err := os.ReadFile(args[1])
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			Args []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+	if got := cfg.MCPServers["usher"].Args; len(got) != 2 || got[1] != "--router-tools" {
+		t.Fatalf("router args = %v", got)
+	}
+}
+
 // Empty hook sock disables the feature (returns nil) rather than erroring.
 func TestMCPConfigArgs_NoHookSock(t *testing.T) {
-	if got := claudeMCPConfigArgs("", slog.Default()); got != nil {
+	if got := claudeMCPConfigArgs("", false, slog.Default()); got != nil {
 		t.Fatalf("expected nil for empty hook sock, got %v", got)
 	}
 }

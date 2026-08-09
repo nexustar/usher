@@ -26,6 +26,11 @@ type Profile struct {
 	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
 	ExtraArgs          []string `json:"extra_args,omitempty"`
 	AutoApprove        bool     `json:"auto_approve,omitempty"`
+	// Router makes sessions created from this agent usher's router session:
+	// they spawn with the session-routing MCP tools and receive every routed
+	// session's reply. usher has one at a time, so creating another repoints
+	// the designation and the previous one becomes an ordinary session.
+	Router bool `json:"router,omitempty"`
 }
 
 type fileFormat struct {
@@ -281,6 +286,6 @@ func (s *Store) Resolve(name, cwd, backend, model string) (core.CreateOptions, e
 	return core.CreateOptions{
 		Backend: p.Backend, Cwd: p.Cwd, Model: p.Model,
 		AppendSystemPrompt: p.AppendSystemPrompt, ExtraArgs: p.ExtraArgs,
-		AutoApprove: p.AutoApprove,
+		AutoApprove: p.AutoApprove, Router: p.Router,
 	}, nil
 }

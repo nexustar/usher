@@ -78,6 +78,24 @@ func TestResolveCarriesAutoApprove(t *testing.T) {
 	}
 }
 
+// The router flag is the agent's alone: no create request carries it, so a
+// profile is the only way a session becomes usher's router.
+func TestResolveCarriesRouterFlag(t *testing.T) {
+	store := New([]Profile{{Name: "main", Cwd: "/w", Backend: "claude", Router: true}})
+	got, err := store.Resolve("main", "", "", "sonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := core.CreateOptions{Backend: "claude", Cwd: "/w", Model: "sonnet", Router: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, want %+v", got, want)
+	}
+	plain, err := store.Resolve("", "/w", "claude", "sonnet")
+	if err != nil || plain.Router {
+		t.Fatalf("Resolve without an agent = %+v, %v", plain, err)
+	}
+}
+
 func TestResolveUnknown(t *testing.T) {
 	_, err := New(nil).Resolve("missing", "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "unknown agent") {

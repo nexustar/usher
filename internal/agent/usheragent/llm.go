@@ -462,15 +462,15 @@ func (a *LLMAgent) executeTool(ctx context.Context, name, argsJSON string, relay
 		if args.Offset != nil {
 			offset = *args.Offset
 		}
-		turns, start, total, err := a.api.ReadSessionTranscriptPage(args.SessionID, offset, limit)
+		page, err := a.api.ReadSessionTranscriptPage(args.SessionID, offset, limit)
 		if err != nil {
 			return errResult(err.Error()), ""
 		}
 		payload, _ := json.Marshal(map[string]any{
-			"turns":    turns,
-			"offset":   start,
-			"total":    total,
-			"has_more": start > 0 || start+len(turns) < total,
+			"turns":    page.Turns,
+			"offset":   page.Offset,
+			"total":    page.Total,
+			"has_more": page.Offset > 0 || page.Offset+len(page.Turns) < page.Total,
 		})
 		return string(payload), args.SessionID
 

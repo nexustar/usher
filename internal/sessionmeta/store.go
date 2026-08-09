@@ -27,6 +27,10 @@ type fileFormat struct {
 	Titles             map[string]string          `json:"titles,omitempty"`
 	AppendSystemPrompt map[string]string          `json:"append_system_prompt,omitempty"`
 	ExtraArgs          map[string][]string        `json:"extra_args,omitempty"`
+	// Router is the session usher drives main chat with. One at a time: the
+	// designation is a pointer, so starting a fresh main chat repoints it and
+	// the previous one becomes an ordinary browsable session.
+	Router string `json:"router,omitempty"`
 }
 
 type Store struct {
@@ -39,6 +43,7 @@ type Store struct {
 	titles             map[string]string
 	appendSystemPrompt map[string]string
 	extraArgs          map[string][]string
+	router             string
 }
 
 func New(path string, autoAfter time.Duration) *Store {
@@ -95,6 +100,7 @@ func (s *Store) load() {
 			s.extraArgs[id] = args
 		}
 	}
+	s.router = f.Router
 }
 
 func (s *Store) persist() {
@@ -118,7 +124,7 @@ func (s *Store) persist() {
 		extraArgs = s.extraArgs
 	}
 	data, err := json.Marshal(fileFormat{
-		Archived: s.archived, Pinned: pinned, Titles: titles,
+		Archived: s.archived, Pinned: pinned, Titles: titles, Router: s.router,
 		AppendSystemPrompt: prompts, ExtraArgs: extraArgs,
 	})
 	if err != nil {
@@ -137,6 +143,22 @@ func (s *Store) persist() {
 	if err := os.Rename(tmp, s.path); err != nil {
 		slog.Warn("sessionmeta: rename", "err", err)
 	}
+}
+
+// SetRouter designates the session that drives main chat, replacing any
+// previous one. The empty string clears the designation.
+func (s *Store) SetRouter(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.router = id
+	s.persist()
+}
+
+// Router returns the session driving main chat, if one is designated.
+func (s *Store) Router() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.router, s.router != ""
 }
 
 // Archive drops the pin — a pin overrides archiving, so keeping both would make
@@ -288,7 +310,8 @@ func (s *Store) Forget(id string) {
 	_, hasTitle := s.titles[id]
 	_, hasPrompt := s.appendSystemPrompt[id]
 	_, hasArgs := s.extraArgs[id]
-	if !hasArchive && !hasPin && !hasTitle && !hasPrompt && !hasArgs {
+	isRouter := s.router == id
+	if !hasArchive && !hasPin && !hasTitle && !hasPrompt && !hasArgs && !isRouter {
 		return
 	}
 	delete(s.archived, id)
@@ -296,5 +319,8 @@ func (s *Store) Forget(id string) {
 	delete(s.titles, id)
 	delete(s.appendSystemPrompt, id)
 	delete(s.extraArgs, id)
+	if isRouter {
+		s.router = ""
+	}
 	s.persist()
 }

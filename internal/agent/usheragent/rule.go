@@ -188,10 +188,11 @@ func (a *RuleAgent) read(args string) (string, string) {
 	if errMsg != "" {
 		return errMsg, ""
 	}
-	turns, start, total, err := a.api.ReadSessionTranscriptPage(sess.ID, offset, limit)
+	page, err := a.api.ReadSessionTranscriptPage(sess.ID, offset, limit)
 	if err != nil {
 		return "read failed: " + err.Error(), ""
 	}
+	turns, start, total := page.Turns, page.Offset, page.Total
 	if len(turns) == 0 {
 		return "(empty transcript)", sess.ID
 	}
