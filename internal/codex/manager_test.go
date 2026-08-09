@@ -244,10 +244,15 @@ func TestNewClientMergesPerSessionExtraArgs(t *testing.T) {
 		map[string]any{"sandbox": "read-only"},
 		map[string]any{"approval_policy": "never", "model_reasoning_effort": "high"},
 		nil, 1, nil)
-	c := m.newClient("sid", "", []string{"--sandbox", "workspace-write", "-c", "approval_policy=untrusted"}, false)
+	c := m.newClient("sid", "", []string{"--sandbox", "workspace-write", "--ask-for-approval", "never", "-c", "approval_policy=untrusted"}, false)
 	p := c.threadParams("/tmp", "")
 	if p["sandbox"] != "workspace-write" {
 		t.Fatalf("sandbox = %v, want the per-session override", p["sandbox"])
+	}
+	// The flag must beat threadParams' hardcoded "on-request": a -c override
+	// cannot, because thread params take precedence over config.
+	if p["approvalPolicy"] != "never" {
+		t.Fatalf("approvalPolicy = %v, want the per-session override", p["approvalPolicy"])
 	}
 	cfg := p["config"].(map[string]any)
 	if cfg["approval_policy"] != "untrusted" || cfg["model_reasoning_effort"] != "high" {

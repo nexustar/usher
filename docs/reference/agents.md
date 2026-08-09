@@ -101,6 +101,27 @@ arguments (`mcp-router.json`), Codex in its thread/start config params, and pi
 through a generated bridge extension that spawns the same MCP server. See
 [Router MCP](router-mcp.md) for what the tools promise.
 
+### Restricting local tools
+
+A dedicated router should not be able to answer questions itself, and a
+"read-only analyst" should not write. Both are per-backend `extra_args`
+recipes — supervision of the model, not a security boundary against the
+authenticated user:
+
+- **Claude**: `["--disallowedTools", "Bash,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,WebFetch,WebSearch"]`
+  removes tools by name; `mcp__usher__*` tools are unaffected. Drop entries to
+  taste for an analyst profile.
+- **Codex**: no per-tool switches. `["--sandbox", "read-only", "--ask-for-approval", "never"]`
+  is the closest: the sandbox blocks writes and `never` stops the model from
+  requesting escalation past it (under the default on-request policy an
+  auto-approve profile would wave escalations through). The model can still
+  read files.
+- **pi**: `["--tools", "read,grep,find,ls"]` whitelists built-ins (this set is
+  pi's own read-only preset); `["--no-builtin-tools"]` removes them all, which
+  for a router agent leaves exactly usher's tools — the strictest
+  router shape any backend offers. Note pi's default active set is only
+  `read,bash,edit,write`, so prefer the whitelist form over `--exclude-tools`.
+
 The resolved `append_system_prompt` is snapshotted in usher's session metadata,
 so editing or removing the agent later does not change an existing session.
 For Codex, each session's dedicated app-server process starts with

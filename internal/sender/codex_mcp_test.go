@@ -34,8 +34,9 @@ func TestCodexMCPConfigRouterTools(t *testing.T) {
 }
 
 func TestCodexHeadlessParams(t *testing.T) {
-	sandbox, cfg := codex.ParseHeadlessArgs([]string{"--sandbox=read-only", "-c", "model_reasoning_effort=high", "-c", "features.foo=true"}, slog.Default())
-	if sandbox["sandbox"] != "read-only" || cfg["model_reasoning_effort"] != "high" || cfg["features.foo"] != true {
+	sandbox, cfg := codex.ParseHeadlessArgs([]string{"--sandbox=read-only", "-a", "never", "-c", "model_reasoning_effort=high", "-c", "features.foo=true"}, slog.Default())
+	if sandbox["sandbox"] != "read-only" || sandbox["approvalPolicy"] != "never" ||
+		cfg["model_reasoning_effort"] != "high" || cfg["features.foo"] != true {
 		t.Fatalf("sandbox=%#v config=%#v", sandbox, cfg)
 	}
 }
