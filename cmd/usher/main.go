@@ -166,6 +166,11 @@ func serve(args []string) error {
 		"comma-separated Telegram user ids allowed to drive sessions; empty = any member of the group")
 	insecure := fs.Bool("insecure", false,
 		"allow binding a non-loopback address without a password")
+	readOnly := fs.Bool("read-only", false,
+		"serve this instance read-only: state-changing web requests are rejected, and nothing "+
+			"that drives sessions or writes shared state runs (schedule runner, Telegram mirror, "+
+			"plugin/hook sockets, web push). Can run alongside a live instance sharing the same "+
+			"--data-dir and sessions directories.")
 	logLevel := fs.String("log-level", "info", "log verbosity (debug|info|warn|error)")
 	logFormat := fs.String("log-format", "text", "log output format (text|json)")
 	if err := fs.Parse(args); err != nil {
@@ -245,7 +250,9 @@ func serve(args []string) error {
 	if dir := *piSessionsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewPiSource(dir))
 		extra := strings.Fields(*piArgs)
-		if !*disableUsherTools {
+		// Read-only never spawns pi, and skipping the write keeps a shared
+		// data-dir's extension file untouched while the live instance spawns.
+		if !*disableUsherTools && !*readOnly {
 			if extensionPath, extensionErr := piagent.PrepareUsherExtension(*dataDir); extensionErr != nil {
 				logger.Warn("pi extension: write failed; show_image disabled", "err", extensionErr)
 			} else {
@@ -295,8 +302,10 @@ func serve(args []string) error {
 	// explicit notification-permission grant, and until then nothing is sent and
 	// no push service is contacted. --disable-push skips it entirely (no VAPID
 	// key, routes 404). A keypair failure disables push but doesn't stop serving.
+	// Read-only skips it too: a companion instance sharing the live one's
+	// data-dir would double-send to the same subscriptions.
 	var pushMgr *push.Manager
-	if !*disablePush {
+	if !*disablePush && !*readOnly {
 		pushMgr, err = push.New(push.Config{
 			KeyPath:   filepath.Join(*dataDir, "vapid.json"),
 			StorePath: filepath.Join(*dataDir, "push-subscriptions.json"),
@@ -337,31 +346,44 @@ func serve(args []string) error {
 		"loopback_bind", addrIsLoopback(*addr),
 	)
 
-	if err := startTelegramHub(ctx, r, *tgGroupID, *tgAllowedUsers, *dataDir, logger); err != nil {
+	if *readOnly {
+		logger.Info("read-only mode: web mutations rejected; schedule runner, telegram, plugin api, hook socket, and web push disabled")
+	} else if err := startTelegramHub(ctx, r, *tgGroupID, *tgAllowedUsers, *dataDir, logger); err != nil {
 		return err
 	}
 
 	// Plugin API: out-of-process IM frontends (e.g. usher-lark) consume the
-	// same Router seam the Telegram hub uses, over a 0600 Unix socket. Always
-	// on — it is inert until a plugin connects.
-	go func() {
-		if err := pluginapi.NewServer(r, attachmentsDir, agents, logger).Run(ctx, pluginapi.SocketPath(*dataDir)); err != nil && ctx.Err() == nil {
-			logger.Warn("plugin api stopped", "err", err)
-		}
-	}()
+	// same Router seam the Telegram hub uses, over a 0600 Unix socket. Inert
+	// until a plugin connects. Read-only skips it: plugins drive sessions,
+	// and binding would steal a shared data-dir's socket from the live
+	// instance.
+	if !*readOnly {
+		go func() {
+			if err := pluginapi.NewServer(r, attachmentsDir, agents, logger).Run(ctx, pluginapi.SocketPath(*dataDir)); err != nil && ctx.Err() == nil {
+				logger.Warn("plugin api stopped", "err", err)
+			}
+		}()
+	}
 
 	// Scheduled tasks: each due task creates a session, so the runner needs
 	// only the two seams the composer uses. Inert until a task is saved.
+	// Read-only mode keeps the runner for GET /api/schedules but never fires it.
 	scheduleRunner := schedule.NewRunner(schedules, r, agents, logger)
-	go scheduleRunner.Run(ctx)
+	if !*readOnly {
+		go scheduleRunner.Run(ctx)
+	}
 
 	themePath := filepath.Join(*dataDir, "theme.css")
-	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, mainStore, agent, pushMgr, *editorURL, *uiDir, themePath, agents, scheduleRunner, logger)
+	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, mainStore, agent, pushMgr, *editorURL, *uiDir, themePath, agents, scheduleRunner, *readOnly, logger)
 
 	// Foreign-turn watcher: turns usher didn't start (background workflow
 	// continuations, pane-typed prompts) get relayed to the chats that
-	// routed to their session.
-	r.SetForeignTurnHandler(srv.RelayForeignTurn)
+	// routed to their session. Read-only keeps the watcher — every turn is
+	// foreign there, and its process-exit events are what refresh open
+	// transcript views — but skips the chat relay (the live instance's job).
+	if !*readOnly {
+		r.SetForeignTurnHandler(srv.RelayForeignTurn)
+	}
 	go r.RunForeignWatch(ctx, 0)
 
 	return srv.Run(ctx)

@@ -53,6 +53,40 @@ func TestHandleTheme(t *testing.T) {
 	})
 }
 
+func TestReadOnlyMiddleware(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := readOnlyMiddleware(next)
+
+	cases := []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, "/api/sessions", http.StatusOK},
+		{http.MethodHead, "/", http.StatusOK},
+		{http.MethodGet, "/api/sessions/abc/events", http.StatusOK},
+		{http.MethodPost, "/api/sessions/abc/send", http.StatusForbidden},
+		{http.MethodDelete, "/api/sessions/abc", http.StatusForbidden},
+		{http.MethodPut, "/api/agents/x", http.StatusForbidden},
+		{http.MethodPost, "/login", http.StatusOK},
+		{http.MethodPost, "/logout", http.StatusOK},
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
+		if rec.Code != c.want {
+			t.Errorf("%s %s = %d, want %d", c.method, c.path, rec.Code, c.want)
+		}
+		if c.want == http.StatusForbidden {
+			var body map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["error"] == "" {
+				t.Errorf("%s %s: body %q lacks error field", c.method, c.path, rec.Body.String())
+			}
+		}
+	}
+}
+
 func TestTerminalControlsAreAllowListed(t *testing.T) {
 	want := map[string]string{
 		"up": "Up", "down": "Down", "left": "Left", "right": "Right",

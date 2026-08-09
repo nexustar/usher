@@ -83,6 +83,9 @@ type Server struct {
 	themePath string
 	agents    *agentprofile.Store
 	schedules *schedule.Runner
+	// readOnly rejects every state-changing web request (see
+	// readOnlyMiddleware); reads, SSE, and static files stay available.
+	readOnly bool
 
 	// Main-chat delivery. The user message is persisted in the POST handler
 	// (202 means durable); the agent turn then runs on the chat's single
@@ -111,6 +114,7 @@ func NewServer(
 	themePath string,
 	agents *agentprofile.Store,
 	schedules *schedule.Runner,
+	readOnly bool,
 	logger *slog.Logger,
 ) *Server {
 	if logger == nil {
@@ -131,6 +135,7 @@ func NewServer(
 		themePath:      themePath,
 		agents:         agents,
 		schedules:      schedules,
+		readOnly:       readOnly,
 		chatSubs:       map[string]map[chan chatFrame]func(){},
 		chatQueues:     map[string]chan mainchat.Message{},
 		chatPending:    map[string]int{},
@@ -235,16 +240,13 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	webMux.Handle("GET /", http.FileServer(http.FS(staticRoot)))
 
-	hookMux := http.NewServeMux()
-	hookMux.HandleFunc("POST /hook/{event}", s.handleHook)
-
+	var apiHandler http.Handler = webMux
+	if s.readOnly {
+		apiHandler = readOnlyMiddleware(webMux)
+	}
 	webSrv := &http.Server{
 		Addr:              s.addr,
-		Handler:           gzipMiddleware(s.authMiddleware(webMux)),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	hookSrv := &http.Server{
-		Handler:           hookMux,
+		Handler:           gzipMiddleware(s.authMiddleware(apiHandler)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -253,28 +255,43 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("web listen %s: %w", s.addr, err)
 	}
 
-	sockListener, err := pluginapi.ListenUnixSocket(s.hookSockPath)
-	if err != nil {
-		_ = webListener.Close()
-		return fmt.Errorf("hook socket: %w", err)
+	errCh := make(chan error, 2)
+
+	// Read-only never binds the hook socket: it spawns no sessions so no
+	// hook can arrive, and on a data-dir shared with a live instance binding
+	// would steal that instance's socket (ListenUnixSocket unlinks it).
+	var hookSrv *http.Server
+	if !s.readOnly {
+		hookMux := http.NewServeMux()
+		hookMux.HandleFunc("POST /hook/{event}", s.handleHook)
+		sockListener, err := pluginapi.ListenUnixSocket(s.hookSockPath)
+		if err != nil {
+			_ = webListener.Close()
+			return fmt.Errorf("hook socket: %w", err)
+		}
+		hookSrv = &http.Server{
+			Handler:           hookMux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			s.logger.Info("usher hook listening", "socket", s.hookSockPath)
+			errCh <- hookSrv.Serve(sockListener)
+		}()
 	}
 
-	errCh := make(chan error, 2)
 	go func() {
 		s.logger.Info("usher web listening", "addr", s.addr)
 		errCh <- webSrv.Serve(webListener)
-	}()
-	go func() {
-		s.logger.Info("usher hook listening", "socket", s.hookSockPath)
-		errCh <- hookSrv.Serve(sockListener)
 	}()
 
 	shutdown := func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = webSrv.Shutdown(shutdownCtx)
-		_ = hookSrv.Shutdown(shutdownCtx)
-		_ = os.Remove(s.hookSockPath)
+		if hookSrv != nil {
+			_ = hookSrv.Shutdown(shutdownCtx)
+			_ = os.Remove(s.hookSockPath)
+		}
 	}
 
 	select {
@@ -313,6 +330,24 @@ func (s *Server) handleTheme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeContent(w, r, "theme.css", info.ModTime(), f)
+}
+
+// readOnlyMiddleware (installed only under --read-only) rejects state-changing
+// requests. Enforcement is by method — every mutating route is POST/PUT/DELETE,
+// so new GET routes stay readable without touching this; keep that discipline
+// when adding routes. Login/logout stay allowed so a password-protected
+// read-only instance remains reachable.
+func readOnlyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet || r.Method == http.MethodHead:
+		case r.URL.Path == "/login" || r.URL.Path == "/logout":
+		default:
+			writeErr(w, http.StatusForbidden, "this usher instance is read-only")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- auth middleware + handlers -----------------------------------------
@@ -673,7 +708,10 @@ func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 // handleConfig exposes the few server-side settings the SPA needs to render
 // optional UI.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"editor_url": s.editorURL})
+	writeJSON(w, http.StatusOK, struct {
+		EditorURL string `json:"editor_url"`
+		ReadOnly  bool   `json:"read_only"`
+	}{s.editorURL, s.readOnly})
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
