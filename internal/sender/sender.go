@@ -132,7 +132,7 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	}
 	t := timing{poll: 150 * time.Millisecond}
 	// mgr, not claude: the package of the same name is right there.
-	mgr := claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock,
+	mgr := claude.New(claudeCmd, claudeHookSettings(hookSock, injectMCPTools, logger), hookSock,
 		spawnArgs(mcpArgs), maxLive, interactions, logger)
 	if len(routerMCPArgs) > 0 {
 		mgr.SetRouterArgs(spawnArgs(routerMCPArgs))
@@ -150,7 +150,13 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	}
 }
 
-func claudeHookSettings(hookSock string, logger *slog.Logger) string {
+// claudeHookSettings builds the inline --settings JSON. With allowUsherTools
+// it pre-allows the usher MCP server's tools: they are usher's own control
+// surface, so gating them behind usher's own permission UI is circular — and
+// without this, a session-tools grant means approving each of the ten routing
+// tools separately (permission scope is per tool name). Parity with codex's
+// default_tools_approval_mode "approve"; local tools stay supervised.
+func claudeHookSettings(hookSock string, allowUsherTools bool, logger *slog.Logger) string {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.Abs(exe)
@@ -178,6 +184,11 @@ func claudeHookSettings(hookSock string, logger *slog.Logger) string {
 			// answer and return it as updatedInput under -p.
 			"PreToolUse": []any{map[string]any{"matcher": "AskUserQuestion", "hooks": handler("PreToolUse")}},
 		},
+	}
+	if allowUsherTools {
+		// The server-level rule covers every tool the usher MCP server
+		// exposes, show_image and the routing tools alike.
+		settings["permissions"] = map[string]any{"allow": []string{"mcp__usher"}}
 	}
 	b, _ := json.Marshal(settings)
 	return string(b)

@@ -87,13 +87,21 @@ func TestMCPConfigArgs_NoHookSock(t *testing.T) {
 }
 
 func TestClaudeHookSettings(t *testing.T) {
-	raw := claudeHookSettings("/tmp/usher-hook.sock", slog.Default())
+	raw := claudeHookSettings("/tmp/usher-hook.sock", true, slog.Default())
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := cfg["statusLine"]; ok {
 		t.Fatalf("unexpected statusLine in settings: %s", raw)
+	}
+	// usher's own MCP tools are pre-allowed at the server level; without MCP
+	// injection no rule is emitted at all.
+	if !strings.Contains(raw, `"permissions":{"allow":["mcp__usher"]}`) {
+		t.Fatalf("usher MCP server not pre-allowed: %s", raw)
+	}
+	if bare := claudeHookSettings("/tmp/usher-hook.sock", false, slog.Default()); strings.Contains(bare, "permissions") {
+		t.Fatalf("permissions emitted without MCP injection: %s", bare)
 	}
 	hooks := cfg["hooks"].(map[string]any)
 	assertHook := func(event, matcher, commandSuffix string) {
