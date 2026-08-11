@@ -209,8 +209,8 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 			switch b.Type {
 			case "text":
 				p.Type, p.Content = "text", b.Text
-			case "thinking":
-				p.Type, p.Content = "thinking", b.Thinking
+			// thinking is dropped: pi's provider is the only one that returns
+			// reasoning in the clear — claude and codex persist it encrypted.
 			case "toolCall":
 				p.Type, p.ToolName, p.ToolUseID = "tool", b.Name, b.ID
 				p.ToolTarget = toolTarget(b.Name, b.Arguments)

@@ -610,7 +610,8 @@ func TestTranscriptSelectsActiveBranch(t *testing.T) {
 	if total != 2 || len(turns) != 2 {
 		t.Fatalf("turns=%+v total=%d", turns, total)
 	}
-	if turns[1].Model != "model-1" || len(turns[1].Parts) != 3 {
+	// text + tool; thinking is dropped.
+	if turns[1].Model != "model-1" || len(turns[1].Parts) != 2 {
 		t.Fatalf("assistant=%+v", turns[1])
 	}
 	for _, p := range turns[1].Parts {
@@ -618,7 +619,7 @@ func TestTranscriptSelectsActiveBranch(t *testing.T) {
 			t.Fatal("inactive branch was rendered")
 		}
 	}
-	if turns[1].Parts[2].ToolTarget != "go test ./..." || turns[1].Parts[2].Content != "```\nok\n```" {
+	if turns[1].Parts[1].ToolTarget != "go test ./..." || turns[1].Parts[1].Content != "```\nok\n```" {
 		t.Fatalf("parts=%+v", turns[1].Parts)
 	}
 }
@@ -676,17 +677,19 @@ func TestRenderTerminalToolResult(t *testing.T) {
 	}
 }
 
+// Every displayable block of one assistant record reaches the live stream in
+// order; thinking blocks are dropped.
 func TestFeedLinePartsReturnsEveryAssistantBlock(t *testing.T) {
 	a := NewAssembler()
 	raw := []byte(`{"type":"message","id":"a1","timestamp":"2026-07-01T10:00:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"first"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"one"}},{"type":"toolCall","id":"t2","name":"read","arguments":{"path":"two.go"}}]}}`)
 	_, parts := a.FeedLineParts(raw)
-	if len(parts) != 4 {
-		t.Fatalf("got %d live parts, want 4: %+v", len(parts), parts)
+	if len(parts) != 3 {
+		t.Fatalf("got %d live parts, want 3: %+v", len(parts), parts)
 	}
-	if parts[0].Type != "thinking" || parts[1].Content != "first" || parts[2].ToolTarget != "one" || parts[3].ToolTarget != "two.go" {
+	if parts[0].Content != "first" || parts[1].ToolTarget != "one" || parts[2].ToolTarget != "two.go" {
 		t.Fatalf("live parts out of order or incomplete: %+v", parts)
 	}
-	if turn := a.Flush(); turn == nil || len(turn.Parts) != 4 {
+	if turn := a.Flush(); turn == nil || len(turn.Parts) != 3 {
 		t.Fatalf("canonical turn does not match live parts: %+v", turn)
 	}
 }
