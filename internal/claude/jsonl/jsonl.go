@@ -117,7 +117,7 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 		}
 		if ev.Type == "user" && len(ev.Message) > 0 {
 			content := extractUserContent(ev.Message)
-			if firstUserPrompt == "" {
+			if firstUserPrompt == "" && !ev.IsMeta {
 				firstUserPrompt = content
 			}
 			// A genuine typed prompt — not a tool_result echo or the
@@ -284,7 +284,14 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 		return nil, nil
 	}
 
-	if ev.Type == "user" && !hasToolResult(ev.Message) && !(ev.IsMeta && ev.SourceToolUseID != "") {
+	// Harness-injected meta with nothing to attach to (image-scale notice,
+	// local-command caveat, auto-continue nudge): not a prompt, and it must not
+	// flush the assistant turn it interrupts.
+	if ev.Type == "user" && ev.IsMeta && ev.SourceToolUseID == "" {
+		return nil, nil
+	}
+
+	if ev.Type == "user" && !hasToolResult(ev.Message) && !ev.IsMeta {
 		// Real user prompt — flush any in-progress assistant turn.
 		if t := a.Flush(); t != nil {
 			completed = append(completed, *t)
@@ -364,11 +371,11 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 	}
 
 	// user event carrying a tool_result: append as a "tool" part.
-	content := renderToolResult(ev)
+	ti, tuID := matchToolInfo(ev.Message, a.toolMap)
+	content := renderToolResult(ev, ti.target)
 	if content == "" {
 		return nil, nil
 	}
-	ti, tuID := matchToolInfo(ev.Message, a.toolMap)
 	p := core.TurnPart{
 		Type:       "tool",
 		Content:    content,
@@ -616,7 +623,7 @@ func hasToolResult(msg json.RawMessage) bool {
 // (Edit/Write diff, Read file content, Bash stdout/stderr) that the inline
 // message.content does not; tools whose shape we do not special-case fall back
 // to the inline tool_result text.
-func renderToolResult(ev Event) string {
+func renderToolResult(ev Event, target string) string {
 	var tur toolUseResultData
 	if len(ev.ToolUseResult) > 0 {
 		_ = json.Unmarshal(ev.ToolUseResult, &tur)
@@ -624,7 +631,41 @@ func renderToolResult(ev Event) string {
 	if body := tur.render(); body != "" {
 		return body
 	}
-	return textutil.ClampBody(flattenToolResult(firstToolResultContent(ev.Message)))
+	content := firstToolResultContent(ev.Message)
+	// An image comes back as bytes only — no text to fall back on.
+	if tur.Type == "image" || hasImageBlock(content) {
+		return imageMarkdown(target)
+	}
+	return textutil.ClampBody(flattenToolResult(content))
+}
+
+// imageMarkdown points at the image file a tool returned as bytes. The angle
+// brackets hold a path with spaces in one destination; a path that cannot be
+// spelled as one degrades to a bare marker.
+func imageMarkdown(path string) string {
+	if path == "" || strings.ContainsAny(path, "<>\n") {
+		return "[image]"
+	}
+	alt := filepath.Base(path)
+	if strings.ContainsAny(alt, "[]") {
+		alt = "image"
+	}
+	return "![" + alt + "](<" + path + ">)"
+}
+
+func hasImageBlock(raw json.RawMessage) bool {
+	var blocks []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return false
+	}
+	for _, b := range blocks {
+		if b.Type == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 // firstToolResultContent returns the raw content of the first tool_result block
@@ -690,6 +731,7 @@ type patchHunk struct {
 // and Write carry structuredPatch; Read carries File; Bash carries Stdout/
 // Stderr. Unknown shapes leave every field zero and render() returns "".
 type toolUseResultData struct {
+	Type            string      `json:"type"`
 	StructuredPatch []patchHunk `json:"structuredPatch"`
 	File            *struct {
 		Content string `json:"content"`

@@ -342,8 +342,55 @@ func TestRenderToolResult_FallbackUnknownShape(t *testing.T) {
 	// A tool with no special-cased toolUseResult shape falls back to the inline
 	// tool_result text.
 	ev, _ := ParseLine([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"g1","content":"match.go\nother.go"}]},"toolUseResult":{"mode":"files_with_matches","numFiles":2}}`))
-	if body := renderToolResult(ev); !strings.Contains(body, "match.go") {
+	if body := renderToolResult(ev, "*.go"); !strings.Contains(body, "match.go") {
 		t.Errorf("fallback body = %q", body)
+	}
+}
+
+// Reading an image yields a tool_result with no text — the part must still
+// render, as a Markdown image the client can resolve to the file.
+func TestReadTurns_ImageToolResult(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	img := "/home/dev/.local/share/usher/attachments/s1/Screen Shot 1.png"
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","message":{"role":"user","content":"look at it"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"` + img + `"}}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR"}}]}]},"toolUseResult":{"type":"image","file":{"base64":"iVBOR","type":"image/png"}}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:03.000Z","isMeta":true,"message":{"role":"user","content":"[Image: original 2066x448, displayed at 2000x434. Multiply coordinates by 1.03 to map to original image.]"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turns, _, err := ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("got %d turns, want 2: %+v", len(turns), turns)
+	}
+	parts := turns[1].Parts
+	if len(parts) != 1 {
+		t.Fatalf("assistant parts = %+v", parts)
+	}
+	if parts[0].Type != "tool" || parts[0].ToolName != "Read" || parts[0].ToolTarget != img {
+		t.Errorf("part = %+v", parts[0])
+	}
+	// Angle brackets keep the spaces in the path inside the destination.
+	if want := "![Screen Shot 1.png](<" + img + ">)"; parts[0].Content != want {
+		t.Errorf("content = %q, want %q", parts[0].Content, want)
+	}
+}
+
+func TestImageMarkdown_UnspellablePath(t *testing.T) {
+	if got := imageMarkdown(""); got != "[image]" {
+		t.Errorf("empty path = %q", got)
+	}
+	if got := imageMarkdown("/tmp/a<b>.png"); got != "[image]" {
+		t.Errorf("bracketed path = %q", got)
+	}
+	if got := imageMarkdown("/tmp/a[1].png"); got != "![image](</tmp/a[1].png>)" {
+		t.Errorf("bracketed name = %q", got)
 	}
 }
 
@@ -431,6 +478,45 @@ func TestReadTurns_IsMetaSkillContent(t *testing.T) {
 	}
 	if at.Parts[1].Type != "text" || at.Parts[1].Content != "skill loaded" {
 		t.Errorf("parts[1] = %+v", at.Parts[1])
+	}
+}
+
+// Meta lines with no sourceToolUseID: no user turn, and no flush of the
+// assistant turn they interrupt.
+func TestReadTurns_IsMetaWithoutSourceTool(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>Caveat: ...</local-command-caveat>"}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"user","content":"what is in this screenshot"}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:02.000Z","isMeta":true,"message":{"role":"user","content":"[Image: original 2066x448, displayed at 2000x434. Multiply coordinates by 1.03 to map to original image.]"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a chart"}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:04.000Z","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Continue from where you left off."}]}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"and a legend"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turns, _, err := ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("got %d turns, want 2: %+v", len(turns), turns)
+	}
+	if turns[0].Role != "user" || turns[0].Content != "what is in this screenshot" {
+		t.Errorf("turns[0] = %+v", turns[0])
+	}
+	if turns[1].Role != "assistant" || len(turns[1].Parts) != 2 {
+		t.Fatalf("turns[1] role=%q parts=%+v", turns[1].Role, turns[1].Parts)
+	}
+
+	meta, err := ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Prompt != "what is in this screenshot" {
+		t.Errorf("meta.Prompt = %q, want the first non-meta prompt", meta.Prompt)
 	}
 }
 
