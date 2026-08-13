@@ -481,8 +481,8 @@ func TestReadTurns_IsMetaSkillContent(t *testing.T) {
 	}
 }
 
-// Meta lines with no sourceToolUseID: no user turn, and no flush of the
-// assistant turn they interrupt.
+// Boilerplate meta lines: no user turn, and no flush of the assistant turn
+// they interrupt.
 func TestReadTurns_IsMetaWithoutSourceTool(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
@@ -517,6 +517,41 @@ func TestReadTurns_IsMetaWithoutSourceTool(t *testing.T) {
 	}
 	if meta.Prompt != "what is in this screenshot" {
 		t.Errorf("meta.Prompt = %q, want the first non-meta prompt", meta.Prompt)
+	}
+}
+
+// Meta carrying injected input (coordinator message, queued system prompt) has
+// no sourceToolUseID either, but it drives the turns that follow: it must
+// render and split the assistant turn.
+func TestReadTurns_IsMetaInjectedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.jsonl")
+	coord := "The coordinator sent a message while you were working:\\nrethink the flag name."
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","isSidechain":true,"message":{"role":"user","content":"design the CLI flags"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"three options"}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:02.000Z","isSidechain":true,"isMeta":true,"origin":{"kind":"coordinator"},"message":{"role":"user","content":"` + coord + `"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"revised"}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:04.000Z","isMeta":true,"promptSource":"system","queuePriority":"later","message":{"role":"user","content":"Check remaining verifier agents."}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"all in"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turns, _, err := ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 6 {
+		t.Fatalf("got %d turns, want 6: %+v", len(turns), turns)
+	}
+	if turns[2].Role != "user" || !strings.HasPrefix(turns[2].Content, "The coordinator sent a message") {
+		t.Errorf("turns[2] = %+v, want the coordinator message as a user turn", turns[2])
+	}
+	if turns[4].Role != "user" || turns[4].Content != "Check remaining verifier agents." {
+		t.Errorf("turns[4] = %+v, want the queued system prompt as a user turn", turns[4])
+	}
+	if turns[1].Role != "assistant" || turns[3].Role != "assistant" || turns[5].Role != "assistant" {
+		t.Errorf("injected input must split the assistant turns: %+v", turns)
 	}
 }
 

@@ -51,6 +51,14 @@ type Event struct {
 	IsMeta          bool   `json:"isMeta,omitempty"`
 	SourceToolUseID string `json:"sourceToolUseID,omitempty"`
 
+	// Origin ("coordinator" — a message pushed into a running subagent) and
+	// PromptSource ("system" — a queued prompt) mark meta that carries
+	// injected input. Boilerplate meta has neither.
+	Origin struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
+	PromptSource string `json:"promptSource,omitempty"`
+
 	Raw json.RawMessage `json:"-"`
 }
 
@@ -117,7 +125,7 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 		}
 		if ev.Type == "user" && len(ev.Message) > 0 {
 			content := extractUserContent(ev.Message)
-			if firstUserPrompt == "" && !ev.IsMeta {
+			if firstUserPrompt == "" && !ev.isBoilerplateMeta() {
 				firstUserPrompt = content
 			}
 			// A genuine typed prompt — not a tool_result echo or the
@@ -284,14 +292,13 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 		return nil, nil
 	}
 
-	// Harness-injected meta with nothing to attach to (image-scale notice,
-	// local-command caveat, auto-continue nudge): not a prompt, and it must not
-	// flush the assistant turn it interrupts.
-	if ev.Type == "user" && ev.IsMeta && ev.SourceToolUseID == "" {
+	// Boilerplate meta: not a prompt, and it must not flush the assistant turn
+	// it interrupts.
+	if ev.Type == "user" && ev.isBoilerplateMeta() {
 		return nil, nil
 	}
 
-	if ev.Type == "user" && !hasToolResult(ev.Message) && !ev.IsMeta {
+	if ev.Type == "user" && !hasToolResult(ev.Message) && !(ev.IsMeta && ev.SourceToolUseID != "") {
 		// Real user prompt — flush any in-progress assistant turn.
 		if t := a.Flush(); t != nil {
 			completed = append(completed, *t)
@@ -651,6 +658,15 @@ func imageMarkdown(path string) string {
 		alt = "image"
 	}
 	return "![" + alt + "](<" + path + ">)"
+}
+
+// isBoilerplateMeta reports whether the event is meta Claude Code injects for
+// its own bookkeeping: the scale notice after an image, the caveat before a
+// local command's output, the nudge after a turn that printed nothing. Meta
+// naming a tool, an origin, or a prompt source carries content and is kept.
+func (ev Event) isBoilerplateMeta() bool {
+	return ev.IsMeta && ev.SourceToolUseID == "" &&
+		ev.Origin.Kind == "" && ev.PromptSource == ""
 }
 
 func hasImageBlock(raw json.RawMessage) bool {
