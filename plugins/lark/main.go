@@ -72,6 +72,8 @@ func run(args []string) error {
 		"session→thread map file; threads are re-adopted across restarts")
 	defaultCwd := fs.String("default-cwd", "/tmp",
 		"default cwd for Lark guest sessions")
+	defaultAgent := fs.String("default-agent", "",
+		"default agent profile for Lark guest sessions (empty = none)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -113,7 +115,8 @@ func run(args []string) error {
 		ChatID:          *chatID,
 		StatePath:       *statePath,
 		AllowedUserIDs:  splitIDs(*allowedUsers),
-		GuestDefaultCwd: *defaultCwd,
+		GuestDefaultCwd:   *defaultCwd,
+		GuestDefaultAgent: *defaultAgent,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("init hub: %w", err)

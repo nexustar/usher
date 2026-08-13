@@ -52,7 +52,8 @@ type Config struct {
 	// AllowedUserIDs whitelists open ids (ou_...) that may drive sessions;
 	// empty = any member of ChatID (the private group is the trust boundary).
 	AllowedUserIDs  []string
-	GuestDefaultCwd string
+	GuestDefaultCwd   string
+	GuestDefaultAgent string
 }
 
 // larkMaxMessage caps one text message. Lark's real limit is ~150KB of
@@ -100,6 +101,7 @@ type Hub struct {
 	allowed      map[string]bool // empty = any chat member allowed
 	guestEnabled bool
 	defaultCwd   string
+	defaultAgent string
 	botOpenID    atomic.Value // string
 	// mentionIDs is the whitelist in stable order, for card @-mentions.
 	mentionIDs []string
@@ -160,6 +162,7 @@ func NewHub(client larkAPI, router RouterAPI, cfg Config, logger *slog.Logger) (
 	if defaultCwd == "" {
 		defaultCwd = "/tmp"
 	}
+	defaultAgent := strings.TrimSpace(cfg.GuestDefaultAgent)
 	return &Hub{
 		lark:          client,
 		router:        router,
@@ -169,6 +172,7 @@ func NewHub(client larkAPI, router RouterAPI, cfg Config, logger *slog.Logger) (
 		allowed:       allowed,
 		guestEnabled:  len(allowed) > 0,
 		defaultCwd:    defaultCwd,
+		defaultAgent:  defaultAgent,
 		mentionIDs:    slices.Compact(mentionIDs),
 		logger:        logger,
 		asks:          map[string]askEntry{},
@@ -760,7 +764,7 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	// while StartSession sends this initial prompt as part of creating it.
 	// Keep resource placeholders in the prompt; attachment transfer is only a
 	// supported future path for later turns on an already-bound session.
-	agent, cwd, backendName, model, instruction, err := parseGuestFlags(text, h.defaultCwd)
+	agent, cwd, backendName, model, instruction, err := parseGuestFlags(text, h.defaultCwd, h.defaultAgent)
 	if err != nil {
 		_, _ = h.lark.ReplyText(ctx, msg.id, "⚠️ "+err.Error())
 		return
@@ -1483,7 +1487,7 @@ func buildGuestPrompt(transcript []guestLine, instruction string, truncated bool
 
 // parseGuestFlags consumes leading creation flags; the rest is the instruction,
 // kept verbatim (newlines in pasted logs must survive).
-func parseGuestFlags(text, defaultCwd string) (agent, cwd, backendName, model, instruction string, err error) {
+func parseGuestFlags(text, defaultCwd, defaultAgent string) (agent, cwd, backendName, model, instruction string, err error) {
 	rest := strings.TrimSpace(text)
 	for strings.HasPrefix(rest, "--") {
 		var flag string
@@ -1512,7 +1516,11 @@ func parseGuestFlags(text, defaultCwd string) (agent, cwd, backendName, model, i
 		}
 	}
 	if cwd == "" && agent == "" {
-		cwd = defaultCwd
+		if defaultAgent != "" {
+			agent = defaultAgent
+		} else {
+			cwd = defaultCwd
+		}
 	}
 	instruction = strings.TrimSpace(rest)
 	if instruction == "" {

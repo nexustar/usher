@@ -547,7 +547,7 @@ func TestParseGuestFlags(t *testing.T) {
 		{"--model m", "", "", "", "", "", "instruction is required"},
 	}
 	for _, c := range cases {
-		agent, cwd, backendName, model, instruction, err := parseGuestFlags(c.text, "/tmp")
+		agent, cwd, backendName, model, instruction, err := parseGuestFlags(c.text, "/tmp", "")
 		if c.err != "" {
 			if err == nil || err.Error() != c.err {
 				t.Errorf("parseGuestFlags(%q) err = %v, want %q", c.text, err, c.err)
@@ -557,6 +557,22 @@ func TestParseGuestFlags(t *testing.T) {
 		if err != nil || agent != c.agent || cwd != c.cwd || backendName != c.backend || model != c.model || instruction != c.instruction {
 			t.Errorf("parseGuestFlags(%q) = %q %q %q %q %q %v", c.text, agent, cwd, backendName, model, instruction, err)
 		}
+	}
+
+	// With a defaultAgent, bare messages use it instead of defaultCwd.
+	agent, cwd, _, _, instruction, err := parseGuestFlags("do it", "/tmp", "team-bot")
+	if err != nil || agent != "team-bot" || cwd != "" || instruction != "do it" {
+		t.Errorf("parseGuestFlags with defaultAgent = %q %q %q %v", agent, cwd, instruction, err)
+	}
+	// Explicit --agent overrides defaultAgent.
+	agent, cwd, _, _, _, err = parseGuestFlags("--agent custom do it", "/tmp", "team-bot")
+	if err != nil || agent != "custom" || cwd != "" {
+		t.Errorf("parseGuestFlags explicit --agent with defaultAgent = %q %q %v", agent, cwd, err)
+	}
+	// Explicit --cwd suppresses defaultAgent.
+	agent, cwd, _, _, _, err = parseGuestFlags("--cwd /w do it", "/tmp", "team-bot")
+	if err != nil || agent != "" || cwd != "/w" {
+		t.Errorf("parseGuestFlags explicit --cwd with defaultAgent = %q %q %v", agent, cwd, err)
 	}
 }
 
@@ -606,6 +622,35 @@ func TestGuestCreateWithAgent(t *testing.T) {
 	}
 	msgs := f.messages()
 	if len(msgs) != 1 || !strings.Contains(msgs[0].body, "agent usher-dev") {
+		t.Fatalf("status reply = %+v", msgs)
+	}
+}
+
+func TestGuestCreateWithDefaultAgent(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	h, err := NewHub(f, r, Config{
+		AppID: testApp, ChatID: testChat, AllowedUserIDs: []string{testUser},
+		GuestDefaultAgent: "team-bot",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.spawn = func(f func()) { f() }
+	h.botOpenID.Store("ou_bot")
+
+	h.HandleMessage(context.Background(), guestMentionMessage(
+		"oc_foreign", testUser, "", "", "",
+		"@_user_1 build it", 2000, true))
+
+	if len(r.started) != 1 {
+		t.Fatalf("started = %+v", r.started)
+	}
+	got := r.started[0]
+	if got.Agent != "team-bot" || got.Cwd != "" {
+		t.Fatalf("expected default agent, got %+v", got)
+	}
+	msgs := f.messages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0].body, "agent team-bot") {
 		t.Fatalf("status reply = %+v", msgs)
 	}
 }
