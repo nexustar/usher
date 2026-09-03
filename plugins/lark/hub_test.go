@@ -505,6 +505,70 @@ func TestMirrorsAssistantAndLazilyCreatesThread(t *testing.T) {
 	}
 }
 
+// A guest codex turn stays quiet until it ends, then posts one message — the
+// final_answer only (its last text part), with commentary dropped and no ping.
+func TestGuestCodexPostsOnlyFinalAnswer(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1", Backend: "codex"}
+	h := newTestHub(t, f, r)
+	if err := h.store.putGuest("s1", binding{Root: "om_root", Thread: "omt_topic", Chat: "oc_foreign", WMTime: 1, WMID: "wm"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	commentary := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"let me check the parser first"}}`)
+	final := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"fixed: the parser now handles empty input"}}`)
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: commentary})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: final})
+	if got := f.messages(); len(got) != 0 {
+		t.Fatalf("guest parts must not mirror live, got %+v", got)
+	}
+
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	msgs := f.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("guest codex turn: want exactly one message, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].kind != "post" || !strings.Contains(msgs[0].body, "fixed: the parser now handles empty input") {
+		t.Fatalf("guest message = %+v", msgs[0])
+	}
+	if strings.Contains(msgs[0].body, "let me check the parser first") {
+		t.Fatalf("codex guest must post only the final answer, commentary leaked: %q", msgs[0].body)
+	}
+	if strings.Contains(msgs[0].body, "responded") {
+		t.Fatalf("guest turn must not post a responded ping: %q", msgs[0].body)
+	}
+}
+
+// A guest turn on a backend without a final marker (claude/pi) coalesces every
+// text part into one message, since its answer can span the turn.
+func TestGuestNonCodexJoinsTurnText(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1", Backend: "claude"}
+	h := newTestHub(t, f, r)
+	if err := h.store.putGuest("s1", binding{Root: "om_root", Chat: "oc_foreign", WMTime: 1, WMID: "wm"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	p1 := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"first finding"}}`)
+	p2 := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"second finding"}}`)
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: p1})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: p2})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+
+	msgs := f.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("guest claude turn: want one coalesced message, got %d: %+v", len(msgs), msgs)
+	}
+	if !strings.Contains(msgs[0].body, "first finding") || !strings.Contains(msgs[0].body, "second finding") {
+		t.Fatalf("non-codex guest must keep the whole turn: %q", msgs[0].body)
+	}
+	if strings.Contains(msgs[0].body, "responded") {
+		t.Fatalf("guest turn must not post a responded ping: %q", msgs[0].body)
+	}
+}
+
 // lineTS renders a fixture create-time the way formatGuestLine stamps it,
 // keeping assertions timezone-agnostic.
 func lineTS(ms int64) string { return time.UnixMilli(ms).Format("2006-01-02 15:04") }

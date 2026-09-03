@@ -89,6 +89,14 @@ type askEntry struct {
 	session  string
 }
 
+// guestTurn accumulates one in-progress guest turn's assistant output so the
+// thread gets a single message per turn rather than a live part-by-part
+// stream (guest topics can be crowded). It flushes on subprocess.exit.
+type guestTurn struct {
+	texts  []string // each non-empty assistant text part, in arrival order
+	images []string // show_image refs, in arrival order
+}
+
 // Hub mirrors usher's sessions into a Lark group chat, one thread per
 // session. It is a peer frontend to the web server, consuming the Router
 // through the plugin socket; it owns no Claude processes itself.
@@ -125,6 +133,14 @@ type Hub struct {
 	// prompt-echo skips it (else the user's own message mirrors back twice).
 	recentMu   sync.Mutex
 	recentSent map[string]string
+
+	// guestBuf coalesces each guest turn's assistant output, keyed by session:
+	// "part" events accumulate here instead of mirroring live, and
+	// subprocess.exit posts the result as one message. The per-session mirror
+	// worker serializes access to a given entry; the map is shared across
+	// workers, so guestBufMu guards it.
+	guestBufMu sync.Mutex
+	guestBuf   map[string]*guestTurn
 
 	// seen dedupes inbound pushes by message id: Feishu delivers events at
 	// least once and the ws SDK does no event dedup of its own, so a slow
@@ -179,6 +195,7 @@ func NewHub(client larkAPI, router RouterAPI, cfg Config, logger *slog.Logger) (
 		asksBySession: map[string]string{},
 		posted:        map[string]interaction.Pending{},
 		recentSent:    map[string]string{},
+		guestBuf:      map[string]*guestTurn{},
 		seen:          map[string]time.Time{},
 		names:         map[string]map[string]string{},
 		appNames:      map[string]string{},
@@ -349,19 +366,107 @@ func (h *Hub) takePosted(id string) (interaction.Pending, bool) {
 	return p, ok
 }
 
-// handleEvent mirrors a single session event into its thread.
+// handleEvent mirrors a single session event into its thread. Guest sessions
+// take a quieter path: their assistant parts are coalesced into one per-turn
+// message and they get no turn-done ping (a guest topic can be crowded).
 func (h *Hub) handleEvent(ctx context.Context, ev broker.Event) {
+	_, guest := h.store.guestBinding(ev.SessionID)
 	switch ev.Type {
 	case "turn.user":
 		h.mirrorPrompt(ctx, ev)
 	case "part":
-		h.mirrorAssistant(ctx, ev)
+		if guest {
+			h.bufferGuestPart(ev)
+		} else {
+			h.mirrorAssistant(ctx, ev)
+		}
 	case "subprocess.exit":
-		h.notifyTurnComplete(ctx, ev)
+		if guest {
+			h.flushGuestTurn(ctx, ev)
+		} else {
+			h.notifyTurnComplete(ctx, ev)
+		}
 		h.refreshTitle(ctx, ev.SessionID)
 	case "error":
 		h.notifyTurnError(ctx, ev)
 	}
+}
+
+// bufferGuestPart accumulates one assistant part of a guest turn; flushGuestTurn
+// posts the coalesced result at turn end instead of mirroring live.
+func (h *Hub) bufferGuestPart(ev broker.Event) {
+	text := imutil.PartText(ev.Raw)
+	images := imutil.PartImageRefs(ev.Raw)
+	if text == "" && len(images) == 0 {
+		return
+	}
+	h.guestBufMu.Lock()
+	defer h.guestBufMu.Unlock()
+	b := h.guestBuf[ev.SessionID]
+	if b == nil {
+		b = &guestTurn{}
+		h.guestBuf[ev.SessionID] = b
+	}
+	if text != "" {
+		b.texts = append(b.texts, text)
+	}
+	b.images = append(b.images, images...)
+}
+
+// flushGuestTurn posts a guest turn's coalesced output — one message, no
+// "responded" ping. A local-command or failed turn (reason set) drops the
+// buffer without posting; its failure, if any, already surfaced via the error
+// event. The buffer is always cleared so a partial turn never leaks into the
+// next one.
+func (h *Hub) flushGuestTurn(ctx context.Context, ev broker.Event) {
+	h.guestBufMu.Lock()
+	b := h.guestBuf[ev.SessionID]
+	delete(h.guestBuf, ev.SessionID)
+	h.guestBufMu.Unlock()
+	if b == nil {
+		return
+	}
+	var terminal struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(ev.Raw, &terminal)
+	if terminal.Reason != "" {
+		return
+	}
+	text := h.coalesceGuestText(ev.SessionID, b.texts)
+	if text == "" && len(b.images) == 0 {
+		return
+	}
+	root, err := h.rootFor(ctx, ev.SessionID)
+	if err != nil {
+		h.logger.Warn("lark: guest turn thread", "session", ev.SessionID, "err", err)
+		return
+	}
+	for _, chunk := range imutil.SplitMessage(text, larkCardMax) {
+		if chunk == "" {
+			continue
+		}
+		if !h.replyMarkdown(ctx, ev.SessionID, root, chunk) {
+			break
+		}
+	}
+	for _, ref := range b.images {
+		h.mirrorImage(ctx, ev.SessionID, root, ref)
+	}
+}
+
+// coalesceGuestText reduces a guest turn's text parts to the one message posted
+// in its thread. codex reliably emits its final_answer as the turn's last text
+// part, so only that is kept; other backends mark no single "final" message and
+// their answer can span the turn, so every part is joined.
+func (h *Hub) coalesceGuestText(sessionID string, texts []string) string {
+	if len(texts) == 0 {
+		return ""
+	}
+	if sess, ok := h.router.GetSession(sessionID); ok && sess.Backend == "codex" {
+		return texts[len(texts)-1]
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 // mirrorPrompt echoes a web/main-chat-originated prompt into its thread.
