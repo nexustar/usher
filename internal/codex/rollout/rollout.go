@@ -3,12 +3,20 @@
 //
 // A rollout lives at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl,
 // one JSON object per line: {"timestamp","type","payload":{...}}. The first
-// line is a session_meta carrying the session id, cwd, and start time. The
-// conversation is reconstructed from the UI event stream (event_msg
-// user_message / agent_message — the clean text the user saw) interleaved with
-// the model-item stream's tool calls (response_item function_call /
-// function_call_output, linked by call_id). A turn is finished by an event_msg
-// task_complete, the analog of Claude Code's system/turn_duration marker.
+// line is a session_meta carrying the session id, cwd, and start time. A turn
+// is finished by an event_msg task_complete, the analog of Claude Code's
+// system/turn_duration marker.
+//
+// Codex has two persistence modes (session_meta.history_mode). Legacy rollouts
+// carry the clean conversation in the event_msg UI stream (user_message /
+// agent_message) with tools as per-event markers (patch_apply_end,
+// web_search_end, …) and shells as response_item custom_tool_call. Paginated
+// rollouts (cli 0.153+, now the default) instead deliver everything as
+// event_msg item_completed TurnItems (UserMessage / AgentMessage /
+// CommandExecution / FileChange / …) and no longer persist the legacy per-tool
+// events; there the batched `exec` custom_tool_call is a duplicate of the
+// per-op items and is dropped (see Assembler.toolItems). Both modes are
+// reconstructed into the same core turns.
 //
 // Shared display and metadata types live in package core; this package owns
 // only the Codex wire format and its projection into that contract.
@@ -166,11 +174,11 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 				meta.Runtime.ContextTokens = usage.Info.Last.Total
 				meta.Runtime.ContextWindow = usage.Info.ContextWindow
 			}
-			if msg, ok := userMessage(l.Payload); ok {
+			if msg, ok := cleanUserPrompt(l.Payload); ok {
 				if firstPrompt == "" {
 					firstPrompt = msg
 				}
-				// user_message is codex's clean typed prompt — the sort key
+				// The clean typed prompt — the sort key
 				// (core.SessionMeta.LastInputAt).
 				if !l.Timestamp.IsZero() {
 					meta.LastInputAt = l.Timestamp
@@ -283,13 +291,21 @@ type Assembler struct {
 	pending map[string]toolStash // call_id -> tool call awaiting its output
 	seenMCP map[string]struct{}  // canonical/legacy/response-item deduplication
 	model   string               // last model seen on a turn_context line (sticky)
+	// toolItems counts per-op tool items rendered from the paginated
+	// item_completed stream (CommandExecution/FileChange/…, but not MCP). A
+	// custom_tool_call snapshots it; if it grew before the call's output, the
+	// items already rendered the same ops and the batched `exec` wrapper is
+	// dropped as their duplicate. A wrapper that produced no item (e.g. a pure
+	// text() script) still renders, and legacy sessions never increment it.
+	toolItems int
 }
 
 type toolStash struct {
-	name   string
-	target string
-	skip   bool
-	mcp    bool
+	name        string
+	target      string
+	skip        bool
+	mcp         bool
+	itemsAtCall int // toolItems when the call was seen (paginated dedup)
 }
 
 func NewAssembler() *Assembler {
@@ -389,7 +405,7 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 		// Normalize both wires into the same tool TurnPart consumed by web/IM.
 		return nil, a.mcpToolPart(l)
 	case "item_completed":
-		return nil, a.completedMCPToolPart(l)
+		return a.feedItemCompleted(l)
 	case "patch_apply_end":
 		return nil, a.patchApplyPart(l)
 	case "exec_command_end":
@@ -487,19 +503,39 @@ func (a *Assembler) patchApplyPart(l line) *core.TurnPart {
 
 func (a *Assembler) execCommandPart(l line) *core.TurnPart {
 	var p struct {
-		Command          []string `json:"command"`
-		AggregatedOutput string   `json:"aggregated_output"`
-		Stdout           string   `json:"stdout"`
-		Stderr           string   `json:"stderr"`
+		Command   []string `json:"command"`
+		ParsedCmd []struct {
+			Cmd string `json:"cmd"`
+		} `json:"parsed_cmd"`
+		AggregatedOutput string `json:"aggregated_output"`
+		FormattedOutput  string `json:"formatted_output"`
+		Stdout           string `json:"stdout"`
+		Stderr           string `json:"stderr"`
 	}
 	if json.Unmarshal(l.Payload, &p) != nil {
 		return nil
 	}
+	// parsed_cmd (present on the paginated CommandExecution item) carries the
+	// clean command; command is the /bin/bash -lc wrapper. Legacy events lack it
+	// and fall back to command.
+	var cmds []string
+	for _, c := range p.ParsedCmd {
+		if c.Cmd != "" {
+			cmds = append(cmds, c.Cmd)
+		}
+	}
+	target := strings.Join(cmds, " && ")
+	if target == "" {
+		target = strings.Join(p.Command, " ")
+	}
 	body := p.AggregatedOutput
+	if body == "" {
+		body = p.FormattedOutput
+	}
 	if body == "" {
 		body = strings.TrimSpace(p.Stdout + "\n" + p.Stderr)
 	}
-	return a.appendTool(l.Timestamp, "Shell", strings.Join(p.Command, " "), body)
+	return a.appendTool(l.Timestamp, "Shell", target, body)
 }
 
 func (a *Assembler) simpleEventToolPart(l line, name string) *core.TurnPart {
@@ -523,19 +559,32 @@ func (a *Assembler) simpleEventToolPart(l line, name string) *core.TurnPart {
 }
 
 func (a *Assembler) imageGenerationPart(l line) *core.TurnPart {
+	// The legacy event and core item use snake_case; the host-extension variant
+	// (kind image_gen.generation) uses camelCase. result holds the base64 image
+	// and is deliberately never read.
 	var p struct {
-		Status        string `json:"status"`
-		RevisedPrompt string `json:"revised_prompt"`
-		SavedPath     string `json:"saved_path"`
+		Status             string `json:"status"`
+		RevisedPrompt      string `json:"revised_prompt"`
+		RevisedPromptCamel string `json:"revisedPrompt"`
+		SavedPath          string `json:"saved_path"`
+		SavedPathCamel     string `json:"savedPath"`
 	}
 	if json.Unmarshal(l.Payload, &p) != nil {
 		return nil
 	}
+	revised := firstNonEmpty(p.RevisedPrompt, p.RevisedPromptCamel)
 	body := p.Status
-	if p.RevisedPrompt != "" {
-		body = strings.TrimSpace(body + "\n" + p.RevisedPrompt)
+	if revised != "" {
+		body = strings.TrimSpace(body + "\n" + revised)
 	}
-	return a.appendTool(l.Timestamp, "ImageGeneration", p.SavedPath, body)
+	return a.appendTool(l.Timestamp, "ImageGeneration", firstNonEmpty(p.SavedPath, p.SavedPathCamel), body)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 func (a *Assembler) dynamicToolPart(l line) *core.TurnPart {
@@ -611,6 +660,101 @@ func (a *Assembler) mcpToolPart(l line) *core.TurnPart {
 	}
 	a.cur.Parts = append(a.cur.Parts, tp)
 	return &tp
+}
+
+// feedItemCompleted projects a paginated item_completed TurnItem into turns.
+// A tool item carries the same field names as its legacy per-tool event, so
+// exposing the item as the line payload (il) lets the legacy handlers parse it
+// unchanged.
+func (a *Assembler) feedItemCompleted(l line) (completed []core.Turn, part *core.TurnPart) {
+	var p struct {
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal(l.Payload, &p); err != nil {
+		return nil, nil
+	}
+	var it struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(p.Item, &it); err != nil {
+		return nil, nil
+	}
+	il := line{Timestamp: l.Timestamp, Payload: p.Item}
+	switch it.Type {
+	case "UserMessage":
+		if t := a.Flush(); t != nil {
+			completed = append(completed, *t)
+		}
+		if msg := itemMessageText(p.Item); msg != "" {
+			completed = append(completed, core.Turn{Role: "user", Content: msg, Time: l.Timestamp})
+		}
+		return completed, nil
+	case "AgentMessage":
+		msg := itemMessageText(p.Item)
+		if msg == "" {
+			return nil, nil
+		}
+		a.ensureTurn(l.Timestamp)
+		tp := core.TurnPart{Type: "text", Content: msg}
+		a.cur.Parts = append(a.cur.Parts, tp)
+		return nil, &tp
+	case "CommandExecution":
+		return nil, a.toolItem(a.execCommandPart(il))
+	case "FileChange":
+		return nil, a.toolItem(a.patchApplyPart(il))
+	case "WebSearch":
+		return nil, a.toolItem(a.simpleEventToolPart(il, "WebSearch"))
+	case "ImageGeneration":
+		return nil, a.toolItem(a.imageGenerationPart(il))
+	case "ImageView":
+		return nil, a.toolItem(a.simpleEventToolPart(il, "ViewImage"))
+	case "DynamicToolCall":
+		return nil, a.toolItem(a.dynamicToolPart(il))
+	case "Extension":
+		return nil, a.toolItem(a.extensionItem(il))
+	case "ContextCompaction":
+		if t := a.Flush(); t != nil {
+			completed = append(completed, *t)
+		}
+		return append(completed, core.Turn{Role: "system", Content: "Context compacted", Time: l.Timestamp}), nil
+	default:
+		// McpToolCall (and unknown items). completedMCPToolPart reads the item
+		// off the original line and dedups MCP itself, so it never feeds the
+		// custom_tool_call counter (an MCP call inside an exec wrapper is already
+		// skipped by customCallHasCanonicalEvent).
+		return nil, a.completedMCPToolPart(l)
+	}
+}
+
+// toolItem counts a rendered per-op tool item so a later custom_tool_call that
+// batched the same ops is dropped as a duplicate (see the custom_tool_call_output
+// case). MCP items are excluded — they never need to gate the wrapper.
+func (a *Assembler) toolItem(part *core.TurnPart) *core.TurnPart {
+	if part != nil {
+		a.toolItems++
+	}
+	return part
+}
+
+// extensionItem handles the "Extension" item, keyed by a dotted kind. Real
+// paginated sessions deliver hosted web search and image generation this way,
+// not as the core WebSearch / ImageGeneration item types.
+func (a *Assembler) extensionItem(l line) *core.TurnPart {
+	var p struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(l.Payload, &p) != nil {
+		return nil
+	}
+	switch p.Kind {
+	case "web.search":
+		return a.simpleEventToolPart(l, "WebSearch")
+	case "image_gen.generation":
+		return a.imageGenerationPart(l)
+	default:
+		// clock.sleep and other host extensions have no useful transcript form.
+		return nil
+	}
 }
 
 func (a *Assembler) completedMCPToolPart(l line) *core.TurnPart {
@@ -707,6 +851,14 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 			mcp:    isMCP,
 		}
 		return nil
+	case "custom_tool_call":
+		a.pending[p.CallID] = toolStash{
+			name:        prettyToolName(p.Name),
+			target:      customExecTarget(p.Input),
+			skip:        customCallHasCanonicalEvent(p.Name, p.Input),
+			itemsAtCall: a.toolItems,
+		}
+		return nil
 	case "function_call_output":
 		stash := a.pending[p.CallID]
 		delete(a.pending, p.CallID)
@@ -722,17 +874,12 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 		}
 		a.cur.Parts = append(a.cur.Parts, tp)
 		return &tp
-	case "custom_tool_call":
-		target := customExecTarget(p.Input)
-		a.pending[p.CallID] = toolStash{
-			name: prettyToolName(p.Name), target: target,
-			skip: customCallHasCanonicalEvent(p.Name, p.Input),
-		}
-		return nil
 	case "custom_tool_call_output":
 		stash, ok := a.pending[p.CallID]
 		delete(a.pending, p.CallID)
-		if !ok || stash.skip {
+		// Drop the batched exec wrapper when its ops already rendered as items
+		// (see Assembler.toolItems).
+		if !ok || stash.skip || a.toolItems > stash.itemsAtCall {
 			return nil
 		}
 		return a.appendTool(l.Timestamp, stash.name, stash.target, renderOutputBody(p.Output))
@@ -783,6 +930,54 @@ func userMessage(payload json.RawMessage) (string, bool) {
 	return p.Message, p.Message != ""
 }
 
+// cleanUserPrompt returns the user's typed prompt from an event_msg payload,
+// handling both the older user_message event and the newer item_completed
+// UserMessage item (cli 0.153+). Used by ReadSessionMeta for the title and the
+// LastInputAt sort key.
+func cleanUserPrompt(payload json.RawMessage) (string, bool) {
+	var p struct {
+		Type string          `json:"type"`
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return "", false
+	}
+	if p.Type == "user_message" {
+		return userMessage(payload)
+	}
+	if p.Type == "item_completed" {
+		var it struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(p.Item, &it) == nil && it.Type == "UserMessage" {
+			msg := itemMessageText(p.Item)
+			return msg, msg != ""
+		}
+	}
+	return "", false
+}
+
+// itemMessageText joins the text of a message item's content array. The
+// content-item type tag varies in case across roles (user "text", agent
+// "Text"), but the text lives in a lowercase "text" field in both.
+func itemMessageText(item json.RawMessage) string {
+	var p struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(item, &p); err != nil {
+		return ""
+	}
+	var texts []string
+	for _, c := range p.Content {
+		if c.Text != "" {
+			texts = append(texts, c.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(texts, "\n"))
+}
+
 // toolTarget pulls the most informative argument out of a function_call's
 // arguments (itself a JSON-encoded string): a shell command, else a file path.
 func toolTarget(arguments string) string {
@@ -808,17 +1003,16 @@ func toolTargetMap(m map[string]json.RawMessage) string {
 	return ""
 }
 
-// renderOutput renders a function_call_output's output (a JSON string for the
-// shapes seen so far) into a fenced block, clamped.
+// renderOutput fences a function_call_output's output. The output is either a
+// JSON string (older shape) or an array of {type,text} content items (newer
+// shape, same as custom_tool_call_output); renderOutputBody normalizes both, so
+// this only clamps and fences.
 func renderOutput(output json.RawMessage) string {
-	if len(output) == 0 {
+	body := renderOutputBody(output)
+	if body == "" {
 		return ""
 	}
-	var s string
-	if err := json.Unmarshal(output, &s); err == nil {
-		return textutil.Fence("", textutil.ClampBody(s))
-	}
-	return textutil.Fence("", textutil.ClampBody(string(output)))
+	return textutil.Fence("", textutil.ClampBody(body))
 }
 
 func renderOutputBody(output json.RawMessage) string {

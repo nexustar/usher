@@ -487,6 +487,234 @@ func TestAssemblerCurrentCodexToolEvents(t *testing.T) {
 	}
 }
 
+// Newer Codex builds emit function_call_output.output as an array of
+// {type,text} content items (the same shape custom_tool_call_output uses)
+// rather than a plain JSON string. The rendered tool body must be the extracted
+// text, not the raw JSON array.
+func TestAssemblerFunctionCallOutputArrayShape(t *testing.T) {
+	a := NewAssembler()
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"function_call","name":"wait","call_id":"c1","arguments":"{\"cell_id\":\"2\"}"}}`))
+	_, part := a.Feed([]byte(`{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"Script completed"},{"type":"input_text","text":"done"}]}}`))
+	if part == nil {
+		t.Fatal("no tool part emitted")
+	}
+	if strings.Contains(part.Content, `"type":"input_text"`) {
+		t.Errorf("raw content-item array leaked into body: %q", part.Content)
+	}
+	if !strings.Contains(part.Content, "Script completed") || !strings.Contains(part.Content, "done") {
+		t.Errorf("extracted text missing from body: %q", part.Content)
+	}
+}
+
+// cli 0.153+ drops the event_msg user_message/agent_message stream and delivers
+// the clean conversation as item_completed UserMessage/AgentMessage items (the
+// content-item type tag differs in case by role). The assembler must project
+// these into user and assistant turns, or such sessions render empty.
+func TestAssemblerItemCompletedMessages(t *testing.T) {
+	asm := NewAssembler()
+	var done []core.Turn
+	for _, ln := range []string{
+		`{"timestamp":"2026-09-09T21:09:48Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"hi","text_elements":[]}]}}}`,
+		`{"timestamp":"2026-09-09T21:09:50Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"a1","content":[{"type":"Text","text":"Hi! What would you like to work on?"}],"phase":"final_answer"}}}`,
+		`{"timestamp":"2026-09-09T21:09:51Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}`,
+	} {
+		completed, _ := asm.Feed([]byte(ln))
+		done = append(done, completed...)
+	}
+	if len(done) != 2 {
+		t.Fatalf("got %d turns, want 2: %+v", len(done), done)
+	}
+	if done[0].Role != "user" || done[0].Content != "hi" {
+		t.Errorf("user turn = %+v, want role=user content=hi", done[0])
+	}
+	if done[1].Role != "assistant" || len(done[1].Parts) != 1 ||
+		done[1].Parts[0].Type != "text" || done[1].Parts[0].Content != "Hi! What would you like to work on?" {
+		t.Errorf("assistant turn = %+v", done[1])
+	}
+}
+
+// The session title and LastInputAt must still resolve when the only user prompt
+// arrives as an item_completed UserMessage rather than an event_msg user_message.
+func TestReadSessionMetaItemCompletedPrompt(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "rollout.jsonl")
+	data := strings.Join([]string{
+		`{"timestamp":"2026-09-09T21:09:47Z","type":"session_meta","payload":{"id":"01a08613-0278-7c12-b879-7b5db2798ce2","cwd":"/tmp"}}`,
+		`{"timestamp":"2026-09-09T21:09:48Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"count the objects","text_elements":[]}]}}}`,
+		`{"timestamp":"2026-09-09T21:09:50Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"a1","content":[{"type":"Text","text":"done"}]}}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadSessionMeta(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Prompt != "count the objects" {
+		t.Errorf("Prompt = %q, want %q", meta.Prompt, "count the objects")
+	}
+	if meta.LastInputAt.IsZero() {
+		t.Error("LastInputAt is zero; item_completed UserMessage should set it")
+	}
+}
+
+// In the paginated stream (cli 0.153+) tools are delivered as item_completed
+// TurnItems (CommandExecution/FileChange/…), and the shell+patch are batched
+// into one `exec` custom_tool_call. The items are authoritative; the wrapper
+// must be dropped as their duplicate, or every tool renders twice.
+func TestAssemblerPaginatedToolItems(t *testing.T) {
+	a := NewAssembler()
+	var done []core.Turn
+	for _, ln := range []string{
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"go"}]}}}`,
+		// One batched exec wrapper covering both ops (call recorded before output).
+		`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"text(await tools.exec_command({cmd:\"echo hi\"})); text(await tools.apply_patch(\"*** Begin Patch\"))"}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","command":["/bin/bash","-lc","echo hi"],"parsed_cmd":[{"type":"unknown","cmd":"echo hi"}],"aggregated_output":"hi\n","status":"completed","exit_code":0}}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"exec-2","changes":{"a.txt":{"type":"add","content":"x\n"}},"status":"completed","stdout":"Success. Updated the following files:\nA a.txt\n"}}}`,
+		`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"Script completed"}]}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"a1","content":[{"type":"Text","text":"done"}]}}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}`,
+	} {
+		completed, _ := a.Feed([]byte(ln))
+		done = append(done, completed...)
+	}
+	if len(done) != 2 {
+		t.Fatalf("got %d turns, want 2 (user, assistant): %+v", len(done), done)
+	}
+	asst := done[1]
+	// Expect exactly: Shell item, Edit item, text "done" — and NO duplicate
+	// Shell/Edit from the exec wrapper.
+	var shell, edit int
+	for _, p := range asst.Parts {
+		switch p.ToolName {
+		case "Shell":
+			shell++
+			if p.ToolTarget != "echo hi" {
+				t.Errorf("Shell target = %q, want clean parsed cmd", p.ToolTarget)
+			}
+		case "Edit":
+			edit++
+			if p.ToolTarget != "a.txt" {
+				t.Errorf("Edit target = %q", p.ToolTarget)
+			}
+		}
+	}
+	if shell != 1 || edit != 1 {
+		t.Errorf("shell=%d edit=%d, want 1 each (wrapper must not double-render): %+v", shell, edit, asst.Parts)
+	}
+}
+
+// A legacy session (no item_completed tool items) must still render its shell
+// through the custom_tool_call wrapper — the dedup only fires once the paginated
+// item stream has been seen.
+func TestAssemblerLegacyCustomToolStillRenders(t *testing.T) {
+	a := NewAssembler()
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"text(await tools.exec_command({cmd:\"ls\"}))"}}`))
+	_, part := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"file.go"}]}}`))
+	if part == nil || part.ToolName != "Shell" || part.ToolTarget != "ls" {
+		t.Fatalf("legacy shell should render via custom_tool_call: %+v", part)
+	}
+}
+
+// Parity: every tool/content type the legacy event_msg path renders
+// (TestAssemblerCurrentCodexToolEvents) must have a paginated item_completed
+// equivalent, so a 0.153+ session renders everything an older one could.
+func TestAssemblerPaginatedItemParity(t *testing.T) {
+	a := NewAssembler()
+	lines := []string{
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","command":["/bin/bash","-lc","git status"],"parsed_cmd":[{"type":"unknown","cmd":"git status"}],"aggregated_output":"clean","status":"completed"}}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"e2","changes":{"internal/a.go":{"type":"update","unified_diff":"@@ -1 +1 @@\n-old\n+new"}},"stdout":"Success"}}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"WebSearch","id":"e3","query":"Codex protocol","action":{"type":"search"}}}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"ImageGeneration","id":"e4","status":"completed","revised_prompt":"a cat","result":"very-large-base64-must-not-render","saved_path":"/tmp/gen.png"}}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"ImageView","id":"e5","path":"/tmp/view.png"}}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"DynamicToolCall","id":"e6","namespace":"airtable","tool":"list","arguments":{"path":"/x"},"content_items":[{"type":"text","text":"rows"}]}}}`,
+		`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"e7","server":"usher","tool":"show_image","arguments":{"file_path":"/tmp/a.png"},"result":{"content":[{"type":"text","text":"{\"w\":10}"}]}}}}`,
+	}
+	for _, ln := range lines {
+		a.Feed([]byte(ln))
+	}
+	turn := a.Flush()
+	if turn == nil {
+		t.Fatal("no turn assembled")
+	}
+	want := []struct{ name, target, content string }{
+		{"Shell", "git status", "clean"},
+		{"Edit", "internal/a.go", "+new"},
+		{"WebSearch", "Codex protocol", "search"},
+		{"ImageGeneration", "/tmp/gen.png", "a cat"},
+		{"ViewImage", "/tmp/view.png", ""},
+		{"airtable__list", "/x", "rows"},
+		{"mcp__usher__show_image", "/tmp/a.png", "{\"w\":10}"},
+	}
+	if len(turn.Parts) != len(want) {
+		t.Fatalf("got %d parts, want %d: %+v", len(turn.Parts), len(want), turn.Parts)
+	}
+	for i, w := range want {
+		got := turn.Parts[i]
+		if got.ToolName != w.name || got.ToolTarget != w.target || !strings.Contains(got.Content, w.content) {
+			t.Errorf("part %d = {name:%q target:%q content:%q}, want name=%q target=%q content~%q",
+				i, got.ToolName, got.ToolTarget, got.Content, w.name, w.target, w.content)
+		}
+	}
+	if strings.Contains(turn.Parts[3].Content, "very-large-base64") {
+		t.Error("image base64 leaked into transcript")
+	}
+}
+
+// The dedup is per-wrapper, not session-sticky: a batched exec wrapper whose
+// ops produced items is dropped, but a later wrapper whose script emitted no
+// item (e.g. a pure text() call) must still render — otherwise its result
+// silently vanishes once any earlier tool item was seen.
+func TestAssemblerZeroItemExecWrapperRenders(t *testing.T) {
+	a := NewAssembler()
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"text(await tools.exec_command({cmd:\"ls\"}))"}}`))
+	a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","parsed_cmd":[{"cmd":"ls"}],"aggregated_output":"file"}}}`))
+	if _, dropped := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"file"}]}}`)); dropped != nil {
+		t.Errorf("wrapper with a matching item should be dropped, got %+v", dropped)
+	}
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c2","name":"exec","input":"text(1+1)"}}`))
+	_, rendered := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c2","output":[{"type":"input_text","text":"2"}]}}`))
+	if rendered == nil || rendered.ToolName != "Shell" {
+		t.Errorf("zero-item exec wrapper must render, got %+v", rendered)
+	}
+}
+
+// MCP items must not gate the dedup counter: a plain-shell exec wrapper after an
+// item_completed McpToolCall must still render (an MCP call inside a wrapper is
+// already skipped by customCallHasCanonicalEvent; a direct one has no wrapper).
+func TestAssemblerMcpItemDoesNotDropShellWrapper(t *testing.T) {
+	a := NewAssembler()
+	a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"m1","server":"s","tool":"t","arguments":{}}}}`))
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"text(await tools.exec_command({cmd:\"ls\"}))"}}`))
+	_, part := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"ok"}]}}`))
+	if part == nil || part.ToolName != "Shell" {
+		t.Fatalf("shell wrapper after an MCP item must render: %+v", part)
+	}
+}
+
+// Real paginated sessions deliver hosted web search and image generation as
+// "Extension" items keyed by a dotted kind (not the core WebSearch/ImageGeneration
+// item types). web.search must render without dumping its huge results array;
+// image_gen.generation uses camelCase fields and must not leak the base64 result.
+func TestAssemblerExtensionItems(t *testing.T) {
+	a := NewAssembler()
+	a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"web.search","id":"x1","query":"latest Go release","action":{"type":"search","query":"latest Go release","queries":null},"results":[{"type":"text_result","snippet":"HUGE-RESULTS-MUST-NOT-RENDER","url":"https://go.dev"}]}}}`))
+	a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"image_gen.generation","id":"x2","status":"completed","revisedPrompt":"a red cat","result":"BASE64-MUST-NOT-RENDER","savedPath":"/tmp/cat.png"}}}`))
+	a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"clock.sleep","id":"x3","durationMs":1000}}}`))
+	turn := a.Flush()
+	if turn == nil || len(turn.Parts) != 2 {
+		t.Fatalf("want 2 parts (web + image, sleep skipped), got %+v", turn)
+	}
+	ws := turn.Parts[0]
+	if ws.ToolName != "WebSearch" || ws.ToolTarget != "latest Go release" || strings.Contains(ws.Content, "HUGE-RESULTS") {
+		t.Errorf("web.search part wrong: %+v", ws)
+	}
+	ig := turn.Parts[1]
+	if ig.ToolName != "ImageGeneration" || ig.ToolTarget != "/tmp/cat.png" ||
+		!strings.Contains(ig.Content, "a red cat") || strings.Contains(ig.Content, "BASE64") {
+		t.Errorf("image_gen part wrong (camelCase fields / base64 leak): %+v", ig)
+	}
+}
+
 func TestAssemblerCustomWrapperDeduplicatesCanonicalPatch(t *testing.T) {
 	a := NewAssembler()
 	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"outer","name":"exec","input":"text(await tools.apply_patch(\"*** Begin Patch\"))"}}`))
