@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/interaction"
 )
 
@@ -400,13 +401,13 @@ func (m *Manager) Has(id string) bool {
 	return w != nil && w.ready == nil && w.err == nil && w.client.Running()
 }
 
-func (m *Manager) LiveSessions() []string {
+func (m *Manager) LiveSessions() []backend.LiveSession {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]string, 0, len(m.workers))
+	out := make([]backend.LiveSession, 0, len(m.workers))
 	for id, w := range m.workers {
 		if w.ready == nil && w.err == nil && w.client.Running() {
-			out = append(out, id)
+			out = append(out, backend.LiveSession{ID: id, Busy: w.busy || w.leases > 0 || w.client.Busy(id)})
 		}
 	}
 	return out

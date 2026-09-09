@@ -418,8 +418,8 @@ func (s *Sender) argsFor(id string) []string {
 	return lookup(id)
 }
 
-// LiveSessions returns the ids of sessions with a live backend worker.
-func (s *Sender) LiveSessions() []string {
+// LiveSessions lists the sessions with a live backend worker.
+func (s *Sender) LiveSessions() []backend.LiveSession {
 	if s.app != nil {
 		return s.app.LiveSessions()
 	}

@@ -1284,14 +1284,14 @@ func (r *Runtime) locate(id string) string {
 	return found
 }
 func (r *Runtime) Has(id string) bool { r.mu.Lock(); defer r.mu.Unlock(); return r.workers[id] != nil }
-func (r *Runtime) LiveSessions() []string {
+func (r *Runtime) LiveSessions() []backend.LiveSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]string, 0, len(r.workers))
-	for id := range r.workers {
-		out = append(out, id)
+	out := make([]backend.LiveSession, 0, len(r.workers))
+	for id, w := range r.workers {
+		out = append(out, backend.LiveSession{ID: id, Busy: w.busy || w.leases > 0})
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 func (r *Runtime) Interrupt(id string) error {

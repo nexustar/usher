@@ -282,16 +282,28 @@ func (r *Router) anyHas(id string) bool {
 	return false
 }
 
-// liveSet unions the live-session ids across every backend's sender.
+// liveSet maps every session with a live worker, across backends, to whether
+// that worker is busy.
 func (r *Router) liveSet() map[string]bool {
 	set := map[string]bool{}
 	for _, b := range r.backends {
-		s := b.Runtime
-		for _, id := range s.LiveSessions() {
-			set[id] = true
+		for _, s := range b.Runtime.LiveSessions() {
+			set[s.ID] = s.Busy
 		}
 	}
 	return set
+}
+
+// applyLiveStatus overlays worker state on a discovered session. A busy worker
+// with no usher turn is on one of its own (a /loop tick); that is running too.
+func applyLiveStatus(sess *core.Session, running bool, live map[string]bool) {
+	busy, isLive := live[sess.ID]
+	switch {
+	case running || busy:
+		sess.Status = core.StatusRunning
+	case isLive:
+		sess.Status = core.StatusLive
+	}
 }
 
 // backendOf returns the backend a session belongs to, or the default if the
@@ -397,11 +409,8 @@ func (r *Router) listSessions(includeSubagents bool) []core.Session {
 		if sess.IsSubagent && !includeSubagents {
 			continue
 		}
-		if _, running := r.activeSend[sess.ID]; running {
-			sess.Status = core.StatusRunning
-		} else if live[sess.ID] {
-			sess.Status = core.StatusLive
-		}
+		_, running := r.activeSend[sess.ID]
+		applyLiveStatus(sess, running, live)
 		if !sess.IsSubagent {
 			r.applyCustomTitle(sess)
 		}
@@ -434,11 +443,7 @@ func (r *Router) GetSession(id string) (core.Session, bool) {
 	r.sendMu.Lock()
 	_, running := r.activeSend[id]
 	r.sendMu.Unlock()
-	if running {
-		sess.Status = core.StatusRunning
-	} else if r.senderForBackend(sess.Backend).Has(id) {
-		sess.Status = core.StatusLive
-	}
+	applyLiveStatus(&sess, running, r.liveSet())
 	r.applyCustomTitle(&sess)
 	return sess, true
 }
@@ -1011,7 +1016,12 @@ func (r *Router) CancelSend(sessionID string) error {
 	tok, ok := r.activeSend[sessionID]
 	r.sendMu.Unlock()
 	if !ok {
-		return errors.New("no active send")
+		// A worker busy on its own turn (a /loop tick) has no send to cancel.
+		if !r.liveSet()[sessionID] {
+			return errors.New("no active send")
+		}
+		slog.Debug("foreign turn cancelled", "session", sessionID)
+		return r.senderFor(sessionID).Interrupt(sessionID)
 	}
 	slog.Debug("turn cancelled", "session", sessionID)
 	// Cancel means stop: drop queued follow-ups too, before cancelling the

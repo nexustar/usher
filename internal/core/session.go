@@ -3,10 +3,10 @@ package core
 
 import "time"
 
-// Status describes a session's relationship to usher's interactive process
-// pool. "live" means usher holds a warm claude process for it (idle, ready to
-// answer instantly); "running" means a turn is actively executing in that
-// process. A plain discovered session usher hasn't loaded is "idle".
+// Status describes a session's relationship to usher's worker pool. "live"
+// means usher holds a warm worker for it (idle, ready to answer instantly);
+// "running" means that worker is mid-turn, usher's or the backend's own (a
+// /loop tick). A plain discovered session usher hasn't loaded is "idle".
 type Status string
 
 const (

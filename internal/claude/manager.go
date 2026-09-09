@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ type turnRequest struct {
 	model   string
 	uuid    string
 	started bool
+	foreign bool    // Claude's own command (cron, /loop); nothing waits on it
 	runtime *Result // metadata from result; lifecycle still owns completion
 }
 
@@ -61,7 +63,7 @@ type process struct {
 	cwd           string
 	logger        *slog.Logger
 	mu            sync.Mutex
-	turns         []*turnRequest // nil entry represents a spontaneous turn
+	turns         []*turnRequest // FIFO in Claude's drain order; head is the turn producing output
 	controls      map[string]context.CancelFunc
 	controlWait   map[string]chan controlResult
 	commands      []Command
@@ -72,7 +74,56 @@ type process struct {
 	lastUsed      time.Time
 	stopping      bool
 	done          chan struct{}
+	tasks         map[string]struct{} // delegated agent tasks in flight, by task_id
 }
+
+// busy is the eviction guard. With mu.
+func (p *process) busy() bool { return len(p.turns) > 0 || p.leases > 0 || len(p.tasks) > 0 }
+
+// With mu.
+func (p *process) describeBusy() string {
+	foreign := 0
+	for _, req := range p.turns {
+		if req.foreign {
+			foreign++
+		}
+	}
+	return fmt.Sprintf("%s turns=%d foreign=%d leases=%d tasks=%d idle=%s",
+		p.id, len(p.turns), foreign, p.leases, len(p.tasks), time.Since(p.lastUsed).Round(time.Second))
+}
+
+// Mirrors the Agent SDK's task tracking. Shells are left out: they may never
+// reach a terminal status. Either terminal frame can be the only one sent.
+var (
+	deferringTaskTypes   = map[string]bool{"local_agent": true, "local_workflow": true}
+	terminalTaskStatuses = map[string]bool{"completed": true, "failed": true, "stopped": true, "killed": true}
+)
+
+func trackTask(p *process, subtype, taskID, taskType, patchStatus string) {
+	if taskID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch subtype {
+	case "task_started":
+		if deferringTaskTypes[taskType] {
+			if p.tasks == nil {
+				p.tasks = map[string]struct{}{}
+			}
+			p.tasks[taskID] = struct{}{}
+		}
+	case "task_notification":
+		delete(p.tasks, taskID)
+	case "task_updated":
+		if terminalTaskStatuses[patchStatus] {
+			delete(p.tasks, taskID)
+		}
+	}
+}
+
+// interruptGrace is how long a turn stays queued after an unanswered interrupt.
+var interruptGrace = 30 * time.Second
 
 // controlResult carries a control response back to its waiting request. Most
 // subtypes answer with an empty payload.
@@ -137,12 +188,16 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 	if len(m.processes) >= m.maxLive {
 		var victim *process
 		var victimLastUsed time.Time
+		var busyWorkers []string
 		for _, p := range m.processes {
 			// Sample both fields in one critical section: m.mu does not cover
 			// process state, and readLoop writes lastUsed on every result line.
 			p.mu.Lock()
-			busy := len(p.turns) > 0 || p.leases > 0
+			busy := p.busy()
 			lastUsed := p.lastUsed
+			if busy {
+				busyWorkers = append(busyWorkers, p.describeBusy())
+			}
 			p.mu.Unlock()
 			if !busy && (victim == nil || lastUsed.Before(victimLastUsed)) {
 				victim, victimLastUsed = p, lastUsed
@@ -154,6 +209,7 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 			m.logger.Info("worker evicted", "session", victim.id, "for", id)
 		} else {
 			m.mu.Unlock()
+			m.logger.Warn("no evictable worker", "for", id, "busy", busyWorkers)
 			return nil, false, fmt.Errorf("maximum live Claude sessions (%d) are all busy", m.maxLive)
 		}
 	}
@@ -478,7 +534,12 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			} `json:"modelUsage"`
 			SlashCommands []string `json:"slash_commands"`
 			Skills        []string `json:"skills"`
-			Event         struct {
+			TaskID        string   `json:"task_id"`
+			TaskType      string   `json:"task_type"`
+			Patch         struct {
+				Status string `json:"status"`
+			} `json:"patch"`
+			Event struct {
 				Type  string `json:"type"`
 				Delta struct {
 					Type string `json:"type"`
@@ -494,6 +555,9 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		if e.Type == "control_response" {
 			m.finishControlRequest(p, s.Bytes())
 			continue
+		}
+		if e.Type == "system" {
+			trackTask(p, e.Subtype, e.TaskID, e.TaskType, e.Patch.Status)
 		}
 		if e.Type == "system" && e.Subtype == "init" {
 			skills := make(map[string]struct{}, len(e.Skills))
@@ -540,7 +604,7 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		if e.Type == "result" {
 			// Result carries metadata; lifecycle owns completion.
 			p.mu.Lock()
-			if len(p.turns) > 0 && p.turns[0] != nil && p.turns[0].started {
+			if len(p.turns) > 0 && p.turns[0].started {
 				req := p.turns[0]
 				model := req.model
 				usage, ok := e.ModelUsage[model]
@@ -558,18 +622,16 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			p.mu.Unlock()
 			continue
 		}
+		// Output with no turn behind it (a background subagent's tail) is dropped.
 		p.mu.Lock()
-		if len(p.turns) == 0 && marksSpontaneousTurn(e.Type, e.Subtype, e.Event.Type) {
-			p.turns = append(p.turns, nil)
-		}
-		if len(p.turns) > 0 && p.turns[0] != nil && e.Type == "stream_event" &&
+		if len(p.turns) > 0 && !p.turns[0].foreign && e.Type == "stream_event" &&
 			e.Event.Type == "content_block_delta" && e.Event.Delta.Type == "text_delta" && e.Event.Delta.Text != "" {
 			select {
 			case p.turns[0].deltas <- Delta{Text: e.Event.Delta.Text}:
 			default: // preview may drop under backpressure; JSONL truth-up repairs it
 			}
 		}
-		if len(p.turns) > 0 && p.turns[0] != nil && e.Message.Model != "" {
+		if len(p.turns) > 0 && e.Message.Model != "" {
 			p.turns[0].model = e.Message.Model
 		}
 		p.mu.Unlock()
@@ -638,48 +700,85 @@ func (m *Manager) finishLifecycle(p *process, uuid, state string) {
 		return
 	}
 	p.mu.Lock()
+	idx := -1
+	for i, req := range p.turns {
+		if req.uuid == uuid {
+			idx = i
+			break
+		}
+	}
 	if state == "started" {
-		for _, candidate := range p.turns {
-			if candidate != nil && candidate.uuid == uuid {
-				candidate.started = true
-				break
+		if idx >= 0 {
+			p.turns[idx].started = true
+		} else {
+			// Claude's own command (cron, /loop, deferred resume), uuid minted
+			// by Claude. It is the one running, so it goes ahead of anything
+			// not yet started.
+			at := 0
+			for at < len(p.turns) && p.turns[at].started {
+				at++
 			}
+			p.turns = slices.Insert(p.turns, at, &turnRequest{uuid: uuid, started: true, foreign: true})
 		}
 		p.lastUsed = time.Now()
 		p.mu.Unlock()
 		return
 	}
-	if state != "completed" && state != "cancelled" {
+	if idx < 0 || !isTerminalLifecycle(state) {
 		p.mu.Unlock()
 		return
 	}
-	var req *turnRequest
-	for i, candidate := range p.turns {
-		if candidate != nil && candidate.uuid == uuid {
-			req = candidate
-			p.turns = append(p.turns[:i], p.turns[i+1:]...)
-			break
-		}
-	}
-	if req == nil && len(p.turns) > 0 && p.turns[0] == nil {
-		// Close the placeholder for an externally submitted turn.
-		p.turns = p.turns[1:]
-	}
+	req := p.turns[idx]
+	p.turns = append(p.turns[:idx], p.turns[idx+1:]...)
 	p.lastUsed = time.Now()
 	p.mu.Unlock()
-	if req != nil {
-		result := Result{Model: req.model}
-		if req.runtime != nil {
-			result = *req.runtime
-		}
-		if state == "cancelled" {
-			result.IsError = true
-			result.Subtype = state
-		} else if !result.IsError {
-			result.Subtype = state
-		}
-		req.finish(result)
+	if !req.foreign {
+		req.finish(terminalResult(req, state))
 	}
+}
+
+// Claude emits exactly one terminal state per command. discarded: the session
+// ended with it queued; refused: never admitted.
+func isTerminalLifecycle(state string) bool {
+	switch state {
+	case "completed", "cancelled", "discarded", "refused":
+		return true
+	}
+	return false
+}
+
+func terminalResult(req *turnRequest, state string) Result {
+	result := Result{Model: req.model}
+	if req.runtime != nil {
+		result = *req.runtime
+	}
+	if state != "completed" {
+		result.IsError = true
+		result.Subtype = state
+	} else if !result.IsError {
+		result.Subtype = state
+	}
+	return result
+}
+
+// cancelUnlessAnswered drops head after interruptGrace if it is still the head.
+// An interrupt only answers a running turn; one that threw sends no terminal
+// frame at all.
+func cancelUnlessAnswered(p *process, head *turnRequest) {
+	time.AfterFunc(interruptGrace, func() {
+		p.mu.Lock()
+		if len(p.turns) == 0 || p.turns[0] != head {
+			p.mu.Unlock()
+			return
+		}
+		p.turns = p.turns[1:]
+		p.lastUsed = time.Now()
+		p.mu.Unlock()
+		p.logger.Warn("interrupt unanswered; turn dropped", "foreign", head.foreign)
+		if !head.foreign {
+			head.finish(terminalResult(head, "cancelled"))
+		}
+	})
 }
 
 // handleControlRequest implements the permission callback protocol used by
@@ -801,22 +900,6 @@ func allowSuggestions(suggestions []json.RawMessage) []json.RawMessage {
 	return out
 }
 
-func marksSpontaneousTurn(typ, subtype, eventType string) bool {
-	if typ == "control_response" || typ == "rate_limit_event" || typ == "command_lifecycle" {
-		return false
-	}
-	if typ == "system" {
-		return subtype == "task_started" || subtype == "turn_started"
-	}
-	if typ == "stream_event" {
-		// Under --include-partial-messages a spontaneous turn's first output
-		// is a stream_event, so mark on message_start (deltas alone must not
-		// create phantom turns). This only restores the pre-partial-messages
-		// window: a Send landing before the first output line still races.
-		return eventType == "message_start"
-	}
-	return typ == "assistant" || typ == "user"
-}
 func (m *Manager) died(p *process, err error) {
 	close(p.done)
 	m.mu.Lock()
@@ -836,7 +919,7 @@ func (m *Manager) died(p *process, err error) {
 		cancel()
 	}
 	for _, req := range turns {
-		if req != nil {
+		if !req.foreign {
 			req.finish(Result{IsError: true, Subtype: "process_exited"})
 		}
 	}
@@ -851,6 +934,11 @@ func (m *Manager) Interrupt(id string) error {
 	if p == nil {
 		return nil
 	}
+	p.mu.Lock()
+	if len(p.turns) > 0 {
+		cancelUnlessAnswered(p, p.turns[0])
+	}
+	p.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req := map[string]any{"type": "control_request", "request_id": fmt.Sprintf("usher-%d", time.Now().UnixNano()), "request": map[string]any{"subtype": "interrupt"}}
@@ -896,12 +984,14 @@ func (m *Manager) Has(id string) bool {
 	defer m.mu.Unlock()
 	return m.processes[id] != nil
 }
-func (m *Manager) LiveSessions() []string {
+func (m *Manager) LiveSessions() []backend.LiveSession {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]string, 0, len(m.processes))
-	for id := range m.processes {
-		out = append(out, id)
+	out := make([]backend.LiveSession, 0, len(m.processes))
+	for id, p := range m.processes {
+		p.mu.Lock()
+		out = append(out, backend.LiveSession{ID: id, Busy: p.busy()})
+		p.mu.Unlock()
 	}
 	return out
 }

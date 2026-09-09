@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -356,91 +357,60 @@ func TestResumeUsesResumeFlag(t *testing.T) {
 	}
 }
 
-func TestSpontaneousTurnTailEventsDoNotStickOrStealNextResult(t *testing.T) {
-	m := New("", "", "", nil, 2, nil, nil)
-	p := &process{id: "s", lastUsed: time.Now()}
-	m.processes["s"] = p
-	r, w := io.Pipe()
-	done := make(chan struct{})
-	go func() { m.readLoop(p, r); close(done) }()
-	_, _ = io.WriteString(w, "{\"type\":\"assistant\"}\n")
+// waitTurns polls until the process queue holds n turns.
+func waitTurns(t *testing.T, p *process, n int) {
+	t.Helper()
 	deadline := time.Now().Add(time.Second)
-	for {
-		p.mu.Lock()
-		n := len(p.turns)
-		p.mu.Unlock()
-		if n == 1 {
-			break
-		}
+	for queuedTurns(p) != n {
 		if time.Now().After(deadline) {
-			t.Fatal("spontaneous marker not queued")
+			t.Fatalf("turn queue = %d, want %d", queuedTurns(p), n)
 		}
 		time.Sleep(time.Millisecond)
-	}
-	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "user-1"}
-	p.mu.Lock()
-	p.turns = append(p.turns, user)
-	p.mu.Unlock()
-	_, _ = io.WriteString(w, "{\"type\":\"result\",\"subtype\":\"success\"}\n{\"type\":\"command_lifecycle\",\"command_uuid\":\"foreign\",\"state\":\"completed\"}\n{\"type\":\"rate_limit_event\"}\n")
-	select {
-	case <-user.done:
-		t.Fatal("spontaneous result was delivered to user turn")
-	case <-time.After(20 * time.Millisecond):
-	}
-	_, _ = io.WriteString(w, "{\"type\":\"command_lifecycle\",\"command_uuid\":\"user-1\",\"state\":\"completed\"}\n")
-	select {
-	case <-user.done:
-	case <-time.After(time.Second):
-		t.Fatal("user result not delivered")
-	}
-	_ = w.Close()
-	<-done
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.turns) != 0 {
-		t.Fatalf("turn queue stuck: %d", len(p.turns))
 	}
 }
 
-func TestMessageStartMarksSpontaneousTurnButDeltasDoNot(t *testing.T) {
+func queuedTurns(p *process) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.turns)
+}
+
+// A foreign started frame pins the process and keeps its output and result
+// away from a user turn queued behind it.
+func TestForeignTurnIsTrackedAndDoesNotStealNextResult(t *testing.T) {
 	m := New("", "", "", nil, 2, nil, nil)
 	p := &process{id: "s", lastUsed: time.Now()}
 	m.processes["s"] = p
 	r, w := io.Pipe()
 	done := make(chan struct{})
 	go func() { m.readLoop(p, r); close(done) }()
-	_, _ = io.WriteString(w, `{"type":"stream_event","event":{"type":"message_start"}}`+"\n")
-	deadline := time.Now().Add(time.Second)
-	for {
-		p.mu.Lock()
-		n := len(p.turns)
-		p.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("message_start did not mark a spontaneous turn")
-		}
-		time.Sleep(time.Millisecond)
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"foreign","state":"started"}`+"\n")
+	waitTurns(t, p, 1)
+	p.mu.Lock()
+	head := p.turns[0]
+	p.mu.Unlock()
+	if !head.foreign || !head.started || head.uuid != "foreign" {
+		t.Fatalf("foreign entry = %+v", head)
+	}
+	if live := m.LiveSessions(); len(live) != 1 || !live[0].Busy {
+		t.Fatalf("live = %+v, want busy", live)
 	}
 	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "user-1"}
 	p.mu.Lock()
-	if p.turns[0] != nil {
-		p.mu.Unlock()
-		t.Fatal("spontaneous marker is not nil")
-	}
 	p.turns = append(p.turns, user)
 	p.mu.Unlock()
-	// The spontaneous turn's deltas must not leak into the queued user turn.
-	_, _ = io.WriteString(w, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"spontaneous"}}}`+"\n")
-	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"foreign","state":"completed"}`+"\n")
+	_, _ = io.WriteString(w, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"foreign"}}}`+"\n"+
+		`{"type":"result","subtype":"success"}`+"\n"+
+		`{"type":"command_lifecycle","command_uuid":"foreign","state":"completed"}`+"\n"+
+		`{"type":"rate_limit_event"}`+"\n")
 	select {
 	case <-user.done:
-		t.Fatal("spontaneous result was delivered to user turn")
+		t.Fatal("foreign result was delivered to the user turn")
 	case d := <-user.deltas:
-		t.Fatalf("spontaneous delta leaked to user turn: %+v", d)
+		t.Fatalf("foreign delta leaked to the user turn: %+v", d)
 	case <-time.After(20 * time.Millisecond):
 	}
+	waitTurns(t, p, 1)
 	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"user-1","state":"completed"}`+"\n")
 	select {
 	case <-user.done:
@@ -449,6 +419,29 @@ func TestMessageStartMarksSpontaneousTurnButDeltasDoNot(t *testing.T) {
 	}
 	_ = w.Close()
 	<-done
+	if n := queuedTurns(p); n != 0 {
+		t.Fatalf("turn queue stuck: %d", n)
+	}
+}
+
+// A background subagent's tail after its parent turn has no started frame
+// and must not pin the process.
+func TestOutputWithoutATurnIsIgnored(t *testing.T) {
+	m := New("", "", "", nil, 2, nil, nil)
+	p := &process{id: "s", lastUsed: time.Now()}
+	r, w := io.Pipe()
+	done := make(chan struct{})
+	go func() { m.readLoop(p, r); close(done) }()
+	_, _ = io.WriteString(w, `{"type":"stream_event","event":{"type":"message_start"}}`+"\n"+
+		`{"type":"assistant","message":{"model":"claude-opus-4-7"},"parent_tool_use_id":"toolu_1"}`+"\n"+
+		`{"type":"user"}`+"\n"+
+		`{"type":"result","subtype":"success"}`+"\n"+
+		`{"type":"command_lifecycle","command_uuid":"never-started","state":"completed"}`+"\n")
+	_ = w.Close()
+	<-done
+	if n := queuedTurns(p); n != 0 {
+		t.Fatalf("turn queue = %d, want none", n)
+	}
 }
 
 func TestInitAdvertisesSlashCommands(t *testing.T) {
@@ -603,7 +596,7 @@ func TestLateResultDoesNotContaminateUnstartedNextTurn(t *testing.T) {
 
 func TestMaxLiveDoesNotGrowWhenAllProcessesBusy(t *testing.T) {
 	m := New("missing", "", "", nil, 1, nil, nil)
-	m.processes["busy"] = &process{id: "busy", turns: []*turnRequest{nil}}
+	m.processes["busy"] = &process{id: "busy", turns: []*turnRequest{{uuid: "cron", foreign: true}}}
 	if _, _, err := m.ensureProcess(context.Background(), "new", "/tmp", "", "", nil, true, false); err == nil {
 		t.Fatal("expected max-live busy error")
 	}
@@ -632,5 +625,196 @@ func TestMaxLiveDoesNotEvictLeasedProcess(t *testing.T) {
 	releaseProcess(p)
 	if p.leases != 0 {
 		t.Fatalf("leases after release = %d, want 0", p.leases)
+	}
+}
+
+func TestRefusedAndDiscardedAreTerminal(t *testing.T) {
+	for _, state := range []string{"refused", "discarded"} {
+		m := New("", "", "", nil, 2, nil, nil)
+		req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "u1"}
+		p := &process{id: "s", lastUsed: time.Now(), turns: []*turnRequest{req}}
+		r, w := io.Pipe()
+		done := make(chan struct{})
+		go func() { m.readLoop(p, r); close(done) }()
+		_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"u1","state":"`+state+`"}`+"\n")
+		select {
+		case got := <-req.done:
+			if !got.IsError || got.Subtype != state {
+				t.Fatalf("%s result = %+v", state, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not end the turn", state)
+		}
+		_ = w.Close()
+		<-done
+		if n := queuedTurns(p); n != 0 {
+			t.Fatalf("turn queue stuck after %s: %d", state, n)
+		}
+	}
+}
+
+func setInterruptGrace(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := interruptGrace
+	interruptGrace = d
+	t.Cleanup(func() { interruptGrace = old })
+}
+
+// drainedProcess discards stdin so Interrupt's control request does not block.
+func drainedProcess(turns ...*turnRequest) *process {
+	pr, pw := io.Pipe()
+	go func() { _, _ = io.Copy(io.Discard, pr) }()
+	return &process{id: "s", in: pw, lastUsed: time.Now(), turns: turns, logger: slog.Default()}
+}
+
+func TestInterruptGraceCancelsUnansweredTurn(t *testing.T) {
+	setInterruptGrace(t, 20*time.Millisecond)
+	m := New("", "", "", nil, 2, nil, nil)
+	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "u1", started: true}
+	p := drainedProcess(req)
+	m.processes["s"] = p
+	if err := m.Interrupt("s"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-req.done:
+		if !got.IsError || got.Subtype != "cancelled" {
+			t.Fatalf("result = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("interrupt without a lifecycle answer never ended the turn")
+	}
+	if n := queuedTurns(p); n != 0 {
+		t.Fatalf("turn queue stuck: %d", n)
+	}
+}
+
+func TestInterruptGraceYieldsToLifecycleAnswer(t *testing.T) {
+	setInterruptGrace(t, 30*time.Millisecond)
+	m := New("", "", "", nil, 2, nil, nil)
+	req := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "u1", started: true}
+	p := drainedProcess(req)
+	m.processes["s"] = p
+	r, w := io.Pipe()
+	done := make(chan struct{})
+	go func() { m.readLoop(p, r); close(done) }()
+	if err := m.Interrupt("s"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"u1","state":"cancelled"}`+"\n")
+	if got := <-req.done; got.Subtype != "cancelled" {
+		t.Fatalf("result = %+v", got)
+	}
+	// A second finish would close req.done twice and panic; wait the window out.
+	time.Sleep(80 * time.Millisecond)
+	if n := queuedTurns(p); n != 0 {
+		t.Fatalf("turn queue = %d", n)
+	}
+	_ = w.Close()
+	<-done
+}
+
+func writeFrames(t *testing.T, m *Manager, p *process, frames ...string) {
+	t.Helper()
+	m.readLoop(p, strings.NewReader(strings.Join(frames, "\n")+"\n"))
+}
+
+func TestBackgroundAgentPinsProcessUntilItSettles(t *testing.T) {
+	m := New("missing", "", "", nil, 1, nil, nil)
+	p := &process{id: "s", lastUsed: time.Now()}
+	m.processes["s"] = p
+	writeFrames(t, m, p,
+		`{"type":"system","subtype":"task_started","task_id":"t1","task_type":"local_agent","description":"explore"}`,
+		`{"type":"system","subtype":"task_started","task_id":"sh1","task_type":"local_bash","description":"tail -f"}`)
+	if live := m.LiveSessions(); len(live) != 1 || !live[0].Busy {
+		t.Fatalf("live = %+v, want busy while the agent runs", live)
+	}
+	if _, _, err := m.ensureProcess(context.Background(), "new", "/tmp", "", "", nil, true, false); err == nil || !strings.Contains(err.Error(), "all busy") {
+		t.Fatalf("ensure alongside a running agent = %v, want all busy", err)
+	}
+	writeFrames(t, m, p, `{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","summary":"done"}`)
+	if live := m.LiveSessions(); live[0].Busy {
+		t.Fatal("still busy after the agent's notification; the shell task must not count")
+	}
+}
+
+func TestTaskUpdatedTerminalStatusReleasesProcess(t *testing.T) {
+	m := New("", "", "", nil, 1, nil, nil)
+	p := &process{id: "s", lastUsed: time.Now()}
+	writeFrames(t, m, p,
+		`{"type":"system","subtype":"task_started","task_id":"t1","task_type":"local_workflow","description":"w"}`,
+		`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"running"}}`)
+	p.mu.Lock()
+	busy := p.busy()
+	p.mu.Unlock()
+	if !busy {
+		t.Fatal("a running patch released the task")
+	}
+	writeFrames(t, m, p, `{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"killed"}}`)
+	p.mu.Lock()
+	busy = p.busy()
+	p.mu.Unlock()
+	if busy {
+		t.Fatal("terminal patch did not release the task")
+	}
+}
+
+// Send can queue a request before the foreign started frame is read; the
+// foreign turn is the one running and must go ahead of it.
+func TestForeignStartedReadAfterSendGoesAheadOfUnstartedRequest(t *testing.T) {
+	m := New("", "", "", nil, 2, nil, nil)
+	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 4), uuid: "user-1"}
+	p := &process{id: "s", lastUsed: time.Now(), turns: []*turnRequest{user}}
+	r, w := io.Pipe()
+	done := make(chan struct{})
+	go func() { m.readLoop(p, r); close(done) }()
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"foreign","state":"started"}`+"\n")
+	waitTurns(t, p, 2)
+	p.mu.Lock()
+	order := []bool{p.turns[0].foreign, p.turns[1].foreign}
+	p.mu.Unlock()
+	if !order[0] || order[1] {
+		t.Fatalf("queue order foreign=%v, want the foreign turn first", order)
+	}
+	_, _ = io.WriteString(w, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"foreign"}}}`+"\n"+
+		`{"type":"assistant","message":{"model":"foreign-model"}}`+"\n"+
+		`{"type":"result","subtype":"success"}`+"\n"+
+		`{"type":"command_lifecycle","command_uuid":"foreign","state":"completed"}`+"\n")
+	waitTurns(t, p, 1)
+	select {
+	case d := <-user.deltas:
+		t.Fatalf("foreign delta reached the queued user turn: %+v", d)
+	default:
+	}
+	_, _ = io.WriteString(w, `{"type":"command_lifecycle","command_uuid":"user-1","state":"started"}`+"\n"+
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"mine"}}}`+"\n"+
+		`{"type":"assistant","message":{"model":"my-model"}}`+"\n"+
+		`{"type":"command_lifecycle","command_uuid":"user-1","state":"completed"}`+"\n")
+	got := <-user.done
+	if got.Model != "my-model" {
+		t.Fatalf("user result model = %q, want the user turn's own model", got.Model)
+	}
+	if d := <-user.deltas; d.Text != "mine" {
+		t.Fatalf("user delta = %+v", d)
+	}
+	_ = w.Close()
+	<-done
+}
+
+// started for a foreign turn while a user turn is mid-flight means Claude
+// folded it into that turn: the running user turn keeps the head.
+func TestForeignStartedDuringRunningTurnStaysBehindIt(t *testing.T) {
+	m := New("", "", "", nil, 2, nil, nil)
+	running := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 4), uuid: "u1", started: true}
+	queued := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 4), uuid: "u2"}
+	p := &process{id: "s", lastUsed: time.Now(), turns: []*turnRequest{running, queued}}
+	writeFrames(t, m, p,
+		`{"type":"command_lifecycle","command_uuid":"foreign","state":"started"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"still u1"}}}`)
+	if got := []string{p.turns[0].uuid, p.turns[1].uuid, p.turns[2].uuid}; got[0] != "u1" || got[1] != "foreign" || got[2] != "u2" {
+		t.Fatalf("queue order = %v, want u1, foreign, u2", got)
+	}
+	if d := <-running.deltas; d.Text != "still u1" {
+		t.Fatalf("running turn delta = %+v", d)
 	}
 }
