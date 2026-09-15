@@ -720,35 +720,46 @@ td.id { color: var(--text-disabled); }
   color: var(--text-faint);
   font-size: var(--font-base);
 }
-.tool-image, .markdown-image { display: block; margin: 0.5rem 0; }
+.tool-image, .markdown-image { --img-cap: 480px; display: block; margin: 0.5rem 0; }
 .tool-image a, .markdown-image a { display: inline-block; line-height: 0; text-decoration: none; }
 .tool-image img, .markdown-image img {
   max-width: 100%;
-  max-height: 480px;
+  max-height: var(--img-cap);
   width: auto;
   height: auto;
   border-radius: var(--radius);
   cursor: zoom-in;
 }
+/* Known dims: the <a> gets the fitted width and the img's width/height attrs
+ * turn it into a height, so the box exists before load. max-height would only
+ * distort a definite width. */
+.tool-image a.sized { width: min(var(--w) * 1px, 100%, var(--img-cap) * var(--w) / var(--h)); }
+.tool-image a.sized img { width: 100%; max-height: none; }
 
-/* Full-size image overlay (click an inline image). Click anywhere or Esc to close. */
+/* Full-size image overlay: a modal <dialog>. Click anywhere or Esc to close. */
 #img-lightbox {
-  display: none;
   position: fixed;
   inset: 0;
-  z-index: 1000;
-  background: rgba(0, 0, 0, 0.85);
-  align-items: center;
-  justify-content: center;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  max-width: none;
+  max-height: none;
+  margin: 0;
   padding: 2vh;
+  border: 0;
+  outline: none; /* showModal() focuses the dialog itself */
+  background: rgba(0, 0, 0, 0.85);
+  overflow: auto;
+  overscroll-behavior: contain;
   cursor: zoom-out;
 }
-#img-lightbox.open { display: flex; }
-#img-lightbox img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
+/* Scoped to [open]: an unconditional display would beat the UA's dialog:not([open]). */
+#img-lightbox[open] { display: flex; align-items: flex-start; justify-content: center; }
+/* margin: auto centers while it fits and collapses to 0 on overflow, so tall images scroll from the top. */
+#img-lightbox img { display: block; margin: auto; max-width: 100%; max-height: 100%; }
+/* Long captures: fit the width and scroll instead of shrinking to fit the height. */
+#img-lightbox.tall img { max-height: none; }
 .content h1, .content h2, .content h3, .content h4, .content h5, .content h6 {
   margin: 0.6rem 0 0.3rem;
   font-weight: 600;

@@ -154,12 +154,13 @@ export function renderToolPart(p) {
     const src = '/api/sessions/' + encodeURIComponent(currentDetailId) +
       '/image?path=' + encodeURIComponent(target);
     const fname = target.split('/').pop() || 'image';
-    // width/height reserve layout space so the image doesn't reflow on load.
+    // Known dims let a.sized reserve the box before load.
     const dims = parseImageDims(p.content);
     const dimAttrs = dims ? ' width="' + dims.w + '" height="' + dims.h + '"' : '';
+    const sized = dims ? ' class="sized" style="--w:' + dims.w + ';--h:' + dims.h + '"' : '';
     // <a> opens the full-size image (inline view is capped via .tool-image CSS).
     return '<div class="tool-image">' +
-      '<a href="' + esc(src) + '" target="_blank" rel="noopener">' +
+      '<a' + sized + ' href="' + esc(src) + '" target="_blank" rel="noopener">' +
       '<img loading="lazy" decoding="async" alt="' + esc(fname) + '" src="' + esc(src) + '"' + dimAttrs + imgFallback + '>' +
       '</a></div>';
   }
@@ -311,19 +312,28 @@ export function backendMark(backend) {
 }
 
 // ---------- inline image lightbox ----------
-// Click an inline image to view it full-size in an overlay. The <a href> stays
-// as the fallback: ctrl/cmd/shift-click (and no-JS) opens it in a new tab.
-function openLightbox(src) {
+// Click an inline image to view it full-size in a modal <dialog>. The <a href>
+// stays as the fallback: ctrl/cmd/shift-click (and no-JS) opens it in a new tab.
+function openLightbox(link) {
   let ov = document.getElementById('img-lightbox');
   if (!ov) {
-    ov = document.createElement('div');
+    ov = document.createElement('dialog');
     ov.id = 'img-lightbox';
     ov.innerHTML = '<img alt="">';
-    ov.addEventListener('click', () => ov.classList.remove('open'));
+    ov.addEventListener('click', () => ov.close());
     document.body.appendChild(ov);
   }
-  ov.querySelector('img').src = src;
-  ov.classList.add('open');
+  const big = ov.querySelector('img');
+  const small = link.querySelector('img');
+  big.alt = small ? small.alt : '';
+  big.src = link.getAttribute('href');
+  // Long captures (h > 3w) would contain to a sliver; .tall fits the width and
+  // scrolls. The inline image's natural size is 0 until loaded, so settle after decode.
+  const tall = (img) => img.naturalHeight > img.naturalWidth * 3;
+  ov.classList.toggle('tall', !!small && tall(small));
+  big.decode().catch(() => {}).then(() => ov.classList.toggle('tall', tall(big)));
+  if (!ov.open) ov.showModal();
+  ov.scrollTop = 0; // Chrome keeps the scroll offset across close()/showModal()
 }
 
 document.addEventListener('click', (e) => {
@@ -331,11 +341,5 @@ document.addEventListener('click', (e) => {
   if (!a) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey) return; // let the new-tab default win
   e.preventDefault();
-  openLightbox(a.getAttribute('href'));
-});
-
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  const ov = document.getElementById('img-lightbox');
-  if (ov) ov.classList.remove('open');
+  openLightbox(a);
 });
