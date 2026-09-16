@@ -55,7 +55,8 @@ window.marked.use({
           '/image?path=' + encodeURIComponent(href);
         return '<span class="markdown-image"><a href="' + esc(src) +
           '" target="_blank" rel="noopener"><img loading="lazy" decoding="async" alt="' +
-          esc(alt) + '" src="' + esc(src) + '"' + title + imgFallback + '></a></span>';
+          esc(alt) + '" src="' + esc(src) + '" data-path="' + esc(href) + '"' +
+          title + imgFallback + '></a></span>';
       }
       return '<img src="' + esc(href) + '" alt="' + esc(alt) + '"' + title + imgFallback + '>';
     },
@@ -114,7 +115,7 @@ function onImgError(img) {
   img.dataset.failed = '1';
   const el = document.createElement('span');
   el.className = 'img-failed';
-  el.textContent = (img.alt || 'image') + ' — failed to load';
+  el.textContent = (img.dataset.path || img.alt || 'image') + ' — failed to load';
   const wrapper = img.closest('.markdown-image, .tool-image');
   const link = wrapper && img.closest('a');
   if (link) link.replaceWith(el);

@@ -444,6 +444,7 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  position: relative;  /* anchor for the drag-a-file-here overlay */
   /* No padding-block: chat-focus / chat-area sit flush against the
    * header. chat-area's first message has its own internal padding so
    * the transition isn't cramped. */
@@ -469,6 +470,25 @@ body {
   padding-top: 0.5rem;
   padding-bottom: 1rem;
   flex-shrink: 0;
+}
+/* Drag-a-file-here overlay. On the non-scrolling <main> so it doesn't drift
+   with the transcript; pointer-events:none keeps the drop reaching underneath. */
+.main-wrap > main.dragover::after {
+  content: "Drop to upload";
+  position: absolute;
+  inset: 0.75rem;
+  z-index: 30;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 1.5rem;
+  font-weight: 600;
+  pointer-events: none;
 }
 .sidebar-toggle {
   background: none;
@@ -714,6 +734,8 @@ td.id { color: var(--text-disabled); }
 /* Tool and local-Markdown images: fit the column and open full size on click. */
 .img-failed {
   display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;  /* a long attachment path is one unbroken token */
   padding: 0.5rem 0.75rem;
   border: 1px dashed var(--border);
   border-radius: var(--radius-lg);
@@ -1240,6 +1262,7 @@ pre.raw-markdown {
 @media (prefers-reduced-motion: reduce) {
   /* No motion: keep running at full brightness so it still outranks dim live. */
   .running-dot.executing { animation: none; opacity: 1; }
+  .upload-btn.uploading .t-icon { animation: none; }
 }
 
 .pinned-label {
@@ -1283,6 +1306,20 @@ pre.raw-markdown {
 .auto-approve-toggle:disabled,
 .term-toggle:disabled,
 .upload-btn:disabled { opacity: 0.6; cursor: progress; }
+.upload-btn.uploading { opacity: 1; }
+.upload-btn.uploading .t-icon {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 0.95em;
+  height: 0.95em;
+  color: transparent;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  vertical-align: -0.15em;
+  animation: upload-spin 4s linear infinite;
+}
+@keyframes upload-spin { to { transform: rotate(1turn); } }
 .upload-btn { color: var(--text); }
 .auto-approve-toggle[aria-pressed="true"] { color: var(--warning-text); }
 /* Accent while the shell is open, including background state. */

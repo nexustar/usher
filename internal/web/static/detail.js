@@ -187,26 +187,40 @@ function wireCommandPreview(promptEl, sessionID) {
 // fileRef is how an uploaded file enters the message: images as Markdown so
 // the sent turn shows the picture, anything else as a plain marker. The
 // extensions are the ones /image serves; a path with a space needs the <…>
-// destination form.
+// destination form. Alt is left empty: it would only repeat the path.
 function fileRef(path) {
   if (!/\.(?:png|jpe?g|gif|webp)$/i.test(path)) return '[file: ' + path + ']';
-  const alt = path.split('/').pop().replace(/[[\]]/g, '');
   const dest = /\s/.test(path) ? '<' + path + '>' : path;
-  return '![' + alt + '](' + dest + ')';
+  return '![](' + dest + ')';
 }
 
-// wireUpload connects the composer's upload button to url, then drops the
-// stored path into the message box for the agent to read. notify(text, role)
-// reports progress the way the calling view can — 'system' or 'error'.
+// installDropGuard stops a file dropped outside a wired drop zone from
+// navigating the browser away from the SPA. Bound once per page.
+let dropGuardInstalled = false;
+function installDropGuard() {
+  if (dropGuardInstalled) return;
+  dropGuardInstalled = true;
+  const swallow = (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault();
+  };
+  window.addEventListener('dragover', swallow);
+  window.addEventListener('drop', swallow);
+}
+
+// wireUpload wires url to the upload button, a file drop, and an image paste,
+// appending each stored path to the message box. notify(text, role) reports
+// progress the calling view's way — 'system' or 'error'.
 function wireUpload(url, promptEl, notify) {
   const btn = document.getElementById('upload-btn');
   const input = document.getElementById('upload-input');
   if (!btn || !input) return;
-  btn.addEventListener('click', () => input.click());
-  input.addEventListener('change', async () => {
-    const file = input.files[0];
-    if (!file) return;
-    btn.disabled = true;
+  // Listen on #chat-scroll (rebuilt each mount, so handlers don't accumulate);
+  // the overlay class goes on its non-scrolling parent instead.
+  const scroll = promptEl.closest('#chat-scroll');
+  const pane = scroll?.parentElement;
+  installDropGuard();
+
+  const uploadFile = async (file) => {
     const form = new FormData();
     form.append('file', file);
     try {
@@ -224,10 +238,56 @@ function wireUpload(url, promptEl, notify) {
       notify('uploaded ' + file.name, 'system');
     } catch (e) {
       notify('upload failed: ' + String(e), 'error');
-    } finally {
-      btn.disabled = false;
-      input.value = '';
     }
+  };
+  // Serialize sources onto one chain so overlapping uploads don't interleave
+  // their appends. Materialize the FileList synchronously — a live
+  // dataTransfer/input is empty by the time the chain runs.
+  let chain = Promise.resolve();
+  const enqueue = (fileList) => {
+    const files = [...fileList];
+    if (!files.length) return;
+    chain = chain.then(async () => {
+      btn.disabled = true;
+      btn.classList.add('uploading');
+      try {
+        for (const file of files) await uploadFile(file);
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('uploading');
+      }
+    });
+  };
+
+  btn.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    enqueue(input.files);
+    input.value = '';
+  });
+
+  if (scroll && pane) {
+    scroll.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      pane.classList.add('dragover');
+    });
+    // dragleave fires when crossing into a child too; clear only on true leave.
+    scroll.addEventListener('dragleave', (e) => {
+      if (!scroll.contains(e.relatedTarget)) pane.classList.remove('dragover');
+    });
+    scroll.addEventListener('drop', (e) => {
+      if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+      e.preventDefault();
+      pane.classList.remove('dragover');
+      enqueue(e.dataTransfer.files);
+    });
+  }
+
+  promptEl.addEventListener('paste', (e) => {
+    if (!e.clipboardData || !e.clipboardData.files.length) return;
+    e.preventDefault();
+    enqueue(e.clipboardData.files);
   });
 }
 
@@ -281,7 +341,7 @@ export async function showNewSession(opts = {}) {
               <button id="upload-btn" class="upload-btn" type="button" title="upload file">
                 <span class="t-icon">+</span><span class="t-full">upload</span>
               </button>
-              <input id="upload-input" type="file" hidden>
+              <input id="upload-input" type="file" hidden multiple>
               <button id="auto-approve-toggle" class="auto-approve-toggle" type="button"
                 aria-pressed="false"
                 title="ask: confirm each tool call · auto: run them automatically">
@@ -649,7 +709,7 @@ export async function showDetail(id) {
               <button id="upload-btn" class="upload-btn" type="button" title="upload file">
                 <span class="t-icon">+</span><span class="t-full">upload</span>
               </button>
-              <input id="upload-input" type="file" hidden>
+              <input id="upload-input" type="file" hidden multiple>
               <button id="auto-approve-toggle" class="auto-approve-toggle" type="button"
                 aria-pressed="${sess.auto_approve ? 'true' : 'false'}"
                 title="ask: confirm each tool call · auto: run them automatically">
