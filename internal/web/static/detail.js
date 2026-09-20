@@ -1542,7 +1542,8 @@ function appendLivePart(d) {
     for (let i = lt.parts.length - 1; i >= 0; i--) {
       const prev = lt.parts[i];
       if (prev.type === 'tool' && !prev.content &&
-          prev.toolName === p.toolName && prev.toolTarget === p.toolTarget) {
+          prev.toolName === p.toolName && prev.toolTarget === p.toolTarget &&
+          (prev.toolInput || '') === (p.toolInput || '')) {
         enrichIndex = i;
         break;
       }
@@ -1927,14 +1928,16 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-// Copy button on tool block headers: copies the .tool-target text (path,
-// command, or pattern) verbatim. Document-level delegate for the same reason
-// as .turn-fork: transcript nodes get re-rendered.
+// Copy button on tool block headers: copies the full input (command or JSON
+// arguments) when the card carries one, else the title (path, pattern, or
+// one-line command) verbatim. Document-level delegate for the same reason as
+// .turn-fork: transcript nodes get re-rendered.
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.tool-copy');
   if (!btn) return;
   e.preventDefault(); // a click inside <summary> would otherwise toggle it
-  const t = btn.closest('summary')?.querySelector('.tool-target');
+  const card = btn.closest('.tool-details');
+  const t = card?.querySelector('.tool-input') || card?.querySelector('summary .tool-target');
   if (!t) return;
   copyText(t.textContent).then((ok) => {
     if (!ok) return;

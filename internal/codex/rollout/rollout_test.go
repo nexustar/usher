@@ -1,8 +1,10 @@
 package rollout
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -688,6 +690,49 @@ func TestAssemblerMcpItemDoesNotDropShellWrapper(t *testing.T) {
 	_, part := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"ok"}]}}`))
 	if part == nil || part.ToolName != "Shell" {
 		t.Fatalf("shell wrapper after an MCP item must render: %+v", part)
+	}
+}
+
+// The card shows the script that ran, not codex's parsed_cmd summary, which
+// here would lose the `;` and the `| head` filter.
+func TestAssemblerCommandExecutionShowsScriptVerbatim(t *testing.T) {
+	item := func(script string) []byte {
+		cmd, _ := json.Marshal([]string{"/bin/bash", "-lc", script})
+		return []byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","command":` + string(cmd) +
+			`,"parsed_cmd":[{"type":"read","cmd":"sed -n 1,5p a.go","name":"a.go","path":"a.go"},{"type":"search","cmd":"rg -n TODO .","query":"TODO","path":"."}],"aggregated_output":"ok"}}}`)
+	}
+	oneLine := "sed -n 1,5p a.go; rg -n TODO . | head -5"
+	_, part := NewAssembler().Feed(item(oneLine))
+	if part == nil || part.ToolTarget != oneLine || part.ToolInput != "" {
+		t.Fatalf("one-line: %+v, want the script as title and no separate input", part)
+	}
+	heredoc := "cat > a.py <<'PY'\nprint(1)\nPY"
+	_, part = NewAssembler().Feed(item(heredoc))
+	if part == nil || part.ToolTarget != "cat > a.py <<'PY'" || part.ToolInput != heredoc {
+		t.Fatalf("multi-line: %+v, want first line as title and the script as input", part)
+	}
+	if part.Content != "```\nok\n```" {
+		t.Fatalf("content = %q, want only the output", part.Content)
+	}
+}
+
+func TestAssemblerCommandExecutionErrorFlag(t *testing.T) {
+	item := func(status string, exit int) []byte {
+		return []byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1",` +
+			`"command":["/bin/bash","-lc","make"],"status":"` + status + `","exit_code":` + strconv.Itoa(exit) + `,"aggregated_output":"x"}}}`)
+	}
+	if _, part := NewAssembler().Feed(item("failed", 2)); part == nil || !part.ToolError {
+		t.Fatalf("failed command not flagged: %+v", part)
+	}
+	a := NewAssembler()
+	_, part := a.Feed(item("completed", 0))
+	if part == nil || part.ToolError {
+		t.Fatalf("successful command flagged: %+v", part)
+	}
+	// The flag lands on the turn's own part, not only on the returned copy.
+	a.Feed(item("failed", 1))
+	if turn := a.Flush(); turn == nil || len(turn.Parts) != 2 || turn.Parts[0].ToolError || !turn.Parts[1].ToolError {
+		t.Fatalf("canonical turn = %+v", turn)
 	}
 }
 

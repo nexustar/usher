@@ -4,7 +4,11 @@
 // backtick-escaping or the size caps only landed in one of three places.
 package textutil
 
-import "strings"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
 
 // Truncate cuts s to n runes, marking the cut with an ellipsis.
 func Truncate(s string, n int) string {
@@ -48,6 +52,23 @@ func Fence(lang, body string) string {
 	}
 	ticks := strings.Repeat("`", max(3, longest+1))
 	return ticks + lang + "\n" + body + "\n" + ticks
+}
+
+// IndentJSON renders v as indented JSON without HTML escaping, or "" when v
+// is empty (nil, null, {}) or not encodable.
+func IndentJSON(v any) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(buf.String())
+	if s == "null" || s == "{}" {
+		return ""
+	}
+	return s
 }
 
 // ClampBody caps a tool body so one huge file or output cannot bloat the

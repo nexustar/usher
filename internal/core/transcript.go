@@ -1,6 +1,11 @@
 package core
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"github.com/nexustar/usher/internal/textutil"
+)
 
 // SessionMeta is the backend-neutral descriptor discovery needs to list a
 // persisted agent session without loading its full transcript.
@@ -20,14 +25,44 @@ type SessionMeta struct {
 
 // TurnPart is one segment within a grouped assistant turn.
 type TurnPart struct {
-	Type       string `json:"type"`
-	Content    string `json:"content"`
-	ToolName   string `json:"toolName,omitempty"`
+	Type     string `json:"type"`
+	Content  string `json:"content"`
+	ToolName string `json:"toolName,omitempty"`
+	// ToolTarget is the card title; for show_image, the path clients load.
 	ToolTarget string `json:"toolTarget,omitempty"`
+	// ToolInput is the full command or JSON arguments, empty when the title
+	// already shows it all. Content holds only the output.
+	ToolInput string `json:"toolInput,omitempty"`
+	// ToolError marks a call its backend reported as failed.
+	ToolError bool `json:"toolError,omitempty"`
 
 	// ToolUseID is parser bookkeeping used to join metadata follow-ups to the
 	// tool part they enrich. It is never part of the public transcript shape.
 	ToolUseID string `json:"-"`
+}
+
+// ToolTitle is a shell tool's card title: target (a description) when set,
+// else the first line of command.
+func ToolTitle(target, command string) string {
+	if target == "" {
+		return textutil.FirstLine(command)
+	}
+	return target
+}
+
+// NewToolPart builds a tool part from its title, full input and rendered
+// output. The input is dropped when the title already shows all of it.
+func NewToolPart(name, title, input, content string) TurnPart {
+	if strings.TrimSpace(input) == title {
+		input = ""
+	}
+	return TurnPart{
+		Type:       "tool",
+		Content:    content,
+		ToolName:   name,
+		ToolTarget: title,
+		ToolInput:  textutil.ClampBody(input),
+	}
 }
 
 // Turn is a grouped, display-ready timeline entry shared by every backend.

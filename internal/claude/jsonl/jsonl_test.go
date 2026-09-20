@@ -338,6 +338,78 @@ func TestReadTurns_RichToolResults(t *testing.T) {
 	}
 }
 
+func TestToolTarget_DescriptionBeforeCommand(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","message":{"role":"user","content":"run tests"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"cd /tmp/project && go test ./...","description":"Run project tests"}}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"ok"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turns, _, err := ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := turns[1]
+	if at.Parts[0].ToolTarget != "Run project tests" {
+		t.Errorf("ToolTarget = %q, want description not command first-line", at.Parts[0].ToolTarget)
+	}
+	if at.Parts[0].ToolInput != "cd /tmp/project && go test ./..." {
+		t.Errorf("ToolInput = %q, want the full command", at.Parts[0].ToolInput)
+	}
+	if at.Parts[0].Content != "ok" {
+		t.Errorf("Content = %q, want only the tool output", at.Parts[0].Content)
+	}
+}
+
+func TestToolResult_EmptyOutputKeepsCard(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","message":{"role":"user","content":"make a dir"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"mkdir -p out"}}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":""}]}}`,
+		// A result whose tool_use was never seen has nothing to show.
+		`{"type":"user","timestamp":"2026-04-26T10:00:03.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"gone","content":""}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turns, _, err := ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := turns[1].Parts
+	if len(parts) != 1 || parts[0].ToolName != "Bash" || parts[0].ToolTarget != "mkdir -p out" || parts[0].Content != "" {
+		t.Fatalf("parts = %+v, want one Bash card with empty content", parts)
+	}
+}
+
+func TestToolResult_ErrorFlag(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","message":{"role":"user","content":"go"}}`,
+		`{"type":"assistant","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"false"}},{"type":"tool_use","id":"b2","name":"Bash","input":{"command":"true"}}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b1","content":"Exit code 1","is_error":true}]}}`,
+		`{"type":"user","timestamp":"2026-04-26T10:00:03.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b2","content":"fine"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turns, _, err := ReadTurns(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := turns[1].Parts
+	if len(parts) != 2 || !parts[0].ToolError || parts[1].ToolError {
+		t.Fatalf("parts = %+v, want only the first flagged as failed", parts)
+	}
+}
+
 func TestRenderToolResult_FallbackUnknownShape(t *testing.T) {
 	// A tool with no special-cased toolUseResult shape falls back to the inline
 	// tool_result text.

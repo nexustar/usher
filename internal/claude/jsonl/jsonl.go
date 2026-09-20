@@ -245,7 +245,8 @@ func extractUserContent(msg json.RawMessage) string {
 
 type toolInfo struct {
 	name   string
-	target string
+	target string // card title
+	input  string // Bash: the full command; MCP: the indented JSON arguments
 }
 
 // IsTurnComplete reports Claude Code's persisted end-of-turn marker.
@@ -378,18 +379,14 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 	}
 
 	// user event carrying a tool_result: append as a "tool" part.
-	ti, tuID := matchToolInfo(ev.Message, a.toolMap)
+	ti, tuID, failed := matchToolInfo(ev.Message, a.toolMap)
 	content := renderToolResult(ev, ti.target)
-	if content == "" {
+	// A known tool that printed nothing (mkdir, git add) still gets its card.
+	if content == "" && ti.name == "" {
 		return nil, nil
 	}
-	p := core.TurnPart{
-		Type:       "tool",
-		Content:    content,
-		ToolName:   ti.name,
-		ToolTarget: ti.target,
-		ToolUseID:  tuID,
-	}
+	p := core.NewToolPart(ti.name, ti.target, ti.input, content)
+	p.ToolUseID, p.ToolError = tuID, failed
 	a.cur.Parts = append(a.cur.Parts, p)
 	return nil, &p
 }
@@ -481,36 +478,43 @@ func collectToolUses(msg json.RawMessage, dst map[string]toolInfo) {
 	}
 	for _, b := range blocks {
 		if b.Type == "tool_use" && b.ID != "" && b.Name != "" {
-			dst[b.ID] = toolInfo{
-				name:   b.Name,
-				target: toolTarget(b.Input),
+			ti := toolInfo{name: b.Name, target: toolTarget(b.Input)}
+			switch {
+			case b.Name == "Bash":
+				ti.input = inputString(b.Input, "command")
+				ti.target = core.ToolTitle(ti.target, ti.input)
+			case strings.HasPrefix(b.Name, "mcp__"):
+				ti.input = textutil.IndentJSON(b.Input)
 			}
+			dst[b.ID] = ti
 		}
 	}
 }
 
 // matchToolInfo looks up the tool name+target for the first tool_result block.
-// It also returns the tool_use_id for isMeta follow-up matching.
-func matchToolInfo(msg json.RawMessage, names map[string]toolInfo) (toolInfo, string) {
+// It also returns the tool_use_id for isMeta follow-up matching, and whether
+// Claude flagged the result as an error.
+func matchToolInfo(msg json.RawMessage, names map[string]toolInfo) (ti toolInfo, id string, failed bool) {
 	var m struct {
 		Content json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(msg, &m); err != nil {
-		return toolInfo{}, ""
+		return toolInfo{}, "", false
 	}
 	var blocks []struct {
 		Type      string `json:"type"`
 		ToolUseID string `json:"tool_use_id"`
+		IsError   bool   `json:"is_error"`
 	}
 	if err := json.Unmarshal(m.Content, &blocks); err != nil {
-		return toolInfo{}, ""
+		return toolInfo{}, "", false
 	}
 	for _, b := range blocks {
 		if b.Type == "tool_result" && b.ToolUseID != "" {
-			return names[b.ToolUseID], b.ToolUseID
+			return names[b.ToolUseID], b.ToolUseID, b.IsError
 		}
 	}
-	return toolInfo{}, ""
+	return toolInfo{}, "", false
 }
 
 // compactTaskNotification rewrites Claude Code's self-injected
@@ -793,14 +797,15 @@ func patchBody(hunks []patchHunk) string {
 	return b.String()
 }
 
-// toolTarget picks the most informative argument to show beside a tool name: a
-// file path, else a shell command (first line), else a search pattern.
+// toolTarget picks the most informative non-command argument to show beside a
+// tool name: a file path, a human description, or a search pattern. A Bash
+// command travels separately as the part's ToolInput.
 func toolTarget(input json.RawMessage) string {
 	if p := inputString(input, "file_path"); p != "" {
 		return p
 	}
-	if cmd := inputString(input, "command"); cmd != "" {
-		return textutil.FirstLine(cmd)
+	if d := inputString(input, "description"); d != "" {
+		return d
 	}
 	if pat := inputString(input, "pattern"); pat != "" {
 		return pat

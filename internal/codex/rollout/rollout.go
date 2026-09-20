@@ -302,7 +302,8 @@ type Assembler struct {
 
 type toolStash struct {
 	name        string
-	target      string
+	target      string // card title
+	input       string // shell: the full command; MCP: the indented JSON arguments
 	skip        bool
 	mcp         bool
 	itemsAtCall int // toolItems when the call was seen (paginated dedup)
@@ -457,14 +458,24 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 	}
 }
 
-func (a *Assembler) appendTool(ts time.Time, name, target, body string) *core.TurnPart {
+// appendTool appends a tool part: title and input as given, body fenced as the
+// tool's output. The returned part is the turn's own, so a caller may still
+// flag it.
+func (a *Assembler) appendTool(ts time.Time, name, title, input, body string) *core.TurnPart {
 	a.ensureTurn(ts)
-	tp := core.TurnPart{Type: "tool", ToolName: name, ToolTarget: target}
+	content := ""
 	if body != "" {
-		tp.Content = textutil.Fence("", textutil.ClampBody(body))
+		content = textutil.Fence("", textutil.ClampBody(body))
 	}
-	a.cur.Parts = append(a.cur.Parts, tp)
-	return &tp
+	a.cur.Parts = append(a.cur.Parts, core.NewToolPart(name, title, input, content))
+	return &a.cur.Parts[len(a.cur.Parts)-1]
+}
+
+// appendArgsTool appends an MCP/dynamic tool part, whose input is its arguments.
+func (a *Assembler) appendArgsTool(ts time.Time, name string, arguments map[string]json.RawMessage, texts []string, failed bool) *core.TurnPart {
+	part := a.appendTool(ts, name, toolTargetMap(arguments), textutil.IndentJSON(arguments), strings.Join(texts, "\n"))
+	part.ToolError = failed
+	return part
 }
 
 func (a *Assembler) patchApplyPart(l line) *core.TurnPart {
@@ -498,36 +509,26 @@ func (a *Assembler) patchApplyPart(l line) *core.TurnPart {
 	if len(body) == 0 && (!p.Success || p.Status != "") {
 		body = append(body, p.Status)
 	}
-	return a.appendTool(l.Timestamp, "Edit", strings.Join(paths, ", "), strings.Join(body, "\n"))
+	part := a.appendTool(l.Timestamp, "Edit", strings.Join(paths, ", "), "", strings.Join(body, "\n"))
+	// The legacy event carries success, the paginated item a status.
+	part.ToolError = p.Status == "failed" || p.Status == "declined" || (p.Status == "" && !p.Success)
+	return part
 }
 
 func (a *Assembler) execCommandPart(l line) *core.TurnPart {
 	var p struct {
-		Command   []string `json:"command"`
-		ParsedCmd []struct {
-			Cmd string `json:"cmd"`
-		} `json:"parsed_cmd"`
-		AggregatedOutput string `json:"aggregated_output"`
-		FormattedOutput  string `json:"formatted_output"`
-		Stdout           string `json:"stdout"`
-		Stderr           string `json:"stderr"`
+		Command          []string `json:"command"`
+		ExitCode         *int     `json:"exit_code"`
+		Status           string   `json:"status"`
+		AggregatedOutput string   `json:"aggregated_output"`
+		FormattedOutput  string   `json:"formatted_output"`
+		Stdout           string   `json:"stdout"`
+		Stderr           string   `json:"stderr"`
 	}
 	if json.Unmarshal(l.Payload, &p) != nil {
 		return nil
 	}
-	// parsed_cmd (present on the paginated CommandExecution item) carries the
-	// clean command; command is the /bin/bash -lc wrapper. Legacy events lack it
-	// and fall back to command.
-	var cmds []string
-	for _, c := range p.ParsedCmd {
-		if c.Cmd != "" {
-			cmds = append(cmds, c.Cmd)
-		}
-	}
-	target := strings.Join(cmds, " && ")
-	if target == "" {
-		target = strings.Join(p.Command, " ")
-	}
+	command := shellScript(p.Command)
 	body := p.AggregatedOutput
 	if body == "" {
 		body = p.FormattedOutput
@@ -535,7 +536,21 @@ func (a *Assembler) execCommandPart(l line) *core.TurnPart {
 	if body == "" {
 		body = strings.TrimSpace(p.Stdout + "\n" + p.Stderr)
 	}
-	return a.appendTool(l.Timestamp, "Shell", target, body)
+	part := a.appendTool(l.Timestamp, "Shell", core.ToolTitle("", command), command, body)
+	part.ToolError = p.Status == "failed" || p.Status == "declined" || (p.ExitCode != nil && *p.ExitCode != 0)
+	return part
+}
+
+// shellScript unwraps codex's `bash -lc <script>` argv. The item's parsed_cmd
+// is no substitute: it is a lossy summary that drops operators and filters.
+func shellScript(argv []string) string {
+	if len(argv) == 3 && (argv[1] == "-lc" || argv[1] == "-c") {
+		switch filepath.Base(argv[0]) {
+		case "bash", "zsh", "sh":
+			return argv[2]
+		}
+	}
+	return strings.Join(argv, " ")
 }
 
 func (a *Assembler) simpleEventToolPart(l line, name string) *core.TurnPart {
@@ -555,7 +570,7 @@ func (a *Assembler) simpleEventToolPart(l line, name string) *core.TurnPart {
 	if len(p.Action) > 0 && string(p.Action) != "null" {
 		body = string(p.Action)
 	}
-	return a.appendTool(l.Timestamp, name, target, body)
+	return a.appendTool(l.Timestamp, name, target, "", body)
 }
 
 func (a *Assembler) imageGenerationPart(l line) *core.TurnPart {
@@ -577,7 +592,7 @@ func (a *Assembler) imageGenerationPart(l line) *core.TurnPart {
 	if revised != "" {
 		body = strings.TrimSpace(body + "\n" + revised)
 	}
-	return a.appendTool(l.Timestamp, "ImageGeneration", firstNonEmpty(p.SavedPath, p.SavedPathCamel), body)
+	return a.appendTool(l.Timestamp, "ImageGeneration", firstNonEmpty(p.SavedPath, p.SavedPathCamel), "", body)
 }
 
 func firstNonEmpty(a, b string) string {
@@ -614,7 +629,7 @@ func (a *Assembler) dynamicToolPart(l line) *core.TurnPart {
 	if p.Error != "" {
 		body = append(body, p.Error)
 	}
-	return a.appendTool(l.Timestamp, name, toolTargetMap(p.Arguments), strings.Join(body, "\n"))
+	return a.appendArgsTool(l.Timestamp, name, p.Arguments, body, p.Error != "")
 }
 
 func (a *Assembler) mcpToolPart(l line) *core.TurnPart {
@@ -631,7 +646,9 @@ func (a *Assembler) mcpToolPart(l line) *core.TurnPart {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"content"`
+				IsError bool `json:"isError"`
 			} `json:"Ok"`
+			Err json.RawMessage `json:"Err"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(l.Payload, &p); err != nil || p.Invocation.Tool == "" {
@@ -640,11 +657,6 @@ func (a *Assembler) mcpToolPart(l line) *core.TurnPart {
 	if !a.markMCP(p.CallID) {
 		return nil
 	}
-	name := p.Invocation.Tool
-	if p.Invocation.Server != "" {
-		name = "mcp__" + p.Invocation.Server + "__" + name
-	}
-	target := toolTargetMap(p.Invocation.Arguments)
 	var texts []string
 	if p.Result.OK != nil {
 		for _, c := range p.Result.OK.Content {
@@ -653,13 +665,8 @@ func (a *Assembler) mcpToolPart(l line) *core.TurnPart {
 			}
 		}
 	}
-	a.ensureTurn(l.Timestamp)
-	tp := core.TurnPart{Type: "tool", ToolName: name, ToolTarget: target}
-	if len(texts) > 0 {
-		tp.Content = textutil.Fence("", textutil.ClampBody(strings.Join(texts, "\n")))
-	}
-	a.cur.Parts = append(a.cur.Parts, tp)
-	return &tp
+	failed := len(p.Result.Err) > 0 || (p.Result.OK != nil && p.Result.OK.IsError)
+	return a.appendArgsTool(l.Timestamp, mcpToolName(p.Invocation.Server, p.Invocation.Tool), p.Invocation.Arguments, texts, failed)
 }
 
 // feedItemCompleted projects a paginated item_completed TurnItem into turns.
@@ -765,11 +772,13 @@ func (a *Assembler) completedMCPToolPart(l line) *core.TurnPart {
 			Server    string                     `json:"server"`
 			Tool      string                     `json:"tool"`
 			Arguments map[string]json.RawMessage `json:"arguments"`
+			Status    string                     `json:"status"`
 			Result    *struct {
 				Content []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"content"`
+				IsError bool `json:"isError"`
 			} `json:"result"`
 			Error *struct {
 				Message string `json:"message"`
@@ -793,7 +802,8 @@ func (a *Assembler) completedMCPToolPart(l line) *core.TurnPart {
 	if p.Item.Error != nil && p.Item.Error.Message != "" {
 		texts = append(texts, p.Item.Error.Message)
 	}
-	return a.appendMCPPart(l.Timestamp, p.Item.Server, p.Item.Tool, p.Item.Arguments, texts)
+	failed := p.Item.Status == "failed" || p.Item.Error != nil || (p.Item.Result != nil && p.Item.Result.IsError)
+	return a.appendArgsTool(l.Timestamp, mcpToolName(p.Item.Server, p.Item.Tool), p.Item.Arguments, texts, failed)
 }
 
 func (a *Assembler) markMCP(callID string) bool {
@@ -807,18 +817,11 @@ func (a *Assembler) markMCP(callID string) bool {
 	return true
 }
 
-func (a *Assembler) appendMCPPart(ts time.Time, server, tool string, arguments map[string]json.RawMessage, texts []string) *core.TurnPart {
-	name := tool
-	if server != "" {
-		name = "mcp__" + server + "__" + tool
+func mcpToolName(server, tool string) string {
+	if server == "" {
+		return tool
 	}
-	a.ensureTurn(ts)
-	tp := core.TurnPart{Type: "tool", ToolName: name, ToolTarget: toolTargetMap(arguments)}
-	if len(texts) > 0 {
-		tp.Content = textutil.Fence("", textutil.ClampBody(strings.Join(texts, "\n")))
-	}
-	a.cur.Parts = append(a.cur.Parts, tp)
-	return &tp
+	return "mcp__" + server + "__" + tool
 }
 
 // feedResponseItem handles the model-item stream. Only tool calls/outputs are
@@ -845,16 +848,22 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 		if p.Namespace != "" {
 			name = p.Namespace + "__" + p.Name
 		}
-		a.pending[p.CallID] = toolStash{
-			name:   name,
-			target: toolTarget(p.Arguments),
-			mcp:    isMCP,
+		stash := toolStash{name: name, mcp: isMCP}
+		args := parseArgs(p.Arguments)
+		if isMCP {
+			stash.target, stash.input = toolTargetMap(args), textutil.IndentJSON(args)
+		} else {
+			target, command := splitToolTarget(args)
+			stash.target, stash.input = core.ToolTitle(target, command), command
 		}
+		a.pending[p.CallID] = stash
 		return nil
 	case "custom_tool_call":
+		command := customExecCommand(p.Input)
 		a.pending[p.CallID] = toolStash{
 			name:        prettyToolName(p.Name),
-			target:      customExecTarget(p.Input),
+			target:      core.ToolTitle("", command),
+			input:       command,
 			skip:        customCallHasCanonicalEvent(p.Name, p.Input),
 			itemsAtCall: a.toolItems,
 		}
@@ -865,15 +874,7 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 		if stash.mcp && !a.markMCP(p.CallID) {
 			return nil
 		}
-		a.ensureTurn(l.Timestamp)
-		tp := core.TurnPart{
-			Type:       "tool",
-			Content:    renderOutput(p.Output),
-			ToolName:   stash.name,
-			ToolTarget: stash.target,
-		}
-		a.cur.Parts = append(a.cur.Parts, tp)
-		return &tp
+		return a.appendTool(l.Timestamp, stash.name, stash.target, stash.input, renderOutputBody(p.Output))
 	case "custom_tool_call_output":
 		stash, ok := a.pending[p.CallID]
 		delete(a.pending, p.CallID)
@@ -882,7 +883,7 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 		if !ok || stash.skip || a.toolItems > stash.itemsAtCall {
 			return nil
 		}
-		return a.appendTool(l.Timestamp, stash.name, stash.target, renderOutputBody(p.Output))
+		return a.appendTool(l.Timestamp, stash.name, stash.target, stash.input, renderOutputBody(p.Output))
 	}
 	return nil
 }
@@ -978,43 +979,44 @@ func itemMessageText(item json.RawMessage) string {
 	return strings.TrimSpace(strings.Join(texts, "\n"))
 }
 
-// toolTarget pulls the most informative argument out of a function_call's
-// arguments (itself a JSON-encoded string): a shell command, else a file path.
-func toolTarget(arguments string) string {
-	if arguments == "" {
-		return ""
-	}
+// parseArgs decodes a function_call's JSON-encoded arguments string; nil when
+// empty or malformed.
+func parseArgs(arguments string) map[string]json.RawMessage {
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(arguments), &m); err != nil {
-		return ""
+	if arguments == "" || json.Unmarshal([]byte(arguments), &m) != nil {
+		return nil
 	}
-	return toolTargetMap(m)
+	return m
 }
 
-func toolTargetMap(m map[string]json.RawMessage) string {
-	for _, key := range []string{"cmd", "command", "file_path", "path"} {
-		if raw, ok := m[key]; ok {
-			var s string
-			if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-				return textutil.FirstLine(s)
-			}
+// argString returns the first of keys that m holds as a non-empty string.
+func argString(m map[string]json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		var s string
+		if raw, ok := m[key]; ok && json.Unmarshal(raw, &s) == nil && s != "" {
+			return s
 		}
 	}
 	return ""
 }
 
-// renderOutput fences a function_call_output's output. The output is either a
-// JSON string (older shape) or an array of {type,text} content items (newer
-// shape, same as custom_tool_call_output); renderOutputBody normalizes both, so
-// this only clamps and fences.
-func renderOutput(output json.RawMessage) string {
-	body := renderOutputBody(output)
-	if body == "" {
-		return ""
+// splitToolTarget separates a function_call's shell command from its display
+// target (file path).
+func splitToolTarget(m map[string]json.RawMessage) (target, command string) {
+	if cmd := argString(m, "cmd", "command"); cmd != "" {
+		return "", cmd
 	}
-	return textutil.Fence("", textutil.ClampBody(body))
+	return argString(m, "file_path", "path"), ""
 }
 
+// toolTargetMap picks the display target of an MCP/dynamic tool, whose command
+// keys are plain values rather than shell commands.
+func toolTargetMap(m map[string]json.RawMessage) string {
+	return textutil.FirstLine(argString(m, "cmd", "command", "file_path", "path"))
+}
+
+// renderOutputBody normalizes a tool call output: either a JSON string (older
+// shape) or an array of {type,text} content items (newer shape).
 func renderOutputBody(output json.RawMessage) string {
 	if len(output) == 0 {
 		return ""
@@ -1040,7 +1042,7 @@ func renderOutputBody(output json.RawMessage) string {
 
 var customCmdRe = regexp.MustCompile(`(?s)\b(?:cmd|command)\s*:\s*("(?:\\.|[^"\\])*")`)
 
-func customExecTarget(input string) string {
+func customExecCommand(input string) string {
 	m := customCmdRe.FindStringSubmatch(input)
 	if len(m) != 2 {
 		return ""
@@ -1049,7 +1051,7 @@ func customExecTarget(input string) string {
 	if json.Unmarshal([]byte(m[1]), &command) != nil {
 		return ""
 	}
-	return textutil.FirstLine(command)
+	return command
 }
 
 func customCallHasCanonicalEvent(name, input string) bool {

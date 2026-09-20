@@ -173,13 +173,27 @@ export function renderToolPart(p) {
     '<rect x="6" y="6" width="8" height="8" rx="1.5"/>' +
     '<path d="M4.5 10.5h-1a1.5 1.5 0 0 1-1.5-1.5V3.5A1.5 1.5 0 0 1 3.5 2h5.5A1.5 1.5 0 0 1 10.5 3.5v1"/>' +
     '</svg>';
-  const label = target
-    ? esc(name) + ' <span class="tool-target">' + esc(target) + '</span>' +
-      '<button class="tool-copy" type="button" title="Copy" aria-label="Copy target">' + copyIcon + '</button>'
-    : esc(name);
-  return `<details class="tool-details"${openAttr}>` +
+  // toolInput is the full command / JSON arguments, sent only when the title
+  // doesn't already show it all. It sits outside .tool-body, which raw mode
+  // re-renders wholesale from data-raw.
+  const input = p.toolInput || '';
+  // Shell input gets a CSS-drawn `$ ` prompt, so copying never picks it up.
+  const inputClass = /^(bash|shell)$/i.test(name) ? 'tool-input shell' : 'tool-input';
+  // A title that is only the input's first line gets a CSS-drawn ellipsis.
+  const targetClass = input.includes('\n') && input.split('\n', 1)[0].trim() === target
+    ? 'tool-target more' : 'tool-target';
+  const label = esc(name) +
+    (target ? ' <span class="' + targetClass + '">' + esc(target) + '</span>' : '') +
+    (target || input
+      ? '<button class="tool-copy" type="button" title="Copy" aria-label="Copy">' + copyIcon + '</button>'
+      : '');
+  return `<details class="tool-details${p.toolError ? ' failed' : ''}"${openAttr}>` +
     `<summary>${label}</summary>` +
+    // One scroller, so input and output move sideways together.
+    `<div class="tool-scroll">` +
+    (input ? `<pre class="${inputClass}">${esc(input)}</pre>` : '') +
     `<div class="tool-body" data-raw="${esc(p.content || '')}">${renderMarkdown(p.content || '')}</div>` +
+    `</div>` +
     `</details>`;
 }
 

@@ -677,6 +677,18 @@ func TestRenderTerminalToolResult(t *testing.T) {
 	}
 }
 
+func TestToolResultErrorFlag(t *testing.T) {
+	a := NewAssembler()
+	a.FeedLineParts([]byte(`{"type":"message","id":"a1","timestamp":"2026-07-01T10:00:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"false"}}]}}`))
+	_, parts := a.FeedLineParts([]byte(`{"type":"message","id":"r1","timestamp":"2026-07-01T10:00:01Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","isError":true,"content":[{"type":"text","text":"exit 1"}]}}`))
+	if len(parts) != 1 || !parts[0].ToolError {
+		t.Fatalf("live part = %+v, want it flagged as failed", parts)
+	}
+	if turn := a.Flush(); turn == nil || len(turn.Parts) != 1 || !turn.Parts[0].ToolError {
+		t.Fatalf("canonical turn = %+v", turn)
+	}
+}
+
 // Every displayable block of one assistant record reaches the live stream in
 // order; thinking blocks are dropped.
 func TestFeedLinePartsReturnsEveryAssistantBlock(t *testing.T) {

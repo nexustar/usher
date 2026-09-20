@@ -1,6 +1,7 @@
 package textutil
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -48,6 +49,18 @@ func TestFence_WidensPastBackticks(t *testing.T) {
 	}
 	if out := Fence("diff", "x"); !strings.HasPrefix(out, "```diff\n") {
 		t.Errorf("lang not applied: %q", out)
+	}
+}
+
+func TestIndentJSON(t *testing.T) {
+	got := IndentJSON(json.RawMessage(`{"text":"a < b && c > d"}`))
+	if got != "{\n  \"text\": \"a < b && c > d\"\n}" {
+		t.Errorf("html-escaped or not indented: %q", got)
+	}
+	for _, v := range []any{nil, json.RawMessage(nil), json.RawMessage(`{}`), map[string]json.RawMessage(nil), json.RawMessage(`{bad`)} {
+		if got := IndentJSON(v); got != "" {
+			t.Errorf("IndentJSON(%#v) = %q, want empty", v, got)
+		}
 	}
 }
 

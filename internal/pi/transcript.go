@@ -212,8 +212,16 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 			// thinking is dropped: pi's provider is the only one that returns
 			// reasoning in the clear — claude and codex persist it encrypted.
 			case "toolCall":
-				p.Type, p.ToolName, p.ToolUseID = "tool", b.Name, b.ID
-				p.ToolTarget = toolTarget(b.Name, b.Arguments)
+				target, input := toolTarget(b.Name, b.Arguments), ""
+				switch {
+				case strings.EqualFold(b.Name, "bash"):
+					// bash's target is its command: the first line titles the card.
+					target, input = textutil.FirstLine(target), target
+				case strings.HasPrefix(b.Name, "mcp__"):
+					input = textutil.IndentJSON(b.Arguments)
+				}
+				p = core.NewToolPart(b.Name, target, input, "")
+				p.ToolUseID = b.ID
 			default:
 				continue
 			}
@@ -252,13 +260,14 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 				a.cur.Parts[i].ToolName = m.ToolName
 			}
 			a.cur.Parts[i].Content = renderToolResult(a.cur.Parts[i].ToolName, content)
+			a.cur.Parts[i].ToolError = m.IsError
 			p := a.cur.Parts[i]
 			a.cur.Touch(ts)
 			return nil, []*core.TurnPart{&p}
 		}
 		// Preserve orphaned results as a tool part rather than leaking raw tool
 		// output into the assistant prose stream.
-		p := core.TurnPart{Type: "tool", Content: renderToolResult(m.ToolName, content), ToolName: m.ToolName, ToolUseID: m.ToolCallID}
+		p := core.TurnPart{Type: "tool", Content: renderToolResult(m.ToolName, content), ToolName: m.ToolName, ToolUseID: m.ToolCallID, ToolError: m.IsError}
 		a.cur.Parts = append(a.cur.Parts, p)
 		a.cur.Touch(ts)
 		return nil, []*core.TurnPart{&p}

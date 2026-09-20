@@ -1138,6 +1138,7 @@ pre.raw-markdown {
   overflow-wrap: anywhere;
 }
 .chat-message.assistant .tool-details[open] summary { list-style-type: disclosure-open; }
+.chat-message.assistant .tool-details.failed summary { color: var(--danger); }
 .chat-message.assistant .tool-details .tool-target {
   font-weight: 400;
   text-transform: none;
@@ -1156,27 +1157,44 @@ pre.raw-markdown {
 .chat-message.assistant .tool-details .tool-copy.copied { color: var(--accent); }
 /* The button ends the summary line, so the mark can't shift content after it. */
 .chat-message.assistant .tool-details .tool-copy.copied::after { content: ' ✓'; }
-.chat-message.assistant .tool-details .tool-body {
-  color: var(--text-muted);
+/* Input and output scroll sideways as one. The grid track is as wide as the
+ * longest code line in either, so neither block may scroll or clamp itself. */
+.chat-message.assistant .tool-details .tool-scroll {
+  display: grid;
   overflow-x: auto;
   min-width: 0;
+}
+.chat-message.assistant .tool-details .tool-body {
+  color: var(--text-muted);
 }
 .chat-message.assistant .tool-details .tool-body > :not(pre) {
   padding: 0 0.5rem;
 }
+.chat-message.assistant .tool-details .tool-input,
 .chat-message.assistant .tool-details .tool-body pre {
   background: var(--code-block-bg);
   color: var(--code-block-text);
   padding: 0.6rem 0.75rem;
-  overflow-x: auto;
   margin: 0;
   border-radius: 0 0 12px 12px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--font-sm);
   line-height: 1.4;
 }
+.chat-message.assistant .tool-details:has(+ .tool-details) .tool-input,
 .chat-message.assistant .tool-details:has(+ .tool-details) .tool-body pre {
   border-radius: 0;
+}
+/* The call's input sits above its output, set off by a rule; it keeps the
+ * card's rounded end only while there is no output yet. */
+.chat-message.assistant .tool-details .tool-input:not(:has(+ .tool-body:empty)) {
+  border-radius: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--code-block-text) 35%, transparent);
+}
+.chat-message.assistant .tool-details .tool-target.more::after { content: ' …'; }
+.chat-message.assistant .tool-details .tool-input.shell::before {
+  content: '$ ';
+  opacity: 0.5;
 }
 .chat-message.assistant .tool-details .tool-body pre code {
   background: transparent;
