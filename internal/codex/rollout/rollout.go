@@ -15,7 +15,9 @@
 // event_msg item_completed TurnItems (UserMessage / AgentMessage /
 // CommandExecution / FileChange / …) and no longer persist the legacy per-tool
 // events; there the batched `exec` custom_tool_call is a duplicate of the
-// per-op items and is dropped (see Assembler.toolItems). Both modes are
+// per-op items and is dropped (see Assembler.toolItems). A command left running
+// in the background has no item until it exits; its card is built from the
+// wrapper's output meanwhile (see backgroundOutput). Both modes are
 // reconstructed into the same core turns.
 //
 // Shared display and metadata types live in package core; this package owns
@@ -29,6 +31,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,26 +300,34 @@ type Assembler struct {
 	// items already rendered the same ops and the batched `exec` wrapper is
 	// dropped as their duplicate. A wrapper that produced no item (e.g. a pure
 	// text() script) still renders, and legacy sessions never increment it.
-	toolItems int
+	toolItems  int
+	background map[string]*bgCommand // unified-exec session id -> command still running
 }
 
 type toolStash struct {
 	name        string
 	target      string // card title
 	input       string // shell: the full command; MCP: the indented JSON arguments
+	script      string // a batched `exec` wrapper's source
 	skip        bool
 	mcp         bool
 	itemsAtCall int // toolItems when the call was seen (paginated dedup)
 }
 
 func NewAssembler() *Assembler {
-	return &Assembler{pending: map[string]toolStash{}, seenMCP: map[string]struct{}{}}
+	return &Assembler{
+		pending:    map[string]toolStash{},
+		seenMCP:    map[string]struct{}{},
+		background: map[string]*bgCommand{},
+	}
 }
 
 // Feed consumes one rollout line. completed holds turns this line finished (a
 // real user prompt flushes the in-progress assistant turn, then commits itself);
 // part is set when the line appended a part to the in-progress assistant turn
 // (the per-event increment a live stream publishes — a copy, not mutated later).
+// For a background command it is the increment alone: the turn keeps one card
+// per command, which later output and the final item update in place.
 func (a *Assembler) Feed(raw []byte) (completed []core.Turn, part *core.TurnPart) {
 	// Parse the timestamp independently. A new or malformed timestamp format
 	// must not make us discard the event type/payload (especially turn_complete).
@@ -410,7 +421,7 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 	case "patch_apply_end":
 		return nil, a.patchApplyPart(l)
 	case "exec_command_end":
-		return nil, a.execCommandPart(l)
+		return nil, a.commandPart(l)
 	case "web_search_end":
 		return nil, a.simpleEventToolPart(l, "WebSearch")
 	case "image_generation_end":
@@ -463,12 +474,15 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 // flag it.
 func (a *Assembler) appendTool(ts time.Time, name, title, input, body string) *core.TurnPart {
 	a.ensureTurn(ts)
-	content := ""
-	if body != "" {
-		content = textutil.Fence("", textutil.ClampBody(body))
-	}
-	a.cur.Parts = append(a.cur.Parts, core.NewToolPart(name, title, input, content))
+	a.cur.Parts = append(a.cur.Parts, core.NewToolPart(name, title, input, fenceBody(body)))
 	return &a.cur.Parts[len(a.cur.Parts)-1]
+}
+
+func fenceBody(body string) string {
+	if body == "" {
+		return ""
+	}
+	return textutil.Fence("", textutil.ClampBody(body))
 }
 
 // appendArgsTool appends an MCP/dynamic tool part, whose input is its arguments.
@@ -515,9 +529,13 @@ func (a *Assembler) patchApplyPart(l line) *core.TurnPart {
 	return part
 }
 
-func (a *Assembler) execCommandPart(l line) *core.TurnPart {
+// commandPart renders a finished command. One that ran in the background
+// already has a card in this turn: the finished command, which carries the
+// complete output, takes that card over instead of adding a second.
+func (a *Assembler) commandPart(l line) *core.TurnPart {
 	var p struct {
 		Command          []string `json:"command"`
+		ProcessID        string   `json:"process_id"`
 		ExitCode         *int     `json:"exit_code"`
 		Status           string   `json:"status"`
 		AggregatedOutput string   `json:"aggregated_output"`
@@ -536,7 +554,18 @@ func (a *Assembler) execCommandPart(l line) *core.TurnPart {
 	if body == "" {
 		body = strings.TrimSpace(p.Stdout + "\n" + p.Stderr)
 	}
-	part := a.appendTool(l.Timestamp, "Shell", core.ToolTitle("", command), command, body)
+	bg := a.background[p.ProcessID]
+	if bg != nil {
+		bg.done = true
+	}
+	var part *core.TurnPart
+	if bg != nil && bg.turn != nil && bg.turn == a.cur {
+		a.ensureTurn(l.Timestamp)
+		a.cur.Parts[bg.idx] = core.NewToolPart("Shell", core.ToolTitle("", command), command, fenceBody(body))
+		part = &a.cur.Parts[bg.idx]
+	} else {
+		part = a.appendTool(l.Timestamp, "Shell", core.ToolTitle("", command), command, body)
+	}
 	part.ToolError = p.Status == "failed" || p.Status == "declined" || (p.ExitCode != nil && *p.ExitCode != 0)
 	return part
 }
@@ -712,7 +741,7 @@ func (a *Assembler) feedItemCompleted(l line) (completed []core.Turn, part *core
 		a.cur.Parts = append(a.cur.Parts, tp)
 		return nil, &tp
 	case "CommandExecution":
-		return nil, a.toolItem(a.execCommandPart(il))
+		return nil, a.toolItem(a.commandPart(il))
 	case "FileChange":
 		return nil, a.toolItem(a.patchApplyPart(il))
 	case "WebSearch":
@@ -870,6 +899,7 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 			name:        prettyToolName(p.Name),
 			target:      core.ToolTitle("", command),
 			input:       command,
+			script:      p.Input,
 			skip:        customCallHasCanonicalEvent(p.Name, p.Input),
 			itemsAtCall: a.toolItems,
 		}
@@ -884,12 +914,22 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 	case "custom_tool_call_output":
 		stash, ok := a.pending[p.CallID]
 		delete(a.pending, p.CallID)
-		// Drop the batched exec wrapper when its ops already rendered as items
-		// (see Assembler.toolItems).
-		if !ok || stash.skip || a.toolItems > stash.itemsAtCall {
+		if !ok {
 			return nil
 		}
-		return a.appendTool(l.Timestamp, stash.name, stash.target, stash.input, renderOutputBody(p.Output))
+		part, oneShot, handled := a.backgroundOutput(l.Timestamp, stash, p.Output)
+		// Drop the batched exec wrapper when its ops already rendered as items
+		// (see Assembler.toolItems).
+		if stash.skip || a.toolItems > stash.itemsAtCall {
+			return part
+		}
+		if !handled {
+			return a.appendTool(l.Timestamp, stash.name, stash.target, stash.input, renderOutputBody(p.Output))
+		}
+		if oneShot != "" {
+			return a.appendTool(l.Timestamp, stash.name, stash.target, stash.input, oneShot)
+		}
+		return part
 	}
 	return nil
 }
@@ -1044,6 +1084,201 @@ func renderOutputBody(output json.RawMessage) string {
 		}
 	}
 	return string(output)
+}
+
+// bgCommand is a command still running after its exec_command call returned.
+type bgCommand struct {
+	command string
+	body    string     // output read so far
+	turn    *core.Turn // the turn holding its card; a later turn opens its own
+	idx     int
+	done    bool // its item arrived, with the complete output
+}
+
+// execChunk is one tools.* result in a batched `exec` call's output.
+// session_id marks a command still running; the chunk that reports its
+// exit_code carries none, so chunks pair to the script's calls by position.
+type execChunk struct {
+	ChunkID   string `json:"chunk_id"`
+	SessionID *int64 `json:"session_id"`
+	Output    string `json:"output"`
+}
+
+// execCall is one tools.* call of a batched `exec` script: an exec_command
+// with its cmd, or a write_stdin with the session it addresses and what it
+// sends. A write_stdin that sends nothing only reads.
+type execCall struct {
+	stdin   bool
+	session string
+	chars   string
+	command string
+}
+
+var (
+	execCallRe   = regexp.MustCompile(`\btools\.(exec_command|write_stdin)\b(\s*\(\s*\{)?`)
+	sessionArgRe = regexp.MustCompile(`\bsession_id\s*:\s*(\d+)`)
+	charsArgRe   = regexp.MustCompile(`(?s)\bchars\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`)
+)
+
+func parseExecCalls(script string) []execCall {
+	var calls []execCall
+	for _, loc := range execCallRe.FindAllStringSubmatchIndex(script, -1) {
+		call := execCall{stdin: script[loc[2]:loc[3]] == "write_stdin"}
+		args := ""
+		if loc[4] >= 0 {
+			args = objectLiteral(script[loc[5]-1:])
+		}
+		if !call.stdin {
+			call.command = customExecCommand(args)
+		} else {
+			if m := sessionArgRe.FindStringSubmatch(args); m != nil {
+				call.session = m[1]
+			}
+			if m := charsArgRe.FindStringSubmatch(args); m != nil {
+				call.chars = jsString(m[1])
+			}
+		}
+		calls = append(calls, call)
+	}
+	return calls
+}
+
+// objectLiteral returns the JS object literal s opens with, its braces
+// balanced outside string literals.
+func objectLiteral(s string) string {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'' || c == '`':
+			quote = c
+		case c == '{':
+			depth++
+		case c == '}':
+			if depth--; depth == 0 {
+				return s[:i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// jsString decodes a double- or single-quoted JS string literal.
+func jsString(lit string) string {
+	if strings.HasPrefix(lit, "'") {
+		body := strings.ReplaceAll(lit[1:len(lit)-1], `\'`, `'`)
+		lit = `"` + strings.ReplaceAll(body, `"`, `\"`) + `"`
+	}
+	var out string
+	_ = json.Unmarshal([]byte(lit), &out)
+	return out
+}
+
+// backgroundOutput takes the chunks of a wrapper's output that belong to
+// background commands: the chunk that leaves a command running opens its card,
+// a later read adds to it, and input sent to it gets a card of its own. part
+// is what the live stream shows for that. oneShot is the output of the
+// wrapper's other commands. handled is false when no chunk concerns a
+// background command.
+func (a *Assembler) backgroundOutput(ts time.Time, stash toolStash, output json.RawMessage) (part *core.TurnPart, oneShot string, handled bool) {
+	var items []struct{ Text string }
+	if json.Unmarshal(output, &items) != nil {
+		return nil, "", false
+	}
+	var chunks []execChunk
+	for _, item := range items {
+		var c execChunk
+		// chunk_id is required: a command may print a JSON object of its own.
+		if json.Unmarshal([]byte(item.Text), &c) == nil && c.ChunkID != "" {
+			chunks = append(chunks, c)
+		}
+	}
+	calls := parseExecCalls(stash.script)
+	if len(calls) != len(chunks) {
+		calls = make([]execCall, len(chunks)) // unreadable script: go by the chunks alone
+	}
+	for i, c := range chunks {
+		call := calls[i]
+		session := call.session
+		if c.SessionID != nil {
+			session = strconv.FormatInt(*c.SessionID, 10)
+		}
+		if session == "" {
+			oneShot = joinOutput(oneShot, c.Output)
+			continue
+		}
+		handled = true
+		bg := a.background[session]
+		if call.chars != "" {
+			part = a.appendTool(ts, "Stdin", bg.title(session), call.chars, strings.TrimRight(c.Output, "\n"))
+			continue
+		}
+		if bg != nil && bg.done {
+			if c.SessionID == nil {
+				continue // the read that saw it exit, after its item
+			}
+			bg = nil // the id now names a new command
+		}
+		spawned := bg == nil && !call.stdin
+		if bg == nil {
+			bg = &bgCommand{}
+			if spawned {
+				bg.command = firstNonEmpty(call.command, stash.input)
+			}
+			a.background[session] = bg
+		}
+		if p := a.backgroundProgress(ts, stash.name, session, bg, c.Output, spawned); p != nil {
+			part = p
+		}
+	}
+	return part, oneShot, handled
+}
+
+func (bg *bgCommand) title(session string) string {
+	if bg != nil {
+		if title := core.ToolTitle("", bg.command); title != "" {
+			return title
+		}
+	}
+	return "session " + session
+}
+
+// backgroundProgress adds output to the command's card in this turn, opening
+// one if the turn has none. A read that found nothing new changes nothing.
+func (a *Assembler) backgroundProgress(ts time.Time, name, session string, bg *bgCommand, output string, spawned bool) *core.TurnPart {
+	output = strings.TrimRight(output, "\n")
+	title := bg.title(session)
+	if bg.turn != nil && bg.turn == a.cur {
+		if output == "" {
+			return nil
+		}
+		a.ensureTurn(ts)
+		bg.body = joinOutput(bg.body, output)
+		a.cur.Parts[bg.idx].Content = fenceBody(bg.body)
+		increment := core.NewToolPart(name, title, "", fenceBody(output))
+		return &increment
+	}
+	if output == "" && !spawned {
+		return nil
+	}
+	part := a.appendTool(ts, name, title, bg.command, output)
+	bg.turn, bg.idx, bg.body = a.cur, len(a.cur.Parts)-1, output
+	return part
+}
+
+func joinOutput(body, more string) string {
+	more = strings.TrimRight(more, "\n")
+	if body == "" || more == "" {
+		return body + more
+	}
+	return body + "\n" + more
 }
 
 var customCmdRe = regexp.MustCompile(`(?s)\b(?:cmd|command)\s*:\s*("(?:\\.|[^"\\])*")`)

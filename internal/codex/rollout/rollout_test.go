@@ -680,6 +680,139 @@ func TestAssemblerZeroItemExecWrapperRenders(t *testing.T) {
 	}
 }
 
+// execOutput builds a batched `exec` call's output: codex's "Script completed"
+// preamble, then one JSON chunk per tools.* call.
+func execOutput(chunks ...string) string {
+	parts := []string{`{"type":"input_text","text":"Script completed\nWall time 1.0 seconds\nOutput:\n"}`}
+	for _, c := range chunks {
+		raw, _ := json.Marshal(c)
+		parts = append(parts, `{"type":"input_text","text":`+string(raw)+`}`)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+func feedExec(a *Assembler, id, script string, chunks ...string) *core.TurnPart {
+	input, _ := json.Marshal(script)
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"` + id + `","name":"exec","input":` + string(input) + `}}`))
+	_, part := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"` + id + `","output":` + execOutput(chunks...) + `}}`))
+	return part
+}
+
+func feedCommandItem(a *Assembler, fields string) *core.TurnPart {
+	_, part := a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution",` + fields + `}}}`))
+	return part
+}
+
+// A command left running in the background keeps one card: what later reads
+// find is added to it, and its item, which codex writes only once it exits,
+// takes the card over with the complete output.
+func TestAssemblerBackgroundCommandKeepsOneCard(t *testing.T) {
+	a := NewAssembler()
+	spawn := feedExec(a, "c1", `text(await tools.exec_command({cmd:"make build",yield_time_ms:1000}))`,
+		`{"chunk_id":"a1","session_id":42,"output":"START\n"}`)
+	if spawn == nil || spawn.ToolTarget != "make build" || !strings.Contains(spawn.Content, "START") {
+		t.Fatalf("spawn card: %+v", spawn)
+	}
+
+	// A wrapper batching a one-shot command, which has its own item, with a read.
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c2","name":"exec","input":"text(await tools.exec_command({cmd:\"git status\"}));\ntext(await tools.write_stdin({session_id:42,chars:\"\",yield_time_ms:5000}));"}}`))
+	feedCommandItem(a, `"id":"e1","process_id":"7","command":["/bin/bash","-lc","git status"],"aggregated_output":"clean","exit_code":0`)
+	_, read := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c2","output":` +
+		execOutput(`{"chunk_id":"b1","exit_code":0,"output":"clean\n"}`, `{"chunk_id":"b2","session_id":42,"output":"20/99 done\n"}`) + `}}`))
+	if read == nil || read.ToolTarget != "make build" || !strings.Contains(read.Content, "20/99 done") || strings.Contains(read.Content, "START") || strings.Contains(read.Content, "clean") {
+		t.Fatalf("the live increment should be the new output alone: %+v", read)
+	}
+	if empty := feedExec(a, "c3", `text(await tools.write_stdin({session_id:42,chars:"",yield_time_ms:5000}));`,
+		`{"chunk_id":"c1","session_id":42,"output":""}`); empty != nil {
+		t.Fatalf("a read that found nothing: %+v", empty)
+	}
+	parts := a.cur.Parts
+	if len(parts) != 2 || parts[0].ToolTarget != "make build" || !strings.Contains(parts[0].Content, "START\n20/99 done") || parts[1].ToolTarget != "git status" {
+		t.Fatalf("while running: %+v", parts)
+	}
+
+	// The process exits: its item lands first, then the read that saw it exit.
+	done := feedCommandItem(a, `"id":"e2","process_id":"42","command":["/bin/bash","-lc","make build"],"aggregated_output":"START\n20/99 done\n99/99 done\n","exit_code":2,"status":"failed"`)
+	if done == nil || !strings.Contains(done.Content, "99/99 done") || !done.ToolError {
+		t.Fatalf("finished card: %+v", done)
+	}
+	if late := feedExec(a, "c4", `text(await tools.write_stdin({session_id:42,chars:"",yield_time_ms:5000}));`,
+		`{"chunk_id":"d1","exit_code":2,"output":"99/99 done\n"}`); late != nil {
+		t.Fatalf("the read after the item: %+v", late)
+	}
+	parts = a.cur.Parts
+	if len(parts) != 2 || parts[0].ToolTarget != "make build" || !strings.Contains(parts[0].Content, "99/99 done") || !parts[0].ToolError {
+		t.Fatalf("after exit: %+v", parts)
+	}
+}
+
+// A command that outlives the turn that started it gets a card in each turn
+// it reports in: the first keeps what it saw, the last the complete output.
+func TestAssemblerBackgroundCommandAcrossTurns(t *testing.T) {
+	a := NewAssembler()
+	feedExec(a, "c1", `text(await tools.exec_command({cmd:"make build",yield_time_ms:1000}))`,
+		`{"chunk_id":"a1","session_id":42,"output":"START\n"}`)
+	completed, _ := a.Feed([]byte(`{"type":"event_msg","payload":{"type":"user_message","message":"how is it going"}}`))
+	if len(completed) != 2 || len(completed[0].Parts) != 1 || !strings.Contains(completed[0].Parts[0].Content, "START") {
+		t.Fatalf("first turn: %+v", completed)
+	}
+	read := feedExec(a, "c2", `text(await tools.write_stdin({session_id:42,chars:"",yield_time_ms:5000}));`,
+		`{"chunk_id":"b1","session_id":42,"output":"50/99 done\n"}`)
+	if read == nil || read.ToolTarget != "make build" || !strings.Contains(read.Content, "50/99 done") {
+		t.Fatalf("second turn's card: %+v", read)
+	}
+	feedCommandItem(a, `"id":"e1","process_id":"42","command":["/bin/bash","-lc","make build"],"aggregated_output":"START\n50/99 done\n99/99 done\n","exit_code":0`)
+	if parts := a.cur.Parts; len(parts) != 1 || !strings.Contains(parts[0].Content, "99/99 done") {
+		t.Fatalf("second turn: %+v", parts)
+	}
+}
+
+// A read of a session whose start was never seen (a tail that began mid-run)
+// still gets a card, and reads issued from a loop still reach it: the script
+// then names fewer calls than the output has chunks.
+func TestAssemblerBackgroundReadsWithoutTheirCall(t *testing.T) {
+	a := NewAssembler()
+	looped := feedExec(a, "c1", `for (let i = 0; i < 2; i++) text(await tools.write_stdin({session_id:91391,chars:"",yield_time_ms:1000}));`,
+		`{"chunk_id":"a1","session_id":91391,"output":"tick\n"}`, `{"chunk_id":"a2","session_id":91391,"output":"tock\n"}`)
+	if looped == nil || looped.ToolTarget != "session 91391" {
+		t.Fatalf("increment: %+v", looped)
+	}
+	if parts := a.cur.Parts; len(parts) != 1 || parts[0].ToolTarget != "session 91391" || !strings.Contains(parts[0].Content, "tick\ntock") {
+		t.Fatalf("card: %+v", parts)
+	}
+}
+
+// Input sent to a background command is a step of its own: a card with what
+// was sent and what came back, apart from the command's.
+func TestAssemblerBackgroundCommandInput(t *testing.T) {
+	a := NewAssembler()
+	feedExec(a, "c1", `text(await tools.exec_command({cmd:"python3 ask.py",yield_time_ms:1000}))`,
+		`{"chunk_id":"a1","session_id":42,"output":"name? "}`)
+	sent := feedExec(a, "c2", `text(await tools.write_stdin({session_id:42,chars:"usher {v2}\n",yield_time_ms:1000}));`,
+		`{"chunk_id":"b1","session_id":42,"output":"hello usher {v2}\n"}`)
+	if sent == nil || sent.ToolName != "Stdin" || sent.ToolTarget != "python3 ask.py" || sent.ToolInput != "usher {v2}\n" || !strings.Contains(sent.Content, "hello usher") {
+		t.Fatalf("input card: %+v", sent)
+	}
+	quit := feedExec(a, "c3", `text(await tools.write_stdin({chars:'q', session_id:42}));`,
+		`{"chunk_id":"c1","exit_code":0,"output":"bye\n"}`)
+	if quit == nil || quit.ToolName != "Stdin" || quit.ToolInput != "q" {
+		t.Fatalf("single-quoted input, session named after it: %+v", quit)
+	}
+	if parts := a.cur.Parts; len(parts) != 3 || strings.Contains(parts[0].Content, "hello") {
+		t.Fatalf("the command's own card must not absorb replies to input: %+v", parts)
+	}
+}
+
+// A command that prints a JSON object is not a chunk.
+func TestAssemblerJSONToolOutputIsNotAChunk(t *testing.T) {
+	a := NewAssembler()
+	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"text(await tools.exec_command({cmd:\"cat pkg.json\"}))"}}`))
+	_, part := a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"{\"name\":\"usher\",\"output\":\"\"}"}]}}`))
+	if part == nil || !strings.Contains(part.Content, `"name":"usher"`) {
+		t.Fatalf("JSON output body lost: %+v", part)
+	}
+}
+
 // MCP items must not gate the dedup counter: a plain-shell exec wrapper after an
 // item_completed McpToolCall must still render (an MCP call inside a wrapper is
 // already skipped by customCallHasCanonicalEvent; a direct one has no wrapper).
