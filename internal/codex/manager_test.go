@@ -25,9 +25,11 @@ IFS= read -r line
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
+    *'"method":"config/read"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"config":{}}}\n' "$id" ;;
     *'"method":"thread/start"'*)
       printf '%s\n' "$line" >> "$FAKE_LOG"
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"new-thread"}}}' ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"new-thread"}}}\n' "$id" ;;
     *'"method":"thread/resume"'*)
       printf 'resume\n' >> "$FAKE_LOG"
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;

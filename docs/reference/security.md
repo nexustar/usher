@@ -66,4 +66,26 @@ files, transcript image references, editor deep links, and one constrained tmux
 shell per conversation — are convenience features inside the same single-user
 trust boundary.
 
+## Project trust
+
+Sessions started through usher load project-local configuration as if the
+working directory were trusted, without recording that as a decision:
+configuration the repository itself supplies — hooks, extensions, MCP
+servers, command policies — loads without a prompt, and some of it runs before
+any tool call reaches the permission UI. Do not open a session in a repository
+you would not run code from, or put usher in a container first.
+
+- **Claude Code** skips its trust dialog in the non-interactive mode usher
+  uses, and has no per-project opt-out.
+- **Codex** threads carry a trust override that lasts for that thread only. It
+  also gives an undecided project the workspace-write sandbox instead of the
+  read-only one.
+- **pi** workers start with `--approve`.
+
+Nothing is written to the agents' own trust stores, so running them in a
+terminal behaves as before. A project you marked untrusted there —
+`trust_level = "untrusted"` in Codex's `config.toml`, "Do not trust" in pi's
+`/trust` — stays untrusted in usher. A trust flag passed through `--pi-args`,
+or a `projects` override through `--codex-args`, also wins.
+
 For deployment examples, see [Access usher remotely](../solutions/remote-access.md).

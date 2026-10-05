@@ -702,7 +702,7 @@ func (c *Client) StartThread(ctx context.Context, cwd, model string) (string, er
 	if err := c.ensure(ctx); err != nil {
 		return "", err
 	}
-	params := c.threadParams(cwd, model)
+	params := c.threadParamsFor(ctx, cwd, model)
 	var out struct {
 		Thread struct {
 			ID string `json:"id"`
@@ -748,7 +748,7 @@ func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan 
 	_, ok := c.threads[id]
 	c.mu.Unlock()
 	if !ok {
-		params := c.threadParams(cwd, "")
+		params := c.threadParamsFor(ctx, cwd, "")
 		params["threadId"] = id
 		if err := c.call(ctx, "thread/resume", params, nil); err != nil {
 			return nil, nil, err
@@ -794,7 +794,7 @@ func (c *Client) ResumeThread(ctx context.Context, id, cwd string) error {
 	if err := c.ensure(ctx); err != nil {
 		return err
 	}
-	params := c.threadParams(cwd, "")
+	params := c.threadParamsFor(ctx, cwd, "")
 	params["threadId"] = id
 	if err := c.call(ctx, "thread/resume", params, nil); err != nil {
 		return err

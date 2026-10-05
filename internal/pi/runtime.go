@@ -61,6 +61,7 @@ func startClientWithSystemPrompt(bin, cwd, sessionPath, sessionsDir, model, appe
 		args = append(args, "--append-system-prompt", appendSystemPrompt)
 	}
 	args = append(args, extra...)
+	args = append(args, approveArgs(cwd, extra)...)
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	// The official installer places pi and its required Node runtime in the
