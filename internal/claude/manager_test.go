@@ -392,8 +392,8 @@ func TestForeignTurnIsTrackedAndDoesNotStealNextResult(t *testing.T) {
 	if !head.foreign || !head.started || head.uuid != "foreign" {
 		t.Fatalf("foreign entry = %+v", head)
 	}
-	if live := m.LiveSessions(); len(live) != 1 || !live[0].Busy {
-		t.Fatalf("live = %+v, want busy", live)
+	if live := m.LiveSessions(); len(live) != 1 || !live[0].Running {
+		t.Fatalf("live = %+v, want running", live)
 	}
 	user := &turnRequest{done: make(chan Result, 1), deltas: make(chan Delta, 1), uuid: "user-1"}
 	p.mu.Lock()
@@ -726,15 +726,41 @@ func TestBackgroundAgentPinsProcessUntilItSettles(t *testing.T) {
 	writeFrames(t, m, p,
 		`{"type":"system","subtype":"task_started","task_id":"t1","task_type":"local_agent","description":"explore"}`,
 		`{"type":"system","subtype":"task_started","task_id":"sh1","task_type":"local_bash","description":"tail -f"}`)
-	if live := m.LiveSessions(); len(live) != 1 || !live[0].Busy {
-		t.Fatalf("live = %+v, want busy while the agent runs", live)
+	// The agent pins the process but is not a turn: the session stays open to input.
+	if live := m.LiveSessions(); len(live) != 1 || live[0].Running || live[0].Activity.Agents != 1 {
+		t.Fatalf("live = %+v, want idle with one agent", live)
 	}
 	if _, _, err := m.ensureProcess(context.Background(), "new", "/tmp", "", "", nil, true, false); err == nil || !strings.Contains(err.Error(), "all busy") {
 		t.Fatalf("ensure alongside a running agent = %v, want all busy", err)
 	}
 	writeFrames(t, m, p, `{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","summary":"done"}`)
-	if live := m.LiveSessions(); live[0].Busy {
-		t.Fatal("still busy after the agent's notification; the shell task must not count")
+	if live := m.LiveSessions(); live[0].Activity.Pins() {
+		t.Fatal("still pinned after the agent's notification; the shell task must not count")
+	}
+}
+
+// Loop timers never reach stdout; the transcript lookup is what keeps an idle
+// process with a schedule out of the eviction scan.
+func TestScheduledSessionIsNotEvicted(t *testing.T) {
+	m := New("missing", "", "", nil, 1, nil, nil)
+	p := drainedProcess()
+	p.done = make(chan struct{})
+	close(p.done) // stop() finds the process already gone
+	m.processes["s"] = p
+	scheduled := true
+	m.SetScheduled(func(id string) bool { return id == "s" && scheduled })
+	if _, _, err := m.ensureProcess(context.Background(), "new", "/tmp", "", "", nil, true, false); err == nil || !strings.Contains(err.Error(), "all busy") {
+		t.Fatalf("ensure alongside a scheduled session = %v, want all busy", err)
+	}
+	// Pinned by its schedule, not running: the pin must not surface as a turn.
+	if live := m.LiveSessions(); len(live) != 1 || live[0].Running {
+		t.Fatalf("live = %+v, want idle", live)
+	}
+	scheduled = false
+	// The spawn itself fails (no binary), but only after the idle process was evicted.
+	_, _, _ = m.ensureProcess(context.Background(), "new", "/tmp", "", "", nil, true, false)
+	if m.Has("s") {
+		t.Fatal("unscheduled idle process survived the scan")
 	}
 }
 

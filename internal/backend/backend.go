@@ -107,11 +107,13 @@ type StartRequest struct {
 	AutoApprove        bool
 }
 
-// LiveSession is one warm worker. Busy is the eviction predicate: mid-turn
-// (usher's or the backend's own, e.g. a /loop tick) or leased by a send.
+// LiveSession is one warm worker. Running: a turn is in flight, usher's or
+// the backend's own (a /loop tick). Activity: what else the worker holds.
+// Evictable only when both are clear; send leases pin too but stay internal.
 type LiveSession struct {
-	ID   string
-	Busy bool
+	ID       string
+	Running  bool
+	Activity core.Activity
 }
 
 // Runtime owns live workers for one coding-agent backend.

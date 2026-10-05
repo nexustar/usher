@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -293,6 +294,23 @@ func TestManagerMaxLiveRejectsWhenAllWorkersBusy(t *testing.T) {
 	m.workers["busy"] = &worker{client: m.newClient("busy", "", nil), busy: true, lastUsed: time.Now()}
 	if _, err := m.reserve(); err == nil || !strings.Contains(err.Error(), "all busy") {
 		t.Fatalf("reserve error = %v, want all busy", err)
+	}
+}
+
+// A root whose own turn ended but whose spawned agent is still working keeps
+// its worker: evicting it would kill the agent with the app-server.
+func TestManagerAgentTurnPinsIdleRoot(t *testing.T) {
+	m := NewManager("unused", nil, nil, nil, nil, 1, nil)
+	c := m.newClient("root", "", nil)
+	c.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"agent-1","turn":{"id":"t1"}}`)})
+	m.workers["root"] = &worker{client: c, lastUsed: time.Now()}
+	if _, err := m.reserve(); err == nil || !strings.Contains(err.Error(), "all busy") {
+		t.Fatalf("reserve error = %v, want all busy", err)
+	}
+	c.dispatch(rpcMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"agent-1","turn":{"id":"t1","status":"completed"}}`)})
+	victim, err := m.reserve()
+	if err != nil || victim != c {
+		t.Fatalf("reserve after the agent settled = (%v, %v), want the root evicted", victim, err)
 	}
 }
 

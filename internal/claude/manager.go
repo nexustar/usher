@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/procutil"
 )
@@ -77,8 +78,15 @@ type process struct {
 	tasks         map[string]struct{} // delegated agent tasks in flight, by task_id
 }
 
-// busy is the eviction guard. With mu.
-func (p *process) busy() bool { return len(p.turns) > 0 || p.leases > 0 || len(p.tasks) > 0 }
+// With mu.
+func (p *process) running() bool { return len(p.turns) > 0 }
+
+// With mu.
+func (p *process) activity() core.Activity { return core.Activity{Agents: len(p.tasks)} }
+
+// busy is the eviction guard for what the process reports; Manager.scheduled
+// covers the transcript. With mu.
+func (p *process) busy() bool { return p.running() || p.leases > 0 || p.activity().Pins() }
 
 // With mu.
 func (p *process) describeBusy() string {
@@ -146,8 +154,18 @@ type Manager struct {
 	maxLive      int
 	logger       *slog.Logger
 	interactions *interaction.Manager
-	mu           sync.Mutex
-	processes    map[string]*process
+	// scheduled reports whether a session's transcript holds loop timers or a
+	// pending wake (see jsonl.activityScan). Called with mu held: it must not
+	// re-enter the Manager.
+	scheduled func(id string) bool
+	mu        sync.Mutex
+	processes map[string]*process
+}
+
+func (m *Manager) SetScheduled(f func(id string) bool) {
+	m.mu.Lock()
+	m.scheduled = f
+	m.mu.Unlock()
 }
 
 func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, interactions *interaction.Manager, logger *slog.Logger) *Manager {
@@ -199,6 +217,10 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 				busyWorkers = append(busyWorkers, p.describeBusy())
 			}
 			p.mu.Unlock()
+			if !busy && m.scheduled != nil && m.scheduled(p.id) {
+				busy = true
+				busyWorkers = append(busyWorkers, p.id+" scheduled")
+			}
 			if !busy && (victim == nil || lastUsed.Before(victimLastUsed)) {
 				victim, victimLastUsed = p, lastUsed
 			}
@@ -990,7 +1012,7 @@ func (m *Manager) LiveSessions() []backend.LiveSession {
 	out := make([]backend.LiveSession, 0, len(m.processes))
 	for id, p := range m.processes {
 		p.mu.Lock()
-		out = append(out, backend.LiveSession{ID: id, Busy: p.busy()})
+		out = append(out, backend.LiveSession{ID: id, Running: p.running(), Activity: p.activity()})
 		p.mu.Unlock()
 	}
 	return out

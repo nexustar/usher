@@ -21,6 +21,8 @@ type SessionMeta struct {
 	LastEventAt time.Time
 	LastInputAt time.Time
 	Runtime     SessionRuntime
+	// Activity carries what the transcript records: goals and schedules.
+	Activity Activity
 }
 
 // TurnPart is one segment within a grouped assistant turn.

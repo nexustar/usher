@@ -278,6 +278,12 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	if claudeRuntime, ok := backends["claude"].Runtime.(*sender.Sender); ok {
+		claudeRuntime.SetScheduled(func(id string) bool {
+			s, ok := d.Get(id)
+			return ok && s.Activity.Pins()
+		})
+	}
 	b := broker.New()
 	meta := sessionmeta.New(
 		filepath.Join(*dataDir, "sessions.json"),

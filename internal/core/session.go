@@ -16,6 +16,50 @@ const (
 	StatusAwaitingPermission Status = "awaiting_permission"
 )
 
+// Activity is what a session holds beyond a turn in flight: work that dies
+// with its process, and standing instructions.
+type Activity struct {
+	// Agents are delegated agents still running: Claude background agent
+	// tasks, Codex child threads mid-turn.
+	Agents int `json:"agents,omitempty"`
+	// Loops are recurring schedules (/loop 5m). The timers live in the
+	// process; Claude re-creates them from the transcript on resume.
+	Loops []Loop `json:"loops,omitempty"`
+	// NextWake is a pending self-paced /loop tick.
+	NextWake time.Time `json:"next_wake,omitzero"`
+	// Goal is the active /goal. Claude records it in the transcript, so it
+	// shows on cold sessions too; Codex reports it only while live.
+	Goal *Goal `json:"goal,omitempty"`
+}
+
+// Loop is one recurring schedule; Schedule is the backend's own description.
+type Loop struct {
+	ID       string `json:"id"`
+	Cron     string `json:"cron"`
+	Schedule string `json:"schedule"`
+	Prompt   string `json:"prompt,omitempty"`
+}
+
+// Goal is a condition the session keeps working toward.
+type Goal struct {
+	Condition string `json:"condition"`
+	// Status is active, or one of Codex's: paused, blocked, usageLimited,
+	// budgetLimited, complete. Claude's is always active while set.
+	Status string `json:"status"`
+	// Reason is Claude's last not-yet-met verdict.
+	Reason string `json:"reason,omitempty"`
+}
+
+// The wake timer fires seconds late; the tick then pins the process itself.
+const wakeGrace = 5 * time.Minute
+
+// Pins reports whether stopping the process would lose something. A goal
+// does not pin: nothing is lost once the process stops.
+func (a Activity) Pins() bool {
+	return a.Agents > 0 || len(a.Loops) > 0 ||
+		(!a.NextWake.IsZero() && time.Now().Before(a.NextWake.Add(wakeGrace)))
+}
+
 // Session is the backend-neutral projection of a discovered conversation
 // transcript. Subagent sessions are read-only children of a root session.
 type Session struct {
@@ -27,6 +71,7 @@ type Session struct {
 	Title       string    `json:"title"`
 	Prompt      string    `json:"-"`
 	Status      Status    `json:"status"`
+	Activity    Activity  `json:"activity,omitzero"`
 	StartedAt   time.Time `json:"started_at"`
 	LastEventAt time.Time `json:"last_event_at"`
 

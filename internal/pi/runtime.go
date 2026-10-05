@@ -1289,7 +1289,7 @@ func (r *Runtime) LiveSessions() []backend.LiveSession {
 	defer r.mu.Unlock()
 	out := make([]backend.LiveSession, 0, len(r.workers))
 	for id, w := range r.workers {
-		out = append(out, backend.LiveSession{ID: id, Busy: w.busy || w.leases > 0})
+		out = append(out, backend.LiveSession{ID: id, Running: w.busy})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

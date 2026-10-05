@@ -925,6 +925,8 @@ button.session-usage.unknown {
 .session-usage-detail > div { display: flex; align-items: baseline; gap: 0.55rem; }
 .session-usage-detail strong { width: 3.6rem; flex: none; font-weight: 500; color: var(--text-faint); }
 .session-usage-detail span { white-space: nowrap; }
+/* Goal text is prose: let it wrap. */
+.session-usage-detail span.wrap { white-space: normal; max-width: 24rem; }
 /* Direct children only: not the model picker or its menu, which sit inside. */
 .composer-send > button {
   padding: 0.32rem 0.8rem;

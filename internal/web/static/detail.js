@@ -31,6 +31,9 @@ import { loadList } from './list.js';
 // live turn), lastTranscriptSig (skip an unchanged rebuild), currentDetailId
 // (ignore a re-fetch that resolves after the user navigated away).
 let detailStreaming = false;
+// From the last full session fetch: the runtime SSE event carries usage only.
+let detailActivity = {};
+let detailLive = false;
 let lastTranscriptSig = '';
 
 // Bumped on every showDetail entry. showDetail awaits (session fetch, transcript)
@@ -753,6 +756,7 @@ export async function showDetail(id) {
       usageBtn.setAttribute('aria-expanded', 'false');
     });
   }
+  noteActivity(sess);
   renderSessionRuntime(sess.runtime);
   restoreDraft(promptEl);
   wireCommandPreview(promptEl, id);
@@ -1425,8 +1429,14 @@ async function refreshSubtitle(id) {
     const sess = await res.json();
     if (id !== currentDetailId) return;
     renderSessionSubtitle(sess);
+    noteActivity(sess);
     renderSessionRuntime(sess.runtime);
   } catch {/* ignore */}
+}
+
+function noteActivity(sess) {
+  detailActivity = sess.activity || {};
+  detailLive = sess.status === 'live' || sess.status === 'running' || sess.status === 'awaiting_permission';
 }
 registerRefreshSubtitle(refreshSubtitle);
 
@@ -1732,9 +1742,10 @@ function renderSessionRuntime(u) {
   u = u || {};
   const context = Number(u.context_tokens) || 0;
   const max = Number(u.context_window) || 0;
+  const activityRows = renderActivityRows(detailActivity, detailLive);
   // A session with no live worker often knows its model and effort from the
   // transcript while its usage stays unknown, and those are worth showing.
-  el.hidden = !u.model && !u.effort && context <= 0;
+  el.hidden = !u.model && !u.effort && context <= 0 && activityRows.length === 0;
   if (el.hidden) return;
   const measured = context > 0 && max > 0;
   const pct = measured ? Math.min(100, Math.max(0, context / max * 100)) : 0;
@@ -1755,7 +1766,30 @@ function renderSessionRuntime(u) {
   if (u.model) rows.push(`<div><strong>Model</strong><span>${esc(u.model)}</span></div>`);
   if (u.effort) rows.push(`<div><strong>Effort</strong><span>${esc(u.effort)}</span></div>`);
   rows.push(`<div><strong>Context</strong><span>${esc(usage)}</span></div>`);
-  detail.innerHTML = rows.join('');
+  detail.innerHTML = rows.concat(activityRows).join('');
+}
+
+// A schedule without a live process is stopped; it comes back on resume.
+function renderActivityRows(a, live) {
+  const rows = [];
+  const row = (label, text, wrap = false) =>
+    rows.push(`<div><strong>${label}</strong><span${wrap ? ' class="wrap"' : ''}>${esc(text)}</span></div>`);
+  const stopped = live ? '' : ' · stopped';
+  if (a.agents > 0) row('Agents', `${a.agents} running`);
+  for (const l of a.loops || []) {
+    const prompt = l.prompt ? ' — ' + (l.prompt.length > 48 ? l.prompt.slice(0, 47) + '…' : l.prompt) : '';
+    row('Loop', l.schedule + prompt + stopped, true);
+  }
+  const wake = a.next_wake && Date.parse(a.next_wake);
+  if (wake && wake > Date.now()) {
+    row('Wake', new Date(wake).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + stopped);
+  }
+  if (a.goal) {
+    const g = a.goal;
+    row('Goal', `${g.condition} (${g.status || 'active'})`, true);
+    if (g.reason) row('Last', g.reason, true);
+  }
+  return rows;
 }
 
 function formatTokenCount(n) {

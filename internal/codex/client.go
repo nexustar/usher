@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/procutil"
 )
@@ -93,6 +94,7 @@ type Client struct {
 	turns        map[string]*turnStream
 	active       map[string]string // thread id -> id of the turn app-server is running
 	threads      map[string]string // thread id -> cwd
+	goals        map[string]core.Goal
 	next         atomic.Uint64
 	init         *initState
 	waitDone     chan struct{}
@@ -316,10 +318,45 @@ func (c *Client) dispatch(m rpcMessage) {
 		_ = json.Unmarshal(m.Params, &p)
 		if p.ThreadID != "" {
 			c.mu.Lock()
-			// Interrupts must name the running turn.
+			// Interrupts must name the running turn. app-server subscribes
+			// every connection to threads it spawns, so delegated agents land
+			// here under their own ids.
 			c.active[p.ThreadID] = p.Turn.ID
 			c.mu.Unlock()
 		}
+		return
+	}
+	if m.Method == "thread/closed" {
+		var p struct {
+			ThreadID string `json:"threadId"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		c.mu.Lock()
+		delete(c.active, p.ThreadID)
+		delete(c.goals, p.ThreadID)
+		c.mu.Unlock()
+		return
+	}
+	// app-server broadcasts goal changes and replays the goal on resume.
+	if m.Method == "thread/goal/updated" || m.Method == "thread/goal/cleared" {
+		var p struct {
+			ThreadID string `json:"threadId"`
+			Goal     struct {
+				Objective string `json:"objective"`
+				Status    string `json:"status"`
+			} `json:"goal"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		c.mu.Lock()
+		if m.Method == "thread/goal/cleared" || p.Goal.Objective == "" {
+			delete(c.goals, p.ThreadID)
+		} else {
+			if c.goals == nil {
+				c.goals = map[string]core.Goal{}
+			}
+			c.goals[p.ThreadID] = core.Goal{Condition: p.Goal.Objective, Status: p.Goal.Status}
+		}
+		c.mu.Unlock()
 		return
 	}
 	if m.Method == "item/agentMessage/delta" || m.Method == "item/reasoning/summaryTextDelta" || m.Method == "item/reasoning/textDelta" {
@@ -594,6 +631,7 @@ func (c *Client) failProcess(cmd *exec.Cmd, err error) {
 	c.turns = map[string]*turnStream{}
 	c.active = map[string]string{}
 	c.threads = map[string]string{}
+	c.goals = nil
 	c.mu.Unlock()
 	for _, ch := range pending {
 		ch <- response{err: err}
@@ -812,6 +850,38 @@ func (c *Client) Busy(id string) bool {
 	_, turning := c.turns[id]
 	_, active := c.active[id]
 	return turning || active
+}
+
+// ChildTurns counts spawned agents still mid-turn: every active thread but id.
+func (c *Client) ChildTurns(id string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for tid := range c.active {
+		if tid != id {
+			n++
+		}
+	}
+	return n
+}
+
+// Goal is the thread's goal, nil when none.
+func (c *Client) Goal(id string) *core.Goal {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if g, ok := c.goals[id]; ok {
+		return &g
+	}
+	return nil
+}
+
+// SetGoal sets or clears the thread's goal. Setting one on an idle thread
+// makes Codex start a turn toward it at once.
+func (c *Client) SetGoal(ctx context.Context, id, objective string) error {
+	if objective == "" {
+		return c.call(ctx, "thread/goal/clear", map[string]any{"threadId": id}, nil)
+	}
+	return c.call(ctx, "thread/goal/set", map[string]any{"threadId": id, "objective": objective}, nil)
 }
 func (c *Client) LiveSessions() []string {
 	c.mu.Lock()

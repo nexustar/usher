@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 )
 
@@ -121,7 +122,7 @@ func (m *Manager) reserve() (*Client, error) {
 	var victimID string
 	var victim *worker
 	for id, w := range m.workers {
-		if w.ready != nil || w.busy || w.leases > 0 || w.client.Busy(id) {
+		if w.ready != nil || w.busy || w.leases > 0 || w.client.Busy(id) || w.client.ChildTurns(id) > 0 {
 			continue
 		}
 		if victim != nil {
@@ -279,6 +280,17 @@ func (m *Manager) Review(ctx context.Context, id, cwd, instructions string) (<-c
 	})
 }
 
+// SetGoal sets, or with an empty objective clears, the thread's goal, resuming
+// a cold thread if needed.
+func (m *Manager) SetGoal(ctx context.Context, id, cwd, objective string) error {
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return err
+	}
+	defer m.releaseWorker(w)
+	return w.client.SetGoal(ctx, id, objective)
+}
+
 // Rename runs Codex's /rename RPC, resuming a cold thread if needed.
 func (m *Manager) Rename(ctx context.Context, id, cwd, title string) error {
 	w, err := m.leaseWorker(ctx, id, cwd)
@@ -407,7 +419,11 @@ func (m *Manager) LiveSessions() []backend.LiveSession {
 	out := make([]backend.LiveSession, 0, len(m.workers))
 	for id, w := range m.workers {
 		if w.ready == nil && w.err == nil && w.client.Running() {
-			out = append(out, backend.LiveSession{ID: id, Busy: w.busy || w.leases > 0 || w.client.Busy(id)})
+			out = append(out, backend.LiveSession{
+				ID:       id,
+				Running:  w.busy || w.client.Busy(id),
+				Activity: core.Activity{Agents: w.client.ChildTurns(id), Goal: w.client.Goal(id)},
+			})
 		}
 	}
 	return out

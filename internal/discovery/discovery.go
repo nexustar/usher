@@ -207,6 +207,8 @@ func (d *Discovery) upsert(path string) {
 			if meta.Title != "" {
 				existing.Title = meta.Title
 			}
+			// Goals end and schedules get deleted: take the whole value.
+			existing.Activity = meta.Activity
 		}
 		d.mu.Lock()
 		d.sessions[id] = existing
@@ -233,6 +235,7 @@ func (d *Discovery) upsert(path string) {
 		LastInputAt: meta.LastInputAt,
 		Backend:     src.Backend(),
 		Runtime:     meta.Runtime,
+		Activity:    meta.Activity,
 	}
 	if sess.StartedAt.IsZero() {
 		sess.StartedAt = info.ModTime()

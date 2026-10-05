@@ -97,11 +97,13 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	var firstUserPrompt, aiTitle, customTitle string
+	var activity activityScan
 	for sc.Scan() {
 		ev, err := ParseLine(sc.Bytes())
 		if err != nil {
 			continue // skip malformed lines, do not fail the whole read
 		}
+		activity.feed(ev)
 		if meta.StartedAt.IsZero() && !ev.Timestamp.IsZero() {
 			meta.StartedAt = ev.Timestamp
 		}
@@ -146,6 +148,7 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 	} else {
 		meta.Title = aiTitle
 	}
+	meta.Activity = activity.activity()
 	return meta, sc.Err()
 }
 

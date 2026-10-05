@@ -282,27 +282,32 @@ func (r *Router) anyHas(id string) bool {
 	return false
 }
 
-// liveSet maps every session with a live worker, across backends, to whether
-// that worker is busy.
-func (r *Router) liveSet() map[string]bool {
-	set := map[string]bool{}
+// liveSet maps every live session, across backends, to its worker state.
+func (r *Router) liveSet() map[string]backendpkg.LiveSession {
+	set := map[string]backendpkg.LiveSession{}
 	for _, b := range r.backends {
 		for _, s := range b.Runtime.LiveSessions() {
-			set[s.ID] = s.Busy
+			set[s.ID] = s
 		}
 	}
 	return set
 }
 
-// applyLiveStatus overlays worker state on a discovered session. A busy worker
-// with no usher turn is on one of its own (a /loop tick); that is running too.
-func applyLiveStatus(sess *core.Session, running bool, live map[string]bool) {
-	busy, isLive := live[sess.ID]
+// applyLiveStatus overlays worker state on a discovered session. A worker
+// running with no usher turn is on one of its own (a /loop tick). Discovery
+// filled what the transcript records; the worker adds what only a live
+// process knows.
+func applyLiveStatus(sess *core.Session, running bool, live map[string]backendpkg.LiveSession) {
+	worker, isLive := live[sess.ID]
 	switch {
-	case running || busy:
+	case running || worker.Running:
 		sess.Status = core.StatusRunning
 	case isLive:
 		sess.Status = core.StatusLive
+	}
+	sess.Activity.Agents = worker.Activity.Agents
+	if worker.Activity.Goal != nil {
+		sess.Activity.Goal = worker.Activity.Goal
 	}
 }
 
@@ -1016,8 +1021,8 @@ func (r *Router) CancelSend(sessionID string) error {
 	tok, ok := r.activeSend[sessionID]
 	r.sendMu.Unlock()
 	if !ok {
-		// A worker busy on its own turn (a /loop tick) has no send to cancel.
-		if !r.liveSet()[sessionID] {
+		// A worker on its own turn (a /loop tick) has no send to cancel.
+		if !r.liveSet()[sessionID].Running {
 			return errors.New("no active send")
 		}
 		slog.Debug("foreign turn cancelled", "session", sessionID)

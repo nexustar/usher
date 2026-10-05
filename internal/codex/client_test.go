@@ -150,6 +150,44 @@ func TestClientTracksSpontaneousTurnActivity(t *testing.T) {
 	}
 }
 
+func TestClientTracksThreadGoal(t *testing.T) {
+	c := New("unused", nil, nil, nil, nil, nil, nil)
+	if c.Goal("s") != nil {
+		t.Fatal("goal before any notification")
+	}
+	c.dispatch(rpcMessage{Method: "thread/goal/updated", Params: json.RawMessage(`{"threadId":"s","turnId":null,"goal":{"threadId":"s","objective":"make tests pass","status":"active","tokenBudget":null,"tokensUsed":0,"timeUsedSeconds":0}}`)})
+	if g := c.Goal("s"); g == nil || g.Condition != "make tests pass" || g.Status != "active" {
+		t.Fatalf("goal = %+v", g)
+	}
+	c.dispatch(rpcMessage{Method: "thread/goal/updated", Params: json.RawMessage(`{"threadId":"s","goal":{"objective":"make tests pass","status":"paused"}}`)})
+	if g := c.Goal("s"); g == nil || g.Status != "paused" {
+		t.Fatalf("goal after pause = %+v", g)
+	}
+	c.dispatch(rpcMessage{Method: "thread/goal/cleared", Params: json.RawMessage(`{"threadId":"s"}`)})
+	if c.Goal("s") != nil {
+		t.Fatal("goal survived thread/goal/cleared")
+	}
+}
+
+// A spawned agent's turn arrives under its own thread id: it counts as a child
+// of the root, not as the root's turn, and thread/closed clears it too.
+func TestClientCountsChildThreadTurns(t *testing.T) {
+	c := New("unused", nil, nil, nil, nil, nil, nil)
+	c.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"agent-1","turn":{"id":"t1"}}`)})
+	c.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"agent-2","turn":{"id":"t2"}}`)})
+	if c.Busy("session-1") {
+		t.Fatal("child turns marked the root busy")
+	}
+	if n := c.ChildTurns("session-1"); n != 2 {
+		t.Fatalf("ChildTurns = %d, want 2", n)
+	}
+	c.dispatch(rpcMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"agent-1","turn":{"id":"t1","status":"completed"}}`)})
+	c.dispatch(rpcMessage{Method: "thread/closed", Params: json.RawMessage(`{"threadId":"agent-2"}`)})
+	if n := c.ChildTurns("session-1"); n != 0 {
+		t.Fatalf("ChildTurns after completion and close = %d, want 0", n)
+	}
+}
+
 func TestRawJSONContainsString(t *testing.T) {
 	raw := json.RawMessage(`["accept",{"acceptWithExecpolicyAmendment":{}},"acceptForSession","decline"]`)
 	if !rawJSONContainsString(raw, "acceptForSession") {

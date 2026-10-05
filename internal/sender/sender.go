@@ -263,6 +263,18 @@ func (s *Sender) codexPrompt(ctx context.Context, sessionID, prompt, cwd string,
 			return nil, err
 		}
 		return backend.CompletedOperation(cwd), nil
+	case "/goal":
+		// Same spellings Claude's /goal accepts for clearing.
+		switch strings.ToLower(args) {
+		case "":
+			return nil, errors.New("usage: /goal <objective> | /goal clear")
+		case "clear", "stop", "off", "reset", "none", "cancel":
+			args = ""
+		}
+		if err := s.app.SetGoal(ctx, sessionID, cwd, args); err != nil {
+			return nil, err
+		}
+		return backend.CompletedOperation(cwd), nil
 	default:
 		skills, err := s.app.Skills(ctx, sessionID, cwd)
 		if err != nil {
@@ -418,6 +430,13 @@ func (s *Sender) argsFor(id string) []string {
 	return lookup(id)
 }
 
+// SetScheduled forwards the eviction-time transcript lookup to the Claude pool.
+func (s *Sender) SetScheduled(f func(id string) bool) {
+	if s.claude != nil {
+		s.claude.SetScheduled(f)
+	}
+}
+
 // LiveSessions lists the sessions with a live backend worker.
 func (s *Sender) LiveSessions() []backend.LiveSession {
 	if s.app != nil {
@@ -450,6 +469,7 @@ func (s *Sender) ComposerItems(ctx context.Context, sessionID, cwd string) (back
 	}
 	out := []backend.ComposerItem{
 		{Name: "compact", Kind: "command", Description: "Compact conversation context"},
+		{Name: "goal", Kind: "command", Description: "Set a goal Codex keeps working toward (/goal clear to stop)"},
 		{Name: "rename", Kind: "command", Description: "Rename this session"},
 		{Name: "review", Kind: "command", Description: "Review current changes"},
 	}
