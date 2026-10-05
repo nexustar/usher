@@ -760,6 +760,24 @@ func TestAssemblerExtensionItems(t *testing.T) {
 	}
 }
 
+// A web.search with no query of its own takes its first result's title, or
+// URL, as the card title.
+func TestAssemblerWebSearchWithoutQueryIsNamedByFirstResult(t *testing.T) {
+	a := NewAssembler()
+	a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"web.search","id":"x1","action":{"type":"open_page"},"results":[{"title":"Go 1.25 Release Notes\nsecond line","snippet":"HUGE-RESULTS","url":"https://go.dev/doc/go1.25"},{"title":"other"}]}}}`))
+	a.Feed([]byte(`{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"web.search","id":"x2","action":{"type":"open_page"},"results":[{"url":"https://go.dev/blog"}]}}}`))
+	turn := a.Flush()
+	if turn == nil || len(turn.Parts) != 2 {
+		t.Fatalf("want 2 parts, got %+v", turn)
+	}
+	if got := turn.Parts[0]; got.ToolTarget != "Go 1.25 Release Notes" || strings.Contains(got.Content, "HUGE-RESULTS") {
+		t.Errorf("titled result: %+v", got)
+	}
+	if got := turn.Parts[1].ToolTarget; got != "https://go.dev/blog" {
+		t.Errorf("untitled result: target = %q", got)
+	}
+}
+
 func TestAssemblerCustomWrapperDeduplicatesCanonicalPatch(t *testing.T) {
 	a := NewAssembler()
 	a.Feed([]byte(`{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"outer","name":"exec","input":"text(await tools.apply_patch(\"*** Begin Patch\"))"}}`))

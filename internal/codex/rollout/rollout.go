@@ -555,16 +555,22 @@ func shellScript(argv []string) string {
 
 func (a *Assembler) simpleEventToolPart(l line, name string) *core.TurnPart {
 	var p struct {
-		Query  string          `json:"query"`
-		Path   string          `json:"path"`
-		Action json.RawMessage `json:"action"`
+		Query   string          `json:"query"`
+		Path    string          `json:"path"`
+		Action  json.RawMessage `json:"action"`
+		Results []struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+		} `json:"results"`
 	}
 	if json.Unmarshal(l.Payload, &p) != nil {
 		return nil
 	}
-	target := p.Query
-	if target == "" {
-		target = p.Path
+	target := firstNonEmpty(p.Query, p.Path)
+	if target == "" && len(p.Results) > 0 {
+		// A follow-up on an open page carries no query: name it by its first
+		// hit. The results themselves are huge and stay out.
+		target = textutil.FirstLine(firstNonEmpty(p.Results[0].Title, p.Results[0].URL))
 	}
 	body := ""
 	if len(p.Action) > 0 && string(p.Action) != "null" {
