@@ -705,3 +705,23 @@ func TestFeedLinePartsReturnsEveryAssistantBlock(t *testing.T) {
 		t.Fatalf("canonical turn does not match live parts: %+v", turn)
 	}
 }
+
+func TestCodemodeCallShowsItsScript(t *testing.T) {
+	a := NewAssembler()
+	script := "// @options: {\"timeout_ms\": 60000}\n\nconst r = await tools.bash({command: \"ls\"});\ntext(r.output);"
+	args, _ := json.Marshal(map[string]string{"code": script})
+	_, parts := a.FeedLineParts([]byte(`{"type":"message","id":"a1","timestamp":"2026-07-01T10:00:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"codemode","arguments":` + string(args) + `}]}}`))
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want 1", len(parts))
+	}
+	if got, want := parts[0].ToolTarget, `const r = await tools.bash({command: "ls"});`; got != want {
+		t.Errorf("title = %q, want %q", got, want)
+	}
+	if parts[0].ToolInput != script {
+		t.Errorf("input = %q, want the whole script", parts[0].ToolInput)
+	}
+	_, parts = a.FeedLineParts([]byte(`{"type":"message","id":"r1","timestamp":"2026-07-01T10:00:01Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"codemode","content":[{"type":"text","text":"Script completed in 0.1s"}]}}`))
+	if len(parts) != 1 || !strings.HasPrefix(parts[0].Content, "```") {
+		t.Errorf("result not fenced: %+v", parts)
+	}
+}

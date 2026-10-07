@@ -217,6 +217,9 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 				case strings.EqualFold(b.Name, "bash"):
 					// bash's target is its command: the first line titles the card.
 					target, input = textutil.FirstLine(target), target
+				case b.Name == "codemode":
+					input = codemodeScript(b.Arguments)
+					target = codemodeTitle(input)
 				case strings.HasPrefix(b.Name, "mcp__"):
 					input = textutil.IndentJSON(b.Arguments)
 				}
@@ -285,7 +288,7 @@ func renderToolResult(name, body string) string {
 
 func terminalOutputTool(name string) bool {
 	switch strings.ToLower(name) {
-	case "read", "bash", "grep", "find", "ls":
+	case "read", "bash", "grep", "find", "ls", "codemode":
 		return true
 	default:
 		return false
@@ -300,6 +303,26 @@ func toolTarget(name string, args json.RawMessage) string {
 	for _, key := range []string{"command", "path", "file_path", "query", "pattern"} {
 		if s, ok := v[key].(string); ok {
 			return s
+		}
+	}
+	return ""
+}
+
+func codemodeScript(args json.RawMessage) string {
+	var v struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(args, &v)
+	return v.Code
+}
+
+// codemodeTitle is the script's first line of code: blank lines and comments,
+// including the leading "// @options:" directive, say nothing about the call.
+func codemodeTitle(script string) string {
+	for _, line := range strings.Split(script, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "//") {
+			return line
 		}
 	}
 	return ""

@@ -158,3 +158,49 @@ func exitReason(t *testing.T, ev backend.Event) string {
 	}
 	return p.Reason
 }
+
+// An input an extension consumed starts no run, so the turn must end on the
+// prompt response instead of waiting for an agent_settled that never comes.
+func TestHandledPromptEndsWithoutAgentSettled(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-pi")
+	body := `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"prompt"'*) printf '{"type":"response","id":"%s","success":true,"data":{"disposition":"handled"}}\n' "$id" ;;
+    *) printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id" ;;
+  esac
+done
+`
+	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := startClient(bin, dir, "", dir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.stop)
+	w := &worker{c: c, cwd: dir, path: path, last: time.Now()}
+	r := &Runtime{workers: map[string]*worker{}, max: 1, logger: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	if err := r.add("s1", w); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := r.startTurn(context.Background(), "s1", w, "hello", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectPi(t, ch, 3*time.Second)
+	if last := events[len(events)-1]; last.Type != backend.EventProcessExit {
+		t.Fatalf("last event = %s, want %s", last.Type, backend.EventProcessExit)
+	}
+	for _, ev := range events {
+		if ev.Type == backend.EventError {
+			t.Fatalf("handled prompt reported an error: %s", ev.Raw)
+		}
+	}
+}

@@ -64,10 +64,11 @@ func startClientWithSystemPrompt(bin, cwd, sessionPath, sessionsDir, model, appe
 	args = append(args, approveArgs(cwd, extra)...)
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
-	// The official installer places pi and its required Node runtime in the
+	// The pre-1.0 installer places pi and its required Node runtime in the
 	// same bin directory. A daemon often does not source ~/.bashrc; without this
 	// explicit PATH, pi's /usr/bin/env node shebang can select an older system
-	// Node even when --pi points at the correct executable.
+	// Node even when --pi points at the correct executable. The managed
+	// launcher finds its own Node and does not need this.
 	if resolved, err := exec.LookPath(bin); err == nil {
 		cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(resolved)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
@@ -946,13 +947,20 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 	// and the pump drops anything with no receiver.
 	evts := make(chan json.RawMessage, 256)
 	detach := w.attach(evts)
-	if _, err := w.c.request(ctx, "prompt", map[string]any{"message": text}); err != nil {
+	data, err := w.c.request(ctx, "prompt", map[string]any{"message": text})
+	if err != nil {
 		detach()
 		r.mu.Lock()
 		w.busy = false
 		r.mu.Unlock()
 		return nil, err
 	}
+	// Pi 1.0 reports an input that an extension consumed. No run starts for
+	// it, so agent_settled never arrives.
+	var accepted struct {
+		Disposition string `json:"disposition"`
+	}
+	_ = json.Unmarshal(data, &accepted)
 	out := make(chan backend.Event, 128)
 	go func() {
 		defer close(out)
@@ -1000,6 +1008,12 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 			}
 			raw, _ := json.Marshal(backend.ErrorPayload{Message: backend.AbortedTurnMessage})
 			out <- backend.Event{Type: backend.EventError, Raw: raw}
+		}
+		if accepted.Disposition == "handled" {
+			emitTail()
+			r.finishOperation(ctx, id, w, out)
+			emitExit("")
+			return
 		}
 		// Drain through agent_settled so its final records and shared event do
 		// not leak into the next turn.

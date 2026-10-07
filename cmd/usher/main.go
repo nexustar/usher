@@ -529,11 +529,20 @@ func defaultPiSessionsDir() string {
 
 func defaultPiCmd() string {
 	home, err := os.UserHomeDir()
-	if err == nil {
-		// pi's official installer keeps a matching Node runtime beside the CLI.
-		// Prefer it when present so services that do not source ~/.bashrc still
-		// work, and runtime.go can prepend that bin directory to PATH.
-		installed := filepath.Join(home, ".local", "share", "pi-node", "current", "bin", "pi")
+	if err != nil {
+		return "pi"
+	}
+	agentDir := os.Getenv("PI_CODING_AGENT_DIR")
+	if agentDir == "" {
+		agentDir = filepath.Join(home, ".pi", "agent")
+	}
+	// Neither official install lands on a service's PATH: pi 1.0's managed
+	// installer keeps its launcher in the agent dir, the older npm-based one
+	// beside its own Node runtime.
+	for _, installed := range []string{
+		filepath.Join(agentDir, "bin", "pi"),
+		filepath.Join(home, ".local", "share", "pi-node", "current", "bin", "pi"),
+	} {
 		if info, statErr := os.Stat(installed); statErr == nil && !info.IsDir() {
 			return installed
 		}
