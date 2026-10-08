@@ -50,6 +50,13 @@ func NewManager(bin string, interactions *interaction.Manager, sandbox, config m
 	return &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}}
 }
 
+// holdsWork reports whether stopping the worker would lose something: a turn
+// of usher's or Codex's own, a delegated agent, or a command left running in
+// the background. Caller holds m.mu.
+func (m *Manager) holdsWork(id string, w *worker) bool {
+	return w.ready != nil || w.busy || w.leases > 0 || w.client.Busy(id) || w.client.ChildTurns(id) > 0 || w.client.Commands() > 0
+}
+
 // newClient builds one session's worker. extra follows --codex-args
 // vocabulary (--sandbox / -c key=value) and overrides the manager-wide
 // sandbox and config for this worker only. id is empty for a fresh thread —
@@ -122,7 +129,7 @@ func (m *Manager) reserve() (*Client, error) {
 	var victimID string
 	var victim *worker
 	for id, w := range m.workers {
-		if w.ready != nil || w.busy || w.leases > 0 || w.client.Busy(id) || w.client.ChildTurns(id) > 0 {
+		if m.holdsWork(id, w) {
 			continue
 		}
 		if victim != nil {

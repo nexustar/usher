@@ -76,6 +76,7 @@ type process struct {
 	stopping      bool
 	done          chan struct{}
 	tasks         map[string]struct{} // delegated agent tasks in flight, by task_id
+	shells        map[string]struct{} // every other background task, by task_id
 }
 
 // With mu.
@@ -86,7 +87,9 @@ func (p *process) activity() core.Activity { return core.Activity{Agents: len(p.
 
 // busy is the eviction guard for what the process reports; Manager.scheduled
 // covers the transcript. With mu.
-func (p *process) busy() bool { return p.running() || p.leases > 0 || p.activity().Pins() }
+func (p *process) busy() bool {
+	return p.running() || p.leases > 0 || p.activity().Pins() || len(p.shells) > 0
+}
 
 // With mu.
 func (p *process) describeBusy() string {
@@ -100,8 +103,8 @@ func (p *process) describeBusy() string {
 		p.id, len(p.turns), foreign, p.leases, len(p.tasks), time.Since(p.lastUsed).Round(time.Second))
 }
 
-// Mirrors the Agent SDK's task tracking. Shells are left out: they may never
-// reach a terminal status. Either terminal frame can be the only one sent.
+// Mirrors the Agent SDK's task tracking, which leaves shells out of what it
+// waits on. Either terminal frame can be the only one sent.
 var (
 	deferringTaskTypes   = map[string]bool{"local_agent": true, "local_workflow": true}
 	terminalTaskStatuses = map[string]bool{"completed": true, "failed": true, "stopped": true, "killed": true}
@@ -120,12 +123,19 @@ func trackTask(p *process, subtype, taskID, taskType, patchStatus string) {
 				p.tasks = map[string]struct{}{}
 			}
 			p.tasks[taskID] = struct{}{}
+		} else {
+			if p.shells == nil {
+				p.shells = map[string]struct{}{}
+			}
+			p.shells[taskID] = struct{}{}
 		}
 	case "task_notification":
 		delete(p.tasks, taskID)
+		delete(p.shells, taskID)
 	case "task_updated":
 		if terminalTaskStatuses[patchStatus] {
 			delete(p.tasks, taskID)
+			delete(p.shells, taskID)
 		}
 	}
 }

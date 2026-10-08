@@ -844,3 +844,17 @@ func TestForeignStartedDuringRunningTurnStaysBehindIt(t *testing.T) {
 		t.Fatalf("running turn delta = %+v", d)
 	}
 }
+
+// A background shell reports like any task but is not one the SDK waits on.
+func TestBackgroundShellHoldsProcess(t *testing.T) {
+	p := &process{id: "s", lastUsed: time.Now()}
+	held := func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.busy() }
+	trackTask(p, "task_started", "b1", "local_bash", "")
+	if !held() || len(p.tasks) != 0 {
+		t.Fatalf("held=%v tasks=%d, want held with no agent task", held(), len(p.tasks))
+	}
+	trackTask(p, "task_updated", "b1", "", "completed")
+	if held() {
+		t.Fatal("exited shell still holds the process")
+	}
+}

@@ -95,6 +95,7 @@ type Client struct {
 	active       map[string]string // thread id -> id of the turn app-server is running
 	threads      map[string]string // thread id -> cwd
 	goals        map[string]core.Goal
+	commands     map[string]struct{} // item ids of commands still running, turn or no turn
 	next         atomic.Uint64
 	init         *initState
 	waitDone     chan struct{}
@@ -335,6 +336,30 @@ func (c *Client) dispatch(m rpcMessage) {
 		delete(c.active, p.ThreadID)
 		delete(c.goals, p.ThreadID)
 		c.mu.Unlock()
+		return
+	}
+	// A command the model left in the background completes whenever it exits,
+	// long after its turn did.
+	if m.Method == "item/started" || m.Method == "item/completed" {
+		var p struct {
+			Item struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+			} `json:"item"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		if p.Item.Type == "commandExecution" && p.Item.ID != "" {
+			c.mu.Lock()
+			if m.Method == "item/completed" {
+				delete(c.commands, p.Item.ID)
+			} else {
+				if c.commands == nil {
+					c.commands = map[string]struct{}{}
+				}
+				c.commands[p.Item.ID] = struct{}{}
+			}
+			c.mu.Unlock()
+		}
 		return
 	}
 	// app-server broadcasts goal changes and replays the goal on resume.
@@ -632,6 +657,7 @@ func (c *Client) failProcess(cmd *exec.Cmd, err error) {
 	c.active = map[string]string{}
 	c.threads = map[string]string{}
 	c.goals = nil
+	c.commands = nil
 	c.mu.Unlock()
 	for _, ch := range pending {
 		ch <- response{err: err}
@@ -751,7 +777,7 @@ func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan 
 		params := c.threadParamsFor(ctx, cwd, "")
 		params["threadId"] = id
 		if err := c.call(ctx, "thread/resume", params, nil); err != nil {
-			return nil, nil, err
+			return nil, nil, resumeError(err)
 		}
 		c.mu.Lock()
 		c.threads[id] = cwd
@@ -797,12 +823,21 @@ func (c *Client) ResumeThread(ctx context.Context, id, cwd string) error {
 	params := c.threadParamsFor(ctx, cwd, "")
 	params["threadId"] = id
 	if err := c.call(ctx, "thread/resume", params, nil); err != nil {
-		return err
+		return resumeError(err)
 	}
 	c.mu.Lock()
 	c.threads[id] = cwd
 	c.mu.Unlock()
 	return nil
+}
+
+// resumeError names the cause when another Codex process holds the thread:
+// Codex lets one process at a time write a thread.
+func resumeError(err error) error {
+	if strings.Contains(err.Error(), "already has an active writer") {
+		return errors.New("this session is open in another Codex client; close it there to continue here")
+	}
+	return err
 }
 
 // RenameThread updates display metadata without starting a turn.
@@ -863,6 +898,13 @@ func (c *Client) ChildTurns(id string) int {
 		}
 	}
 	return n
+}
+
+// Commands counts commands still running in this process.
+func (c *Client) Commands() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.commands)
 }
 
 // Goal is the thread's goal, nil when none.

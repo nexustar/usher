@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -326,5 +327,32 @@ func TestBindSessionTagsLaterClientLogs(t *testing.T) {
 	if got := buf.String(); !strings.Contains(got, "session=new-thread") ||
 		!strings.Contains(got, "rejecting unknown app-server request") {
 		t.Fatalf("log = %q", got)
+	}
+}
+
+// A backgrounded command's item completes when it exits, after its turn.
+func TestClientTracksCommandsPastTheirTurn(t *testing.T) {
+	c := New("unused", nil, nil, nil, nil, nil, nil)
+	c.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"s","turn":{"id":"t1"}}`)})
+	c.dispatch(rpcMessage{Method: "item/started", Params: json.RawMessage(`{"threadId":"s","item":{"type":"agentMessage","id":"msg-1"}}`)})
+	c.dispatch(rpcMessage{Method: "item/started", Params: json.RawMessage(`{"threadId":"s","item":{"type":"commandExecution","id":"exec-1","status":"inProgress"}}`)})
+	c.dispatch(rpcMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"s","turn":{"id":"t1","status":"completed"}}`)})
+	if c.Busy("s") || c.Commands() != 1 {
+		t.Fatalf("after turn: busy=%v commands=%d, want idle with 1 command", c.Busy("s"), c.Commands())
+	}
+	c.dispatch(rpcMessage{Method: "item/completed", Params: json.RawMessage(`{"threadId":"s","item":{"type":"commandExecution","id":"exec-1","status":"completed"}}`)})
+	if c.Commands() != 0 {
+		t.Fatalf("Commands after exit = %d, want 0", c.Commands())
+	}
+}
+
+func TestResumeErrorNamesAnotherWriter(t *testing.T) {
+	err := resumeError(errors.New("rpc -32600: thread 01a0 already has an active writer"))
+	if !strings.Contains(err.Error(), "another Codex client") {
+		t.Fatalf("err = %v", err)
+	}
+	other := errors.New("rpc -32600: no rollout found")
+	if resumeError(other) != other {
+		t.Fatal("unrelated resume error was rewritten")
 	}
 }

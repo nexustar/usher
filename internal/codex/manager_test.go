@@ -455,3 +455,20 @@ func TestLeasedWorkerIsUnevictableBeforeCallerMarksItBusy(t *testing.T) {
 		t.Fatalf("released idle worker stayed unevictable: %v", err)
 	}
 }
+
+func TestLRUSparesWorkerWithBackgroundCommand(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	defer m.Shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.Resume(ctx, "command", "/tmp"); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.workers["command"].client.dispatch(rpcMessage{Method: "item/started", Params: json.RawMessage(`{"threadId":"command","item":{"type":"commandExecution","id":"exec-1"}}`)})
+	m.mu.Unlock()
+	if err := m.Resume(ctx, "other", "/tmp"); err == nil {
+		t.Fatal("LRU evicted a worker whose command was still running")
+	}
+}

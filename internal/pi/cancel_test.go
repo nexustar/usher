@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ while IFS= read -r line; do
   printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id"
   case "$line" in
     *'"type":"prompt"'*) ` + settleCmd + ` ;;
+    *'"type":"fake_agent_start"'*) printf '{"type":"agent_start"}\n' ;;
+    *'"type":"fake_agent_settled"'*) printf '{"type":"agent_settled"}\n' ;;
   esac
 done
 `
@@ -201,6 +204,42 @@ done
 	for _, ev := range events {
 		if ev.Type == backend.EventError {
 			t.Fatalf("handled prompt reported an error: %s", ev.Raw)
+		}
+	}
+}
+
+// An extension can queue a run usher never asked for; pi's own agent_start is
+// the only word of it.
+func TestAgentLoopHoldsWorkerAgainstEviction(t *testing.T) {
+	r, w := fakePiWorker(t, false)
+	fakeEvent(t, w, "agent_start")
+	waitLoop(t, r, w, true)
+	if err := r.add("other", &worker{last: time.Now()}); err == nil || !strings.Contains(err.Error(), "all busy") {
+		t.Fatalf("add alongside a running loop = %v, want all busy", err)
+	}
+	fakeEvent(t, w, "agent_settled")
+	waitLoop(t, r, w, false)
+}
+
+// fakeEvent has the fake pi emit one event of its own.
+func fakeEvent(t *testing.T, w *worker, event string) {
+	t.Helper()
+	if _, err := w.c.request(context.Background(), "fake_"+event, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitLoop(t *testing.T, r *Runtime, w *worker, want bool) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		r.mu.Lock()
+		got := w.loop
+		r.mu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("loop = %v, want %v", got, want)
 		}
 	}
 }

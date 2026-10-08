@@ -424,8 +424,11 @@ func (c *client) stop() {
 }
 
 type worker struct {
-	c      *client
-	busy   bool
+	c    *client
+	busy bool
+	// loop is pi's own word that an agent run is in flight, usher's or one an
+	// extension queued.
+	loop   bool
 	leases int
 	last   time.Time
 	cwd    string
@@ -490,6 +493,11 @@ func (r *Runtime) pump(id string, w *worker) {
 			// Dialogs block until the user answers; keep the stream moving.
 			go r.handleExtensionUI(ctx, id, w, raw)
 			continue
+		}
+		if head.Type == "agent_start" || head.Type == "agent_settled" {
+			r.mu.Lock()
+			w.loop, w.last = head.Type == "agent_start", time.Now()
+			r.mu.Unlock()
 		}
 		w.deliver(raw)
 	}
@@ -968,7 +976,8 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 		defer func() {
 			r.mu.Lock()
 			if r.workers[id] == w {
-				w.busy = false
+				// A cancelled run may never settle.
+				w.busy, w.loop = false, false
 				w.last = time.Now()
 			}
 			r.mu.Unlock()
@@ -1269,7 +1278,7 @@ func (r *Runtime) add(id string, w *worker) error {
 		var victimID string
 		var victim *worker
 		for k, x := range r.workers {
-			if x.busy || x.leases > 0 {
+			if x.busy || x.loop || x.leases > 0 {
 				continue
 			}
 			if victim == nil || x.last.Before(victim.last) {
