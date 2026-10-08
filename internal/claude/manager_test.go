@@ -858,3 +858,40 @@ func TestBackgroundShellHoldsProcess(t *testing.T) {
 		t.Fatal("exited shell still holds the process")
 	}
 }
+
+func TestReapIdleSparesScheduledAndBackgroundWork(t *testing.T) {
+	m := New("missing", "", "", nil, 8, nil, nil)
+	defer m.Shutdown()
+	now := time.Now()
+	add := func(id string) *process {
+		p := drainedProcess()
+		p.id, p.lastUsed = id, now.Add(-time.Hour)
+		p.done = make(chan struct{})
+		close(p.done) // stop() finds the process already gone
+		m.processes[id] = p
+		return p
+	}
+	add("idle")
+	add("loop")
+	add("agent").tasks = map[string]struct{}{"t1": {}}
+	trackTask(add("shell"), "task_started", "b1", "local_bash", "")
+	m.SetScheduled(func(id string) bool { return id == "loop" })
+	live := func(want map[string]bool) {
+		t.Helper()
+		for id, w := range want {
+			if m.Has(id) != w {
+				t.Errorf("%s live = %v, want %v", id, m.Has(id), w)
+			}
+		}
+	}
+
+	m.reapIdle(now, time.Minute)
+	live(map[string]bool{"idle": true, "loop": true, "agent": true, "shell": true})
+	m.reapIdle(now.Add(2*time.Minute), time.Minute)
+	live(map[string]bool{"idle": false, "loop": true, "agent": true, "shell": true})
+	trackTask(m.processes["shell"], "task_notification", "b1", "", "")
+	m.reapIdle(now.Add(3*time.Minute), time.Minute)
+	live(map[string]bool{"shell": true})
+	m.reapIdle(now.Add(5*time.Minute), time.Minute)
+	live(map[string]bool{"loop": true, "agent": true, "shell": false})
+}

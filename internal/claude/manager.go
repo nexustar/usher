@@ -77,6 +77,7 @@ type process struct {
 	done          chan struct{}
 	tasks         map[string]struct{} // delegated agent tasks in flight, by task_id
 	shells        map[string]struct{} // every other background task, by task_id
+	idleSince     time.Time           // when the reaper first found nothing held
 }
 
 // With mu.
@@ -168,8 +169,66 @@ type Manager struct {
 	// pending wake (see jsonl.activityScan). Called with mu held: it must not
 	// re-enter the Manager.
 	scheduled func(id string) bool
+	autoPause time.Duration
+	stop      chan struct{}
+	stopOnce  sync.Once
 	mu        sync.Mutex
 	processes map[string]*process
+}
+
+// SetAutoPause stops a process once it has held nothing for d; zero keeps
+// processes until evicted.
+func (m *Manager) SetAutoPause(d time.Duration) {
+	m.mu.Lock()
+	m.autoPause = d
+	m.mu.Unlock()
+}
+
+func (m *Manager) reapLoop() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case now := <-t.C:
+			m.mu.Lock()
+			after := m.autoPause
+			m.mu.Unlock()
+			if after > 0 {
+				m.reapIdle(now, after)
+			}
+		}
+	}
+}
+
+// reapIdle stops processes that have held nothing for after.
+func (m *Manager) reapIdle(now time.Time, after time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, p := range m.processes {
+		scheduled := m.scheduled != nil && m.scheduled(id)
+		p.mu.Lock()
+		if p.busy() || scheduled {
+			p.idleSince = time.Time{}
+			p.mu.Unlock()
+			continue
+		}
+		if p.idleSince.IsZero() {
+			p.idleSince = now
+		}
+		since := p.idleSince
+		if p.lastUsed.After(since) {
+			since = p.lastUsed
+		}
+		p.mu.Unlock()
+		if now.Sub(since) < after {
+			continue
+		}
+		delete(m.processes, id)
+		go stop(p)
+		m.logger.Info("worker auto-paused", "session", id)
+	}
 }
 
 func (m *Manager) SetScheduled(f func(id string) bool) {
@@ -185,7 +244,9 @@ func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, interact
 	if maxLive <= 0 {
 		maxLive = 8
 	}
-	return &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, interactions: interactions, logger: logger, processes: map[string]*process{}}
+	m := &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, interactions: interactions, logger: logger, processes: map[string]*process{}, stop: make(chan struct{})}
+	go m.reapLoop()
+	return m
 }
 
 // ensureProcess resolves id's live process, spawning a cold one when needed.
@@ -1028,6 +1089,7 @@ func (m *Manager) LiveSessions() []backend.LiveSession {
 	return out
 }
 func (m *Manager) Shutdown() {
+	m.stopOnce.Do(func() { close(m.stop) })
 	m.mu.Lock()
 	ps := make([]*process, 0, len(m.processes))
 	for _, p := range m.processes {

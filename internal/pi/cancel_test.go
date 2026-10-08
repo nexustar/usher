@@ -243,3 +243,27 @@ func waitLoop(t *testing.T, r *Runtime, w *worker, want bool) {
 		}
 	}
 }
+
+func TestAutoPauseWaitsForAgentLoop(t *testing.T) {
+	r, w := fakePiWorker(t, false)
+	fakeEvent(t, w, "agent_start")
+	waitLoop(t, r, w, true)
+	now := time.Now()
+	r.reapIdle(now, time.Minute)
+	r.reapIdle(now.Add(time.Hour), time.Minute)
+	if !r.Has("s1") {
+		t.Fatal("worker paused mid-run")
+	}
+
+	fakeEvent(t, w, "agent_settled")
+	waitLoop(t, r, w, false)
+	now = time.Now()
+	r.reapIdle(now, time.Minute)
+	if !r.Has("s1") {
+		t.Fatal("worker paused the moment its run settled")
+	}
+	r.reapIdle(now.Add(2*time.Minute), time.Minute)
+	if r.Has("s1") {
+		t.Fatal("idle worker kept past the pause period")
+	}
+}

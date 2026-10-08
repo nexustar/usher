@@ -185,6 +185,16 @@ func codexMCPConfig(logger *slog.Logger) map[string]any {
 	}
 }
 
+// SetAutoPause sets how long an idle worker is kept.
+func (s *Sender) SetAutoPause(d time.Duration) {
+	if s.app != nil {
+		s.app.SetAutoPause(d)
+	}
+	if s.claude != nil {
+		s.claude.SetAutoPause(d)
+	}
+}
+
 // NewCodex builds a Sender that drives Codex through per-session app-server
 // workers.
 // codexCmd is the codex binary; sessionsDir is ~/.codex/sessions (the rollout

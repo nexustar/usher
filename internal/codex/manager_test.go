@@ -456,6 +456,55 @@ func TestLeasedWorkerIsUnevictableBeforeCallerMarksItBusy(t *testing.T) {
 	}
 }
 
+func TestReapIdleReleasesWorkersHoldingNothing(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 8, nil)
+	defer m.Shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, id := range []string{"idle", "command", "agent", "goal", "paused"} {
+		if err := m.Resume(ctx, id, "/tmp"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.mu.Lock()
+	m.workers["goal"].client.dispatch(rpcMessage{Method: "thread/goal/updated", Params: json.RawMessage(`{"threadId":"goal","goal":{"objective":"x","status":"active"}}`)})
+	m.workers["paused"].client.dispatch(rpcMessage{Method: "thread/goal/updated", Params: json.RawMessage(`{"threadId":"paused","goal":{"objective":"x","status":"paused"}}`)})
+	m.workers["command"].client.dispatch(rpcMessage{Method: "item/started", Params: json.RawMessage(`{"threadId":"command","item":{"type":"commandExecution","id":"exec-1"}}`)})
+	agent := m.workers["agent"].client
+	agent.dispatch(rpcMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"child","turn":{"id":"t1"}}`)})
+	m.mu.Unlock()
+	live := func(want map[string]bool) {
+		t.Helper()
+		for id, w := range want {
+			if m.Has(id) != w {
+				t.Errorf("%s live = %v, want %v", id, m.Has(id), w)
+			}
+		}
+	}
+
+	now := time.Now()
+	m.reapIdle(now, time.Minute)
+	live(map[string]bool{"idle": true, "command": true, "agent": true})
+	m.reapIdle(now.Add(2*time.Minute), time.Minute)
+	live(map[string]bool{"idle": false, "paused": false, "command": true, "agent": true, "goal": true})
+
+	// The idle period starts when the turn ends, not when the worker was last used.
+	agent.dispatch(rpcMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"child","turn":{"id":"t1","status":"completed"}}`)})
+	m.reapIdle(now.Add(3*time.Minute), time.Minute)
+	live(map[string]bool{"agent": true})
+	m.reapIdle(now.Add(5*time.Minute), time.Minute)
+	live(map[string]bool{"agent": false, "command": true})
+
+	m.mu.Lock()
+	m.workers["command"].client.dispatch(rpcMessage{Method: "item/completed", Params: json.RawMessage(`{"threadId":"command","item":{"type":"commandExecution","id":"exec-1"}}`)})
+	m.mu.Unlock()
+	m.reapIdle(now.Add(6*time.Minute), time.Minute)
+	live(map[string]bool{"command": true})
+	m.reapIdle(now.Add(8*time.Minute), time.Minute)
+	live(map[string]bool{"command": false, "goal": true})
+}
+
 func TestLRUSparesWorkerWithBackgroundCommand(t *testing.T) {
 	script, logPath := fakeAppServer(t)
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)

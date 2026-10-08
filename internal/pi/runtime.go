@@ -428,11 +428,12 @@ type worker struct {
 	busy bool
 	// loop is pi's own word that an agent run is in flight, usher's or one an
 	// extension queued.
-	loop   bool
-	leases int
-	last   time.Time
-	cwd    string
-	path   string
+	loop      bool
+	leases    int
+	last      time.Time
+	idleSince time.Time
+	cwd       string
+	path      string
 
 	// Event routing. The pump owns c.events for the worker's whole life; an
 	// unread channel would eventually block the RPC reader.
@@ -516,6 +517,60 @@ type Runtime struct {
 	workers          map[string]*worker
 	systemPrompt     func(string) string
 	extraArgs        func(string) []string
+	autoPause        time.Duration
+	stop             chan struct{}
+	stopOnce         sync.Once
+}
+
+// SetAutoPause stops a worker once it has held nothing for d; zero keeps
+// workers until evicted.
+func (r *Runtime) SetAutoPause(d time.Duration) {
+	r.mu.Lock()
+	r.autoPause = d
+	r.mu.Unlock()
+}
+
+func (r *Runtime) reapLoop() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.stop:
+			return
+		case now := <-t.C:
+			r.mu.Lock()
+			after := r.autoPause
+			r.mu.Unlock()
+			if after > 0 {
+				r.reapIdle(now, after)
+			}
+		}
+	}
+}
+
+// reapIdle stops workers that have held nothing for after.
+func (r *Runtime) reapIdle(now time.Time, after time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, w := range r.workers {
+		if w.busy || w.loop || w.leases > 0 {
+			w.idleSince = time.Time{}
+			continue
+		}
+		if w.idleSince.IsZero() {
+			w.idleSince = now
+		}
+		since := w.idleSince
+		if w.last.After(since) {
+			since = w.last
+		}
+		if now.Sub(since) < after {
+			continue
+		}
+		delete(r.workers, id)
+		go w.c.stop()
+		r.logger.Info("worker auto-paused", "session", id)
+	}
 }
 
 // Rename uses RPC when live and native metadata when idle.
@@ -537,7 +592,9 @@ func NewRuntime(bin, sessionsDir string, extra []string, max int, models Models,
 		logger = slog.Default()
 	}
 	logger = logger.With("backend", "pi")
-	return &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, interactions: interactions, logger: logger, workers: map[string]*worker{}}
+	r := &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, interactions: interactions, logger: logger, workers: map[string]*worker{}, stop: make(chan struct{})}
+	go r.reapLoop()
+	return r
 }
 
 var _ backend.SystemPrompter = (*Runtime)(nil)
@@ -1341,6 +1398,11 @@ func (r *Runtime) Kill(id string) error {
 	return nil
 }
 func (r *Runtime) Shutdown() {
+	r.stopOnce.Do(func() {
+		if r.stop != nil {
+			close(r.stop)
+		}
+	})
 	r.mu.Lock()
 	ws := r.workers
 	r.workers = map[string]*worker{}

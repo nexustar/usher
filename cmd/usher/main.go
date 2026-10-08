@@ -132,6 +132,9 @@ func serve(args []string) error {
 		"tmux socket prefix for session terminals")
 	terminalShell := fs.String("terminal-shell", defaultTerminalShell(),
 		"shell executable for session terminals")
+	autoPause := fs.Duration("auto-pause", 0,
+		"stop a session's backend process once it has been idle this long (e.g. 10m); it resumes on the next message. "+
+			"A warm Codex process keeps the session from being resumed in another Codex client. 0 keeps processes until evicted")
 	maxLiveSessions := fs.Int("max-live-sessions", 8,
 		"max concurrent live Claude stream-json processes; least-recently-used sessions are evicted beyond this")
 	agentMode := fs.String("agent-mode", "rule",
@@ -232,6 +235,7 @@ func serve(args []string) error {
 	if dir := *projectsDir; dir != "" && isDir(dir) {
 		sources = append(sources, discovery.NewClaudeSource(dir))
 		claudeRuntime := sender.New(*claudeCmd, *permissionMode, dir, hookSockPath(*dataDir), *maxLiveSessions, !*disableUsherTools, h, logger)
+		claudeRuntime.SetAutoPause(*autoPause)
 		backends["claude"] = backend.Backend{Runtime: claudeRuntime, Transcript: transcript.Claude{}, Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: modelcatalog.Claude{}}
 		defaultBackend = "claude"
 		logger.Info("claude backend enabled", "projects_dir", dir)
@@ -240,6 +244,7 @@ func serve(args []string) error {
 		sources = append(sources, discovery.NewCodexSource(dir))
 		modelsPath := filepath.Join(filepath.Dir(dir), "models_cache.json")
 		codexRuntime := sender.NewCodex(*codexCmd, dir, hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, !*disableUsherTools, h, logger)
+		codexRuntime.SetAutoPause(*autoPause)
 		backends["codex"] = backend.Backend{Runtime: codexRuntime, Transcript: transcript.Codex{}, Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}}
 		// codex's per-account model catalog sits next to the sessions dir.
 		if defaultBackend == "" {
@@ -261,6 +266,7 @@ func serve(args []string) error {
 		}
 		piModels := piagent.Models{Path: filepath.Join(*dataDir, "pi-models.json")}
 		piRuntime := piagent.NewRuntime(*piCmd, dir, extra, *maxLiveSessions, piModels, h, logger)
+		piRuntime.SetAutoPause(*autoPause)
 		backends["pi"] = backend.Backend{Runtime: piRuntime, Transcript: piagent.Transcript{}, Forker: piRuntime, Renamer: piRuntime, Models: piModels}
 		if defaultBackend == "" {
 			defaultBackend = "pi"

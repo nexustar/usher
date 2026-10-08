@@ -21,6 +21,8 @@ type worker struct {
 	// leases protect short RPCs without making the session appear mid-turn.
 	leases   int
 	lastUsed time.Time
+	// idleSince is when the reaper first found the worker holding nothing.
+	idleSince time.Time
 }
 
 // Manager owns one app-server worker per live root Codex session.
@@ -38,6 +40,9 @@ type Manager struct {
 	starting     int
 	systemPrompt func(string) string
 	extraArgs    func(string) []string
+	autoPause    time.Duration
+	stop         chan struct{}
+	stopOnce     sync.Once
 }
 
 func NewManager(bin string, interactions *interaction.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
@@ -47,7 +52,18 @@ func NewManager(bin string, interactions *interaction.Manager, sandbox, config m
 	if maxLive <= 0 {
 		maxLive = 8
 	}
-	return &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}}
+	m := &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}, stop: make(chan struct{})}
+	go m.reapLoop()
+	return m
+}
+
+// SetAutoPause stops a worker once it has held nothing for d. Codex lets one
+// process at a time write a thread, so a worker kept warm locks the session
+// out of every other Codex client. Zero keeps workers until evicted.
+func (m *Manager) SetAutoPause(d time.Duration) {
+	m.mu.Lock()
+	m.autoPause = d
+	m.mu.Unlock()
 }
 
 // holdsWork reports whether stopping the worker would lose something: a turn
@@ -55,6 +71,54 @@ func NewManager(bin string, interactions *interaction.Manager, sandbox, config m
 // the background. Caller holds m.mu.
 func (m *Manager) holdsWork(id string, w *worker) bool {
 	return w.ready != nil || w.busy || w.leases > 0 || w.client.Busy(id) || w.client.ChildTurns(id) > 0 || w.client.Commands() > 0
+}
+
+func (m *Manager) reapLoop() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case now := <-t.C:
+			m.mu.Lock()
+			after := m.autoPause
+			m.mu.Unlock()
+			if after > 0 {
+				m.reapIdle(now, after)
+			}
+		}
+	}
+}
+
+// reapIdle stops workers that have held nothing for after. A goal Codex is
+// still pursuing holds the worker until the LRU needs its slot.
+func (m *Manager) reapIdle(now time.Time, after time.Duration) {
+	var victims []*Client
+	m.mu.Lock()
+	for id, w := range m.workers {
+		if g := w.client.Goal(id); m.holdsWork(id, w) || (g != nil && g.Status == "active") {
+			w.idleSince = time.Time{}
+			continue
+		}
+		if w.idleSince.IsZero() {
+			w.idleSince = now
+		}
+		since := w.idleSince
+		if w.lastUsed.After(since) {
+			since = w.lastUsed
+		}
+		if now.Sub(since) < after {
+			continue
+		}
+		delete(m.workers, id)
+		m.logger.Info("worker auto-paused", "session", id)
+		victims = append(victims, w.client)
+	}
+	m.mu.Unlock()
+	for _, c := range victims {
+		c.Shutdown()
+	}
 }
 
 // newClient builds one session's worker. extra follows --codex-args
@@ -453,6 +517,7 @@ func (m *Manager) Kill(ctx context.Context, id string) error {
 }
 
 func (m *Manager) Shutdown() {
+	m.stopOnce.Do(func() { close(m.stop) })
 	m.mu.Lock()
 	workers := make([]*worker, 0, len(m.workers))
 	for _, w := range m.workers {
