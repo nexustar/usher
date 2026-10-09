@@ -75,7 +75,9 @@ type Turn struct {
 	Time    time.Time  `json:"ts"`
 	Model   string     `json:"model,omitempty"`
 	UUID    string     `json:"uuid,omitempty"`
-	EndTime time.Time  `json:"-"`
+	// Cursor names a turn read back from a log; opaque, stable as the log grows.
+	Cursor  string    `json:"cursor,omitempty"`
+	EndTime time.Time `json:"-"`
 }
 
 // DisplayTime is the timestamp a client shows for the turn: an assistant turn

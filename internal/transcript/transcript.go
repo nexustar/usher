@@ -13,23 +13,30 @@ import (
 	"github.com/nexustar/usher/internal/claude/jsonl"
 	"github.com/nexustar/usher/internal/codex/rollout"
 	"github.com/nexustar/usher/internal/core"
+	"github.com/nexustar/usher/internal/window"
 )
 
 type Claude struct{}
 
-func (Claude) ReadTurns(path string, limit int) ([]core.Turn, int, error) {
-	return jsonl.ReadTurns(path, limit)
+var claudeLog = window.Reader{NewAssembler: Claude{}.NewAssembler}
+
+func (Claude) ReadBefore(path, before string, limit int) ([]core.Turn, bool, error) {
+	return claudeLog.Before(path, before, limit)
 }
-func (Claude) NewAssembler() backend.Assembler { return jsonl.NewAssembler() }
-func (Claude) IsTurnComplete(raw []byte) bool  { return jsonl.IsTurnComplete(raw) }
+func (Claude) ReadFrom(path, from string) ([]core.Turn, error) { return claudeLog.From(path, from) }
+func (Claude) NewAssembler() backend.Assembler                 { return jsonl.NewAssembler() }
+func (Claude) IsTurnComplete(raw []byte) bool                  { return jsonl.IsTurnComplete(raw) }
 
 type Codex struct{}
 
-func (Codex) ReadTurns(path string, limit int) ([]core.Turn, int, error) {
-	return rollout.ReadTurns(path, limit)
+var codexLog = window.Reader{NewAssembler: Codex{}.NewAssembler}
+
+func (Codex) ReadBefore(path, before string, limit int) ([]core.Turn, bool, error) {
+	return codexLog.Before(path, before, limit)
 }
-func (Codex) NewAssembler() backend.Assembler { return rollout.NewAssembler() }
-func (Codex) IsTurnComplete(raw []byte) bool  { return rollout.IsTurnComplete(raw) }
+func (Codex) ReadFrom(path, from string) ([]core.Turn, error) { return codexLog.From(path, from) }
+func (Codex) NewAssembler() backend.Assembler                 { return rollout.NewAssembler() }
+func (Codex) IsTurnComplete(raw []byte) bool                  { return rollout.IsTurnComplete(raw) }
 
 type ClaudeForker struct{}
 

@@ -1,37 +1,29 @@
 package pi
 
 import (
-	"bufio"
 	"encoding/json"
+	"math"
 	"os"
 	"strings"
 
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/textutil"
+	"github.com/nexustar/usher/internal/window"
 )
 
 type Transcript struct{}
 
-func (Transcript) ReadTurns(path string, limit int) ([]core.Turn, int, error) {
-	entries, err := activeEntries(path)
-	if err != nil {
-		return nil, 0, err
-	}
-	a := NewAssembler()
-	var turns []core.Turn
-	for _, raw := range entries {
-		completed, _ := a.FeedLine(raw)
-		turns = append(turns, completed...)
-	}
-	if t := a.Flush(); t != nil {
-		turns = append(turns, *t)
-	}
-	total := len(turns)
-	if limit > 0 && len(turns) > limit {
-		turns = turns[len(turns)-limit:]
-	}
-	return turns, total, nil
+var sessionLog = window.Reader{
+	NewAssembler: func() backend.Assembler { return NewAssembler() },
+	Lines:        branchLines,
+}
+
+func (Transcript) ReadBefore(path, before string, limit int) ([]core.Turn, bool, error) {
+	return sessionLog.Before(path, before, limit)
+}
+func (Transcript) ReadFrom(path, from string) ([]core.Turn, error) {
+	return sessionLog.From(path, from)
 }
 func (Transcript) NewAssembler() backend.Assembler { return NewAssembler() }
 
@@ -75,47 +67,60 @@ func hasToolCall(content json.RawMessage) bool {
 	return false
 }
 
-// activeEntries selects the branch ending at the last entry. Pi appends the
-// current branch, so the final entry is the active leaf in persisted sessions.
-func activeEntries(path string) ([][]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+// branchLines yields the entries of one branch in [from, end): a pi log is a
+// tree whose parents precede their children. The branch is the one the entry
+// at end hangs off, or with last the one the span's last entry is on — at the
+// end of the file, the active leaf.
+func branchLines(f *os.File, from, end int64, last bool, yield func(off int64, line []byte) bool) error {
+	type node struct {
+		off    int64
+		line   []byte
+		parent string
 	}
-	defer f.Close()
-	byID := map[string][]byte{}
-	parent := map[string]string{}
-	last := ""
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64<<10), 16<<20)
-	for sc.Scan() {
+	ids := func(line []byte) (id, parent string) {
 		var e entry
-		if json.Unmarshal(sc.Bytes(), &e) != nil || e.ID == "" {
-			continue
+		if json.Unmarshal(line, &e) != nil || e.ParentID == nil {
+			return e.ID, ""
 		}
-		byID[e.ID] = append([]byte(nil), sc.Bytes()...)
-		if e.ParentID != nil {
-			parent[e.ID] = *e.ParentID
+		return e.ID, *e.ParentID
+	}
+	byID := map[string]node{}
+	leaf := ""
+	err := window.FileLines(f, from, end, false, func(off int64, line []byte) bool {
+		if id, parent := ids(line); id != "" {
+			byID[id] = node{off, append([]byte(nil), line...), parent}
+			leaf = id
 		}
-		last = e.ID
+		return true
+	})
+	if err != nil {
+		return err
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	var rev [][]byte
-	seen := map[string]bool{}
-	for last != "" && !seen[last] {
-		seen[last] = true
-		if raw := byID[last]; raw != nil {
-			rev = append(rev, raw)
+	if !last {
+		err := window.FileLines(f, end, math.MaxInt64, false, func(_ int64, line []byte) bool {
+			_, leaf = ids(line)
+			return false
+		})
+		if err != nil {
+			return err
 		}
-		last = parent[last]
 	}
-	out := make([][]byte, len(rev))
-	for i := range rev {
-		out[len(rev)-1-i] = rev[i]
+	var branch []node
+	for {
+		n, ok := byID[leaf]
+		if !ok {
+			break
+		}
+		delete(byID, leaf) // a parent cycle must not loop
+		branch = append(branch, n)
+		leaf = n.parent
 	}
-	return out, nil
+	for i := len(branch) - 1; i >= 0; i-- {
+		if !yield(branch[i].off, branch[i].line) {
+			break
+		}
+	}
+	return nil
 }
 
 type Assembler struct {
@@ -182,9 +187,8 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 	switch m.Role {
 	case "user":
 		var done []core.Turn
-		if a.cur != nil {
-			done = append(done, *a.cur)
-			a.cur = nil
+		if t := a.Flush(); t != nil {
+			done = append(done, *t)
 		}
 		text := contentText(m.Content)
 		if text != "" {

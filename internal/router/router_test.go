@@ -20,6 +20,7 @@ import (
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
 	"github.com/nexustar/usher/internal/transcript"
+	"github.com/nexustar/usher/internal/window"
 )
 
 // TestPublishStreamDerivesCodexTurns proves the live path: fed Codex rollout
@@ -264,7 +265,7 @@ func TestReadTurnsForBackend(t *testing.T) {
 	codexPath := writeTemp(t, "rollout.jsonl", codexLog)
 	claudePath := writeTemp(t, "claude.jsonl", claudeLog)
 
-	turns, _, err := (transcript.Codex{}).ReadTurns(codexPath, 0)
+	turns, _, err := (transcript.Codex{}).ReadBefore(codexPath, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,25 +274,25 @@ func TestReadTurnsForBackend(t *testing.T) {
 	}
 	// The Claude parser must not understand a Codex rollout (event_msg lines are
 	// not user/assistant) — proving the dispatch matters.
-	if wrong, _, _ := (transcript.Claude{}).ReadTurns(codexPath, 0); len(wrong) != 0 {
+	if wrong, _, _ := (transcript.Claude{}).ReadBefore(codexPath, "", 0); len(wrong) != 0 {
 		t.Errorf("claude parser should yield nothing from a codex log; got %+v", wrong)
 	}
 
-	turns, _, err = (transcript.Claude{}).ReadTurns(claudePath, 0)
+	turns, _, err = (transcript.Claude{}).ReadBefore(claudePath, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(turns) == 0 || turns[0].Content != "hello claude" {
 		t.Fatalf("claude parser: got %+v", turns)
 	}
-	if wrong, _, _ := (transcript.Codex{}).ReadTurns(claudePath, 0); len(wrong) != 0 {
+	if wrong, _, _ := (transcript.Codex{}).ReadBefore(claudePath, "", 0); len(wrong) != 0 {
 		t.Errorf("codex parser should yield nothing from a claude log; got %+v", wrong)
 	}
 }
 
-// TestReadTurnsWindow proves window indices stay stable as a session grows:
-// transcripts only gain turns at the tail, so `before` keeps naming the same
-// turns after more arrive.
+// TestReadTurnsWindow proves a turn's cursor stays valid as a session grows: a
+// page fetched before it is the same turns after an append, and reading from
+// it picks up what was appended.
 func TestReadTurnsWindow(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "-tmp")
@@ -318,44 +319,53 @@ func TestReadTurnsWindow(t *testing.T) {
 		"claude": {Transcript: transcript.Claude{}},
 	}, "claude", nil, nil, nil, nil)
 
-	contents := func(turns []core.Turn) []string {
-		out := make([]string, 0, len(turns))
-		for _, turn := range turns {
-			out = append(out, turn.Content)
-		}
-		return out
-	}
-	check := func(name string, before, limit int, want []string, wantOffset, wantTotal int) {
+	same := func(name string, turns []core.Turn, want ...string) {
 		t.Helper()
-		turns, offset, total, err := r.ReadTurns("win", before, limit)
+		got := []string{}
+		for _, turn := range turns {
+			got = append(got, turn.Content)
+		}
+		if !reflect.DeepEqual(got, append([]string{}, want...)) {
+			t.Errorf("%s: turns = %v, want %v", name, got, want)
+		}
+	}
+	page := func(name, before string, limit int, wantMore bool, want ...string) []core.Turn {
+		t.Helper()
+		turns, more, err := r.ReadTurns("win", before, limit)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if got := contents(turns); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s: turns = %v, want %v", name, got, want)
+		same(name, turns, want...)
+		if more != wantMore {
+			t.Errorf("%s: more = %v, want %v", name, more, wantMore)
 		}
-		if offset != wantOffset {
-			t.Errorf("%s: offset = %d, want %d", name, offset, wantOffset)
-		}
-		if total != wantTotal {
-			t.Errorf("%s: total = %d, want %d", name, total, wantTotal)
-		}
+		return turns
 	}
 
-	check("newest page", -1, 2, []string{"t4", "t5"}, 4, 6)
-	check("page before it", 4, 2, []string{"t2", "t3"}, 2, 6)
+	newest := page("newest page", "", 2, true, "t4", "t5")
+	older := page("page before it", newest[0].Cursor, 2, true, "t2", "t3")
 
 	log.WriteString(line(6))
 	log.WriteString(line(7))
 	if err := os.WriteFile(logPath, []byte(log.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	check("same page after growth", 4, 2, []string{"t2", "t3"}, 2, 8)
-	check("newest page slid", -1, 2, []string{"t6", "t7"}, 6, 8)
+	again := page("same page after growth", newest[0].Cursor, 2, true, "t2", "t3")
+	if again[0].Cursor != older[0].Cursor {
+		t.Errorf("cursor moved after growth: %q, want %q", again[0].Cursor, older[0].Cursor)
+	}
+	page("newest page slid", "", 2, true, "t6", "t7")
+	page("clamped at front", older[0].Cursor, 5, false, "t0", "t1")
 
-	check("clamped at front", 1, 5, []string{"t0"}, 0, 8)
-	check("empty window at front", 0, 5, []string{}, 0, 8)
-	check("before past the end", 99, 2, []string{"t6", "t7"}, 6, 8)
+	caught, err := r.ReadTurnsFrom("win", newest[1].Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("from the last turn held", caught, "t5", "t6", "t7")
+
+	if _, _, err := r.ReadTurns("win", "nope", 2); !errors.Is(err, window.ErrBadCursor) {
+		t.Errorf("bad cursor: err = %v", err)
+	}
 }
 
 // TestReadTurnsAssistantEndTime proves an assistant turn's wire timestamp is
@@ -385,7 +395,7 @@ func TestReadTurnsAssistantEndTime(t *testing.T) {
 		"claude": {Transcript: transcript.Claude{}},
 	}, "claude", nil, nil, nil, nil)
 
-	turns, _, _, err := r.ReadTurns("end", -1, 0)
+	turns, _, err := r.ReadTurns("end", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

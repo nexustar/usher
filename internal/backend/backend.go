@@ -82,6 +82,14 @@ type Assembler interface {
 	Model() string
 }
 
+// ColdStartAssembler can be started partway through a log. MissedContext
+// reports, then forgets, whether anything fed since the last call drew on
+// state from lines the Assembler never saw.
+type ColdStartAssembler interface {
+	Assembler
+	MissedContext() bool
+}
+
 // MultiPartAssembler optionally exposes every display part stored in one record.
 type MultiPartAssembler interface {
 	Assembler
@@ -90,7 +98,13 @@ type MultiPartAssembler interface {
 
 // Transcript owns one backend's persisted session format.
 type Transcript interface {
-	ReadTurns(path string, limit int) ([]core.Turn, int, error)
+	// ReadBefore returns the turns just before cursor before ("" for the
+	// newest): at most limit (0: all), possibly fewer. more reports whether
+	// older turns exist.
+	ReadBefore(path, before string, limit int) (turns []core.Turn, more bool, err error)
+	// ReadFrom returns the turn at cursor from and every turn after it, or
+	// nothing when no turn starts there any more.
+	ReadFrom(path, from string) ([]core.Turn, error)
 	NewAssembler() Assembler
 	IsTurnComplete(raw []byte) bool
 }

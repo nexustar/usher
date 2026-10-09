@@ -200,7 +200,7 @@ func TestTranscriptProjectsCompaction(t *testing.T) {
 {"type":"compaction","id":"c1","parentId":"a1","timestamp":"2026-07-01T10:00:03Z","summary":"internal summary"}
 {"type":"message","id":"u2","parentId":"c1","timestamp":"2026-07-01T10:00:04Z","message":{"role":"user","content":"continue"}}
 `)
-	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	turns, _, err := (Transcript{}).ReadBefore(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestTranscriptProjectsCustomMessages(t *testing.T) {
 {"type":"custom_message","id":"c3","parentId":"c2","timestamp":"2026-07-01T10:00:05Z","customType":"ext:blocks","content":[{"type":"text","text":"block note"}],"display":true}
 {"type":"message","id":"u2","parentId":"c3","timestamp":"2026-07-01T10:00:06Z","message":{"role":"user","content":"continue"}}
 `)
-	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	turns, _, err := (Transcript{}).ReadBefore(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestTranscriptSurfacesPersistedError(t *testing.T) {
 {"type":"message","id":"a3","parentId":"a2","timestamp":"2026-07-25T09:03:13Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"Service Unavailable"}}
 {"type":"message","id":"a4","parentId":"a3","timestamp":"2026-07-25T09:03:18Z","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"Service Unavailable"}}
 `)
-	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	turns, _, err := (Transcript{}).ReadBefore(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestTranscriptSurfacesAbortedTurn(t *testing.T) {
 {"type":"message","id":"u2","parentId":"a1","timestamp":"2026-07-23T15:47:00Z","message":{"role":"user","content":"again"}}
 {"type":"message","id":"a2","parentId":"u2","timestamp":"2026-07-23T15:47:05Z","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"Request was aborted"}}
 `)
-	turns, _, err := (Transcript{}).ReadTurns(path, 0)
+	turns, _, err := (Transcript{}).ReadBefore(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,12 +603,12 @@ func TestTranscriptSelectsActiveBranch(t *testing.T) {
 {"type":"message","id":"new","parentId":"u1","timestamp":"2026-07-01T10:00:03Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"active"},{"type":"toolCall","id":"tc1","name":"bash","arguments":{"command":"go test ./..."}}],"model":"model-1"}}
 {"type":"message","id":"tr1","parentId":"new","timestamp":"2026-07-01T10:00:04Z","message":{"role":"toolResult","toolCallId":"tc1","toolName":"bash","content":[{"type":"text","text":"ok"}]}}
 `)
-	turns, total, err := (Transcript{}).ReadTurns(path, 0)
+	turns, more, err := (Transcript{}).ReadBefore(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 2 || len(turns) != 2 {
-		t.Fatalf("turns=%+v total=%d", turns, total)
+	if more || len(turns) != 2 {
+		t.Fatalf("turns=%+v more=%v", turns, more)
 	}
 	// text + tool; thinking is dropped.
 	if turns[1].Model != "model-1" || len(turns[1].Parts) != 2 {

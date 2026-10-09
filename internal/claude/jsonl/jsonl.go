@@ -10,6 +10,7 @@ package jsonl
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -206,15 +207,110 @@ func updateClaudeRuntime(runtime *core.SessionRuntime, raw json.RawMessage) {
 	}
 }
 
-// messageModel extracts the model id from a message body (assistant events).
-func messageModel(msg json.RawMessage) string {
+// body is a decoded message: its content is a plain string or blocks.
+type body struct {
+	Model  string
+	text   string
+	blocks []bodyBlock
+}
+
+type bodyBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	IsError   bool            `json:"is_error"`
+	Content   json.RawMessage `json:"content"`
+}
+
+func parseBody(msg json.RawMessage) body {
 	var m struct {
-		Model string `json:"model"`
+		Model   string      `json:"model"`
+		Content []bodyBlock `json:"content"`
 	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return ""
+	err := json.Unmarshal(msg, &m)
+	if err == nil {
+		return body{Model: m.Model, blocks: m.Content}
 	}
-	return m.Model
+	// A type error fails only its own field: blocks that still decoded held
+	// it, and none at all means content is a string.
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) {
+		return body{}
+	}
+	if len(m.Content) > 0 {
+		return body{Model: m.Model, blocks: m.Content}
+	}
+	var t struct {
+		Content string `json:"content"`
+	}
+	if json.Unmarshal(msg, &t) != nil {
+		return body{Model: m.Model}
+	}
+	return body{Model: m.Model, text: t.Content}
+}
+
+// joinedText is the plain string, or the text blocks joined.
+func (b body) joinedText() string {
+	if b.text != "" {
+		return b.text
+	}
+	var parts []string
+	for _, blk := range b.blocks {
+		if blk.Type == "text" && blk.Text != "" {
+			parts = append(parts, blk.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (b body) hasToolResult() bool {
+	for _, blk := range b.blocks {
+		if blk.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
+// collectToolUses records tool_use id→name+target from an assistant message.
+func (b body) collectToolUses(dst map[string]toolInfo) {
+	for _, blk := range b.blocks {
+		if blk.Type == "tool_use" && blk.ID != "" && blk.Name != "" {
+			ti := toolInfo{name: blk.Name, target: toolTarget(blk.Input)}
+			switch {
+			case blk.Name == "Bash":
+				ti.input = inputString(blk.Input, "command")
+				ti.target = core.ToolTitle(ti.target, ti.input)
+			case strings.HasPrefix(blk.Name, "mcp__"):
+				ti.input = textutil.IndentJSON(blk.Input)
+			}
+			dst[blk.ID] = ti
+		}
+	}
+}
+
+// matchToolInfo looks up the tool name+target for the first tool_result block.
+// It also returns the tool_use_id for isMeta follow-up matching, and whether
+// Claude flagged the result as an error.
+func (b body) matchToolInfo(names map[string]toolInfo) (ti toolInfo, id string, failed bool) {
+	for _, blk := range b.blocks {
+		if blk.Type == "tool_result" && blk.ToolUseID != "" {
+			return names[blk.ToolUseID], blk.ToolUseID, blk.IsError
+		}
+	}
+	return toolInfo{}, "", false
+}
+
+func (b body) firstToolResultContent() json.RawMessage {
+	for _, blk := range b.blocks {
+		if blk.Type == "tool_result" {
+			return blk.Content
+		}
+	}
+	return nil
 }
 
 // extractUserContent pulls a representative text from a user message body. The
@@ -263,9 +359,9 @@ func IsTurnComplete(raw []byte) bool {
 
 // Assembler is the single grouping engine behind both transcript reads and
 // the live event stream: feed it user/assistant events in file order and it
-// yields the same turns/parts ReadTurns serves in batch. ReadTurns is itself
-// built on an Assembler, so a part streamed live and the same turn fetched
-// later from /transcript can never disagree on grouping or rendering.
+// yields the turns and parts a transcript read serves, so a part streamed live
+// and the same turn fetched later from /transcript can never disagree on
+// grouping or rendering.
 type Assembler struct {
 	toolMap map[string]toolInfo
 	cur     *core.Turn
@@ -302,12 +398,13 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 		return nil, nil
 	}
 
-	if ev.Type == "user" && !hasToolResult(ev.Message) && !(ev.IsMeta && ev.SourceToolUseID != "") {
+	b := parseBody(ev.Message)
+	if ev.Type == "user" && !b.hasToolResult() && !(ev.IsMeta && ev.SourceToolUseID != "") {
 		// Real user prompt — flush any in-progress assistant turn.
 		if t := a.Flush(); t != nil {
 			completed = append(completed, *t)
 		}
-		if text := extractUserText(ev.Message); text != "" {
+		if text := b.joinedText(); text != "" {
 			completed = append(completed, core.Turn{
 				Role:    "user",
 				Content: compactTaskNotification(text),
@@ -320,7 +417,7 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 	// isMeta user message with sourceToolUseID (e.g. skill content after a
 	// Skill tool call): append text to the matching tool part.
 	if ev.IsMeta && ev.SourceToolUseID != "" && ev.Type == "user" {
-		text := extractUserText(ev.Message)
+		text := b.joinedText()
 		if text == "" {
 			return nil, nil
 		}
@@ -351,16 +448,15 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 		return nil, &p
 	}
 
-	// Start a new assistant turn if needed (tool_result lines carry no model;
-	// messageModel simply yields "" for them).
+	// Start a new assistant turn if needed (tool_result lines carry no model).
 	if a.cur == nil {
 		a.cur = &core.Turn{
 			Role:  "assistant",
 			Time:  ev.Timestamp,
-			Model: messageModel(ev.Message),
+			Model: b.Model,
 		}
-	} else if m := messageModel(ev.Message); m != "" && a.cur.Model == "" {
-		a.cur.Model = m
+	} else if b.Model != "" && a.cur.Model == "" {
+		a.cur.Model = b.Model
 	}
 	// Track the turn's last event — its fork point and end time — even when
 	// the event contributes no visible part.
@@ -371,9 +467,9 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 
 	if ev.Type == "assistant" {
 		// Collect tool_use id→info for later matching.
-		collectToolUses(ev.Message, a.toolMap)
+		b.collectToolUses(a.toolMap)
 		// Append a text part (skip tool_use/thinking-only messages).
-		if text := extractAssistantText(ev.Message); text != "" {
+		if text := b.joinedText(); text != "" {
 			p := core.TurnPart{Type: "text", Content: text}
 			a.cur.Parts = append(a.cur.Parts, p)
 			return nil, &p
@@ -382,8 +478,8 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 	}
 
 	// user event carrying a tool_result: append as a "tool" part.
-	ti, tuID, failed := matchToolInfo(ev.Message, a.toolMap)
-	content := renderToolResult(ev, ti.target)
+	ti, tuID, failed := b.matchToolInfo(a.toolMap)
+	content := renderToolResult(ev, b, ti.target)
 	// A known tool that printed nothing (mkdir, git add) still gets its card.
 	if content == "" && ti.name == "" {
 		return nil, nil
@@ -424,102 +520,6 @@ func (a *Assembler) Flush() *core.Turn {
 	return t
 }
 
-// ReadTurns returns the user/assistant turns of the session at path, grouped
-// so that each assistant turn is a single Turn with Parts (text blocks
-// interleaved with tool call/result pairs). limit > 0 keeps only the most
-// recent N turns. total is the turn count before that trim, so callers can
-// tell whether older turns exist beyond the window.
-func ReadTurns(path string, limit int) (turns []core.Turn, total int, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-
-	asm := NewAssembler()
-	for sc.Scan() {
-		ev, err := ParseLine(sc.Bytes())
-		if err != nil {
-			continue
-		}
-		completed, _ := asm.Feed(ev)
-		turns = append(turns, completed...)
-	}
-	if t := asm.Flush(); t != nil {
-		turns = append(turns, *t)
-	}
-
-	if err := sc.Err(); err != nil {
-		return nil, 0, err
-	}
-	total = len(turns)
-	if limit > 0 && len(turns) > limit {
-		turns = turns[len(turns)-limit:]
-	}
-	return turns, total, nil
-}
-
-// collectToolUses records tool_use id→name+target from an assistant message.
-func collectToolUses(msg json.RawMessage, dst map[string]toolInfo) {
-	var m struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return
-	}
-	var blocks []struct {
-		Type  string          `json:"type"`
-		ID    string          `json:"id"`
-		Name  string          `json:"name"`
-		Input json.RawMessage `json:"input"`
-	}
-	if err := json.Unmarshal(m.Content, &blocks); err != nil {
-		return
-	}
-	for _, b := range blocks {
-		if b.Type == "tool_use" && b.ID != "" && b.Name != "" {
-			ti := toolInfo{name: b.Name, target: toolTarget(b.Input)}
-			switch {
-			case b.Name == "Bash":
-				ti.input = inputString(b.Input, "command")
-				ti.target = core.ToolTitle(ti.target, ti.input)
-			case strings.HasPrefix(b.Name, "mcp__"):
-				ti.input = textutil.IndentJSON(b.Input)
-			}
-			dst[b.ID] = ti
-		}
-	}
-}
-
-// matchToolInfo looks up the tool name+target for the first tool_result block.
-// It also returns the tool_use_id for isMeta follow-up matching, and whether
-// Claude flagged the result as an error.
-func matchToolInfo(msg json.RawMessage, names map[string]toolInfo) (ti toolInfo, id string, failed bool) {
-	var m struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return toolInfo{}, "", false
-	}
-	var blocks []struct {
-		Type      string `json:"type"`
-		ToolUseID string `json:"tool_use_id"`
-		IsError   bool   `json:"is_error"`
-	}
-	if err := json.Unmarshal(m.Content, &blocks); err != nil {
-		return toolInfo{}, "", false
-	}
-	for _, b := range blocks {
-		if b.Type == "tool_result" && b.ToolUseID != "" {
-			return names[b.ToolUseID], b.ToolUseID, b.IsError
-		}
-	}
-	return toolInfo{}, "", false
-}
-
 // compactTaskNotification rewrites Claude Code's self-injected
 // <task-notification> prompt (background task completion — one summary line
 // plus a machine payload that dwarfs it) to the short form the TUI itself
@@ -554,90 +554,14 @@ func xmlTagContent(s, tag string) string {
 	return strings.TrimSpace(s[i+len(open) : i+j])
 }
 
-// extractUserText gets the text content from a real user message (not tool_result).
-func extractUserText(msg json.RawMessage) string {
-	var m struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(m.Content, &s); err == nil {
-		return s
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(m.Content, &blocks); err == nil {
-		var parts []string
-		for _, b := range blocks {
-			if b.Type == "text" && b.Text != "" {
-				parts = append(parts, b.Text)
-			}
-		}
-		return strings.Join(parts, "\n")
-	}
-	return ""
-}
-
-// extractAssistantText extracts only the text blocks from an assistant message,
-// skipping tool_use and thinking blocks.
-func extractAssistantText(msg json.RawMessage) string {
-	var m struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(m.Content, &s); err == nil {
-		return s
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(m.Content, &blocks); err != nil {
-		return ""
-	}
-	var parts []string
-	for _, b := range blocks {
-		if b.Type == "text" && b.Text != "" {
-			parts = append(parts, b.Text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func hasToolResult(msg json.RawMessage) bool {
-	var m struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return false
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(m.Content, &blocks); err != nil {
-		return false
-	}
-	for _, b := range blocks {
-		if b.Type == "tool_result" {
-			return true
-		}
-	}
-	return false
-}
+func hasToolResult(msg json.RawMessage) bool { return parseBody(msg).hasToolResult() }
 
 // renderToolResult produces the display body for a tool_result ("tool") turn.
 // It is built from the line-level toolUseResult, which carries the rich payload
 // (Edit/Write diff, Read file content, Bash stdout/stderr) that the inline
 // message.content does not; tools whose shape we do not special-case fall back
 // to the inline tool_result text.
-func renderToolResult(ev Event, target string) string {
+func renderToolResult(ev Event, b body, target string) string {
 	var tur toolUseResultData
 	if len(ev.ToolUseResult) > 0 {
 		_ = json.Unmarshal(ev.ToolUseResult, &tur)
@@ -645,7 +569,7 @@ func renderToolResult(ev Event, target string) string {
 	if body := tur.render(); body != "" {
 		return body
 	}
-	content := firstToolResultContent(ev.Message)
+	content := b.firstToolResultContent()
 	// An image comes back as bytes only — no text to fall back on.
 	if tur.Type == "image" || hasImageBlock(content) {
 		return imageMarkdown(target)
@@ -689,30 +613,6 @@ func hasImageBlock(raw json.RawMessage) bool {
 		}
 	}
 	return false
-}
-
-// firstToolResultContent returns the raw content of the first tool_result block
-// in a message body.
-func firstToolResultContent(msg json.RawMessage) json.RawMessage {
-	var m struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return nil
-	}
-	var blocks []struct {
-		Type    string          `json:"type"`
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(m.Content, &blocks); err != nil {
-		return nil
-	}
-	for _, b := range blocks {
-		if b.Type == "tool_result" {
-			return b.Content
-		}
-	}
-	return nil
 }
 
 func flattenToolResult(raw json.RawMessage) string {

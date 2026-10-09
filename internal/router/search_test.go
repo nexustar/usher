@@ -40,7 +40,7 @@ func TestFlattenTurnText(t *testing.T) {
 // text ("hi") must survive parsing, where mapping Turn.Content alone lost it.
 func TestFlattenRecoversAssistantTextFromLog(t *testing.T) {
 	path := writeTemp(t, "claude.jsonl", claudeLog)
-	turns, _, err := (transcript.Claude{}).ReadTurns(path, 0)
+	turns, _, err := (transcript.Claude{}).ReadBefore(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

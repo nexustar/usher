@@ -46,6 +46,7 @@ import (
 	"github.com/nexustar/usher/internal/router"
 	"github.com/nexustar/usher/internal/schedule"
 	"github.com/nexustar/usher/internal/terminal"
+	"github.com/nexustar/usher/internal/window"
 )
 
 //go:embed static
@@ -934,45 +935,46 @@ func (s *Server) handleCancelSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
+// transcriptPage is a slice of a session's turns, oldest first. More reports
+// older turns ahead of the first one.
+type transcriptPage struct {
+	Turns []core.Turn `json:"turns"`
+	More  bool        `json:"more,omitempty"`
+}
+
+// handleTranscript serves the newest ?limit= turns, the page ?before= a turn's
+// cursor, or the turn at ?from= a cursor and everything after it.
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, q := r.PathValue("id"), r.URL.Query()
 	limit := 0
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		limit = n
 	}
-	// ?before=N is the window's exclusive upper bound in absolute turn
-	// indices; absent or unparseable asks for the newest turns.
-	before := -1
-	if v := r.URL.Query().Get("before"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			before = n
-		}
+	var page transcriptPage
+	var err error
+	if from := q.Get("from"); from != "" {
+		page.Turns, err = s.router.ReadTurnsFrom(id, from)
+	} else {
+		page.Turns, page.More, err = s.router.ReadTurns(id, q.Get("before"), limit)
 	}
-	turns, offset, total, err := s.router.ReadTurns(id, before, limit)
-	if errors.Is(err, router.ErrSessionNotFound) {
-		if _, ok := s.router.GetSession(id); ok {
-			w.Header().Set("X-Transcript-Total", "0")
-			w.Header().Set("X-Transcript-Offset", "0")
-			writeJSON(w, http.StatusOK, []core.Turn{})
+	switch {
+	case errors.Is(err, router.ErrSessionNotFound):
+		// A session that exists but has written no log yet reads as empty.
+		if _, ok := s.router.GetSession(id); !ok {
+			writeErr(w, http.StatusNotFound, "session not found")
 			return
 		}
-		writeErr(w, http.StatusNotFound, "session not found")
+	case errors.Is(err, window.ErrBadCursor):
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if err != nil {
+	case err != nil:
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if turns == nil {
-		turns = []core.Turn{}
+	if page.Turns == nil {
+		page.Turns = []core.Turn{}
 	}
-	// Total is the turn count before the window trim; Offset is the absolute
-	// index of the window's first turn.
-	w.Header().Set("X-Transcript-Total", strconv.Itoa(total))
-	w.Header().Set("X-Transcript-Offset", strconv.Itoa(offset))
-	writeJSON(w, http.StatusOK, turns)
+	writeJSON(w, http.StatusOK, page)
 }
 
 // imageContentTypes is the /image allowlist (also the forced Content-Type).

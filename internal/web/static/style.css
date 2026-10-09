@@ -1226,8 +1226,7 @@ pre.raw-markdown {
   font-size: var(--font-base);
   cursor: pointer;
 }
-.load-earlier:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-.load-earlier:disabled { opacity: 0.5; cursor: default; }
+.load-earlier:hover { background: var(--bg-hover); color: var(--text); }
 .chat-message .role .ts {
   font-size: var(--font-meta);
   color: var(--text-disabled);

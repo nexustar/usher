@@ -257,35 +257,6 @@ func RenameSession(indexPath, id, title string) error {
 	return err
 }
 
-// ReadTurns returns the grouped user/assistant turns of the rollout at path,
-// matching jsonl.ReadTurns' contract (limit>0 keeps the most recent N; total is
-// the count before trimming).
-func ReadTurns(path string, limit int) (turns []core.Turn, total int, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer f.Close()
-
-	asm := NewAssembler()
-	sc := newScanner(f)
-	for sc.Scan() {
-		completed, _ := asm.Feed(sc.Bytes())
-		turns = append(turns, completed...)
-	}
-	if t := asm.Flush(); t != nil {
-		turns = append(turns, *t)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, 0, err
-	}
-	total = len(turns)
-	if limit > 0 && len(turns) > limit {
-		turns = turns[len(turns)-limit:]
-	}
-	return turns, total, nil
-}
-
 // Assembler groups rollout lines into turns, mirroring jsonl.Assembler so a part
 // streamed live and the same turn re-read from /transcript never disagree. Feed
 // it raw lines in file order.
@@ -302,6 +273,7 @@ type Assembler struct {
 	// text() script) still renders, and legacy sessions never increment it.
 	toolItems  int
 	background map[string]*bgCommand // unified-exec session id -> command still running
+	missed     bool                  // see MissedContext
 }
 
 type toolStash struct {
@@ -946,9 +918,18 @@ func (a *Assembler) FeedLine(raw []byte) (completed []core.Turn, part *core.Turn
 // the first one (the session_meta header carries only a provider, not the model).
 func (a *Assembler) Model() string { return a.model }
 
+// MissedContext covers the sticky model and background commands already
+// running.
+func (a *Assembler) MissedContext() bool {
+	missed := a.missed
+	a.missed = false
+	return missed
+}
+
 func (a *Assembler) ensureTurn(ts time.Time) {
 	if a.cur == nil {
 		a.cur = &core.Turn{Role: "assistant", Time: ts, Model: a.model}
+		a.missed = a.missed || a.model == ""
 	}
 	a.cur.Touch(ts)
 }
@@ -1218,6 +1199,7 @@ func (a *Assembler) backgroundOutput(ts time.Time, stash toolStash, output json.
 		}
 		handled = true
 		bg := a.background[session]
+		a.missed = a.missed || (bg == nil && (call.chars != "" || call.stdin))
 		if call.chars != "" {
 			part = a.appendTool(ts, "Stdin", bg.title(session), call.chars, strings.TrimRight(c.Output, "\n"))
 			continue

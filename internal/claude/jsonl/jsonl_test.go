@@ -414,7 +414,7 @@ func TestRenderToolResult_FallbackUnknownShape(t *testing.T) {
 	// A tool with no special-cased toolUseResult shape falls back to the inline
 	// tool_result text.
 	ev, _ := ParseLine([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"g1","content":"match.go\nother.go"}]},"toolUseResult":{"mode":"files_with_matches","numFiles":2}}`))
-	if body := renderToolResult(ev, "*.go"); !strings.Contains(body, "match.go") {
+	if body := renderToolResult(ev, parseBody(ev.Message), "*.go"); !strings.Contains(body, "match.go") {
 		t.Errorf("fallback body = %q", body)
 	}
 }

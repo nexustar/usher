@@ -327,46 +327,66 @@ func (r *Router) transcriptForBackend(name string) (backendpkg.Transcript, error
 	return nil, fmt.Errorf("%w: backend %q has no transcript", ErrBackendUnavailable, name)
 }
 
-func (r *Router) readTurnsForBackend(path, name string, limit int) ([]core.Turn, int, error) {
+// readTurnsForBackend returns the newest limit turns (0: all).
+func (r *Router) readTurnsForBackend(path, name string, limit int) ([]core.Turn, error) {
 	format, err := r.transcriptForBackend(name)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return format.ReadTurns(path, limit)
+	// A page may come back short of limit, so keep asking for the one before.
+	var turns []core.Turn
+	for before := ""; ; before = turns[0].Cursor {
+		page, more, err := format.ReadBefore(path, before, max(0, limit-len(turns)))
+		if err != nil {
+			return nil, err
+		}
+		turns = append(page, turns...)
+		if !more || len(page) == 0 || (limit > 0 && len(turns) >= limit) {
+			return turns, nil
+		}
+	}
 }
 
-// ReadTurns returns a window of a session's grouped display turns, the
-// absolute index of the window's first turn, and the full turn count. Indices
-// count from the oldest turn, so they stay stable as the transcript grows.
-// before is the exclusive upper bound of the window; negative asks for the
-// newest turns. Returns ErrSessionNotFound when the session has no log on
-// disk.
-func (r *Router) ReadTurns(id string, before, limit int) ([]core.Turn, int, int, error) {
+// ReadTurns returns a page of a session's display turns, oldest first: the
+// newest, or those just before cursor before. more reports whether older turns
+// exist. Returns ErrSessionNotFound when the session has no log on disk.
+func (r *Router) ReadTurns(id, before string, limit int) (turns []core.Turn, more bool, err error) {
+	format, path, err := r.transcriptOf(id)
+	if err != nil {
+		return nil, false, err
+	}
+	turns, more, err = format.ReadBefore(path, before, limit)
+	return wireTurns(turns), more, err
+}
+
+// ReadTurnsFrom returns the turn at cursor from and every turn after it, or
+// nothing when the cursor no longer names a turn.
+func (r *Router) ReadTurnsFrom(id, from string) ([]core.Turn, error) {
+	format, path, err := r.transcriptOf(id)
+	if err != nil {
+		return nil, err
+	}
+	turns, err := format.ReadFrom(path, from)
+	return wireTurns(turns), err
+}
+
+func (r *Router) transcriptOf(id string) (backendpkg.Transcript, string, error) {
 	path, ok := r.discovery.Path(id)
 	if !ok {
-		return nil, 0, 0, ErrSessionNotFound
+		return nil, "", ErrSessionNotFound
 	}
-	// Backends parse the whole log regardless of limit, so windowing here
-	// costs nothing extra.
-	turns, total, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
-	if err != nil {
-		return nil, 0, 0, err
+	format, err := r.transcriptForBackend(r.backendOf(id))
+	return format, path, err
+}
+
+// wireTurns stamps each turn with its display time. EndTime never reaches the
+// wire, and clients key turns on ts — which must match what the exit payload's
+// assistant_end_ts produced.
+func wireTurns(turns []core.Turn) []core.Turn {
+	for i := range turns {
+		turns[i].Time = turns[i].DisplayTime()
 	}
-	end := total
-	if before >= 0 && before < end {
-		end = before
-	}
-	start := 0
-	if limit > 0 && end-limit > start {
-		start = end - limit
-	}
-	// EndTime never reaches the wire, and clients key turns on ts — which must
-	// match what the exit payload's assistant_end_ts produced.
-	out := turns[start:end]
-	for i := range out {
-		out[i].Time = out[i].DisplayTime()
-	}
-	return out, start, total, nil
+	return turns
 }
 
 // backendForModel maps a new-session model choice to its backend. Model names
@@ -867,7 +887,7 @@ func (r *Router) enrichExitWithTurnTimestamps(sessionID string, raw json.RawMess
 	if !ok {
 		return raw
 	}
-	turns, _, err := r.readTurnsForBackend(path, r.backendOf(sessionID), 2)
+	turns, err := r.readTurnsForBackend(path, r.backendOf(sessionID), 2)
 	if err != nil || len(turns) == 0 {
 		return raw
 	}
@@ -1174,7 +1194,7 @@ func (r *Router) ReadSessionTranscript(id string, limit int) ([]core.TranscriptT
 	if !ok {
 		return nil, ErrSessionNotFound
 	}
-	turns, _, err := r.readTurnsForBackend(path, r.backendOf(id), limit)
+	turns, err := r.readTurnsForBackend(path, r.backendOf(id), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1200,7 +1220,7 @@ func (r *Router) ReadSessionTranscriptPage(id string, offset, limit int) ([]core
 	if !ok {
 		return nil, 0, 0, ErrSessionNotFound
 	}
-	turns, _, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
+	turns, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -1293,7 +1313,7 @@ func (r *Router) SearchSessionTranscript(id, query string, maxHits, contextChars
 	if !ok {
 		return nil, false, ErrSessionNotFound
 	}
-	turns, _, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
+	turns, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1320,7 +1340,7 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 		if !ok {
 			continue
 		}
-		turns, _, err := r.readTurnsForBackend(path, r.backendOf(s.ID), 0)
+		turns, err := r.readTurnsForBackend(path, r.backendOf(s.ID), 0)
 		if err != nil {
 			continue
 		}
