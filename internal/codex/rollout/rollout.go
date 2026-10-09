@@ -506,14 +506,16 @@ func (a *Assembler) patchApplyPart(l line) *core.TurnPart {
 		return nil
 	}
 	paths := make([]string, 0, len(p.Changes))
-	var body []string
-	for path, change := range p.Changes {
+	for path := range p.Changes {
 		paths = append(paths, path)
-		if change.UnifiedDiff != "" {
-			body = append(body, change.UnifiedDiff)
-		}
 	}
 	sort.Strings(paths)
+	var body []string
+	for _, path := range paths {
+		if diff := p.Changes[path].UnifiedDiff; diff != "" {
+			body = append(body, diff)
+		}
+	}
 	if p.Stdout != "" {
 		body = append(body, p.Stdout)
 	}
