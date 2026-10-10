@@ -71,8 +71,8 @@ func TestLongLogReadByItsEnds(t *testing.T) {
 	f.Close()
 	d.Upsert(path)
 	s, _ = d.Get("long")
-	if len(s.Activity.Loops) != 0 {
-		t.Errorf("loops after the job was deleted = %+v", s.Activity.Loops)
+	if len(s.Activity.Loops) != 0 || !s.LastInputAt.Equal(now) {
+		t.Errorf("after an append: loops %+v, last input %v", s.Activity.Loops, s.LastInputAt)
 	}
 	r := d.readings["long"]
 	if r.scanner != scanner || r.off != read+int64(len(more)) {

@@ -239,9 +239,9 @@ func (d *Discovery) ingest(path string, whole bool) {
 				if existing.StartedAt.IsZero() {
 					existing.StartedAt = meta.StartedAt
 				}
-				if existing.LastInputAt.IsZero() {
-					existing.LastInputAt = meta.LastInputAt
-				}
+			}
+			if meta.LastInputAt.After(existing.LastInputAt) {
+				existing.LastInputAt = meta.LastInputAt
 			}
 			if meta.Title != "" {
 				existing.Title = meta.Title

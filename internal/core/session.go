@@ -79,7 +79,7 @@ type Session struct {
 	// LastEventAt (file mtime) it ignores assistant streaming, tool turns, and
 	// the untimed metadata claude writes on pause/kill, so it is the sidebar
 	// sort key and auto-archive clock: a session only reorders when the user
-	// talks to it. Seeded from jsonl at discovery, stamped on usher sends.
+	// talks to it. Read from the jsonl, and stamped on usher sends ahead of it.
 	LastInputAt time.Time `json:"last_input_at"`
 
 	// Backend names the agent CLI this session belongs to ("claude" or "codex").
