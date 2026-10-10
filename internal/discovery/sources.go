@@ -27,8 +27,18 @@ type Source interface {
 	IsSessionFile(path string) bool
 	// SessionID extracts the session id from a session file path, or "" if none.
 	SessionID(path string) string
-	// ReadMeta reads the lightweight descriptor used for listing.
-	ReadMeta(path string) (core.SessionMeta, error)
+	// NewMetaScanner starts a read of the log at path.
+	NewMetaScanner(path string) MetaScanner
+	// Sparse reports whether a log's first and last lines hold what a listing
+	// needs, so the ones between can go unread.
+	Sparse() bool
+}
+
+// MetaScanner folds a session log's lines, fed in file order, into the
+// descriptor used for listing. Lines may be skipped, never reordered.
+type MetaScanner interface {
+	Feed(line []byte)
+	Meta() core.SessionMeta
 }
 
 // MetadataSource lists metadata files that affect cached sessions.
@@ -89,24 +99,33 @@ func (s ClaudeSource) SessionID(path string) string {
 	return id
 }
 
-func (s ClaudeSource) ReadMeta(path string) (core.SessionMeta, error) {
-	meta, err := jsonl.ReadSessionMeta(path)
-	if err != nil {
-		return meta, err
-	}
-	if parent, ok := s.subagentParent(path); ok {
+func (s ClaudeSource) Sparse() bool { return true }
+
+func (s ClaudeSource) NewMetaScanner(path string) MetaScanner {
+	return claudeScanner{jsonl.NewMetaScanner(path), s, path}
+}
+
+type claudeScanner struct {
+	*jsonl.MetaScanner
+	src  ClaudeSource
+	path string
+}
+
+func (c claudeScanner) Meta() core.SessionMeta {
+	meta := c.MetaScanner.Meta()
+	if parent, ok := c.src.subagentParent(c.path); ok {
 		meta.ParentID = parent
 		meta.IsSubagent = true
 		// The id must stay unique, so it's always the agent-<hash> filename;
-		// AgentName is the human label (attributionAgent, captured by
-		// ReadSessionMeta) and falls back to that same hash only when absent.
-		fileID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		// AgentName is the human label (attributionAgent) and falls back to
+		// that same hash only when absent.
+		fileID := strings.TrimSuffix(filepath.Base(c.path), ".jsonl")
 		meta.ID = meta.ParentID + "::" + fileID
 		if meta.AgentName == "" {
 			meta.AgentName = fileID
 		}
 	}
-	return meta, nil
+	return meta
 }
 
 // CodexSource scans Codex CLI's rollout tree:
@@ -142,14 +161,22 @@ func (s *CodexSource) SessionID(path string) string {
 	return rollout.SessionIDFromPath(path)
 }
 
-func (s *CodexSource) ReadMeta(path string) (core.SessionMeta, error) {
-	meta, err := rollout.ReadSessionMeta(path)
-	if err != nil {
-		return meta, err
-	}
-	names, err := s.threadNames(false)
+func (s *CodexSource) Sparse() bool { return true }
+
+func (s *CodexSource) NewMetaScanner(path string) MetaScanner {
+	return codexScanner{rollout.NewMetaScanner(path), s}
+}
+
+type codexScanner struct {
+	*rollout.MetaScanner
+	src *CodexSource
+}
+
+func (c codexScanner) Meta() core.SessionMeta {
+	meta := c.MetaScanner.Meta()
+	names, _ := c.src.threadNames(false)
 	meta.Title = names[meta.ID]
-	return meta, err
+	return meta
 }
 
 func (s *CodexSource) MetadataFiles() []string { return []string{s.indexPath} }
@@ -185,6 +212,7 @@ func (s PiSource) IsSessionFile(path string) bool {
 	return strings.HasSuffix(filepath.Base(path), ".jsonl")
 }
 func (s PiSource) SessionID(path string) string { return piagent.SessionIDFromPath(path) }
-func (s PiSource) ReadMeta(path string) (core.SessionMeta, error) {
-	return piagent.ReadSessionMeta(path)
-}
+
+// A rename is recorded once, wherever in the log it happened.
+func (s PiSource) Sparse() bool                      { return false }
+func (s PiSource) NewMetaScanner(string) MetaScanner { return piagent.NewMetaScanner() }

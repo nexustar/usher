@@ -90,76 +90,90 @@ type block struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// MetaScanner folds a session log's lines, fed in file order, into its
+// SessionMeta.
+type MetaScanner struct{ meta core.SessionMeta }
+
+func NewMetaScanner() *MetaScanner { return &MetaScanner{} }
+
+func (s *MetaScanner) Feed(raw []byte) {
+	meta := &s.meta
+	var e entry
+	if json.Unmarshal(raw, &e) != nil {
+		return
+	}
+	if e.Type == "session" {
+		var h header
+		if json.Unmarshal(raw, &h) == nil {
+			meta.ID, meta.Cwd, meta.StartedAt = h.ID, h.Cwd, h.Timestamp
+			meta.ParentID = sessionIDFromParent(h.ParentSession)
+		}
+		return
+	}
+	if !e.Timestamp.IsZero() {
+		meta.LastEventAt = e.Timestamp
+	}
+	if e.Type == "session_info" {
+		meta.Title = e.Name
+		return
+	}
+	// Pi persists every thinking-level change, so the last one is the
+	// session's current level even when no worker is live. A session that
+	// never changed level has no such record and keeps the model default,
+	// which only the RPC state knows.
+	if e.Type == "thinking_level_change" {
+		meta.Runtime.Effort = e.ThinkingLevel
+		return
+	}
+	// Usage recorded before a compaction describes the context it replaced,
+	// so nothing describes the current one until the next assistant message
+	// reports its own. Pi's live snapshot goes quiet in that window too.
+	if e.Type == "compaction" {
+		meta.Runtime.ContextTokens = 0
+		return
+	}
+	if e.Type != "message" {
+		return
+	}
+	var m message
+	if json.Unmarshal(e.Message, &m) != nil {
+		return
+	}
+	if m.Role == "user" {
+		text := contentText(m.Content)
+		if meta.Prompt == "" {
+			meta.Prompt = textutil.Truncate(strings.TrimSpace(text), 60)
+		}
+		meta.LastInputAt = entryTime(e, m)
+	}
+	if m.Role == "assistant" {
+		if m.Model != "" {
+			meta.Runtime.Model = m.Model
+		}
+		// The provider's count for the newest message approximates the
+		// context; a live worker's own estimate supersedes it.
+		if tokens := m.Usage.contextTokens(); tokens > 0 {
+			meta.Runtime.ContextTokens = tokens
+		}
+	}
+}
+
+// Meta is the metadata of the lines fed so far.
+func (s *MetaScanner) Meta() core.SessionMeta { return s.meta }
+
 func ReadSessionMeta(path string) (core.SessionMeta, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return core.SessionMeta{}, err
 	}
 	defer f.Close()
-	var meta core.SessionMeta
+	s := NewMetaScanner()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64<<10), 16<<20)
 	for sc.Scan() {
-		var e entry
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
-			continue
-		}
-		if e.Type == "session" {
-			var h header
-			if json.Unmarshal(sc.Bytes(), &h) == nil {
-				meta.ID, meta.Cwd, meta.StartedAt = h.ID, h.Cwd, h.Timestamp
-				meta.ParentID = sessionIDFromParent(h.ParentSession)
-			}
-			continue
-		}
-		if !e.Timestamp.IsZero() {
-			meta.LastEventAt = e.Timestamp
-		}
-		if e.Type == "session_info" {
-			meta.Title = e.Name
-			continue
-		}
-		// Pi persists every thinking-level change, so the last one is the
-		// session's current level even when no worker is live. A session that
-		// never changed level has no such record and keeps the model default,
-		// which only the RPC state knows.
-		if e.Type == "thinking_level_change" {
-			meta.Runtime.Effort = e.ThinkingLevel
-			continue
-		}
-		// Usage recorded before a compaction describes the context it replaced,
-		// so nothing describes the current one until the next assistant message
-		// reports its own. Pi's live snapshot goes quiet in that window too.
-		if e.Type == "compaction" {
-			meta.Runtime.ContextTokens = 0
-			continue
-		}
-		if e.Type != "message" {
-			continue
-		}
-		var m message
-		if json.Unmarshal(e.Message, &m) != nil {
-			continue
-		}
-		if m.Role == "user" {
-			text := contentText(m.Content)
-			if meta.Prompt == "" {
-				meta.Prompt = textutil.Truncate(strings.TrimSpace(text), 60)
-			}
-			meta.LastInputAt = entryTime(e, m)
-		}
-		if m.Role == "assistant" {
-			if m.Model != "" {
-				meta.Runtime.Model = m.Model
-			}
-			// The provider's count for the newest message approximates the
-			// context; a live worker's own estimate supersedes it.
-			if tokens := m.Usage.contextTokens(); tokens > 0 {
-				meta.Runtime.ContextTokens = tokens
-			}
-		}
+		s.Feed(sc.Bytes())
 	}
-	return meta, sc.Err()
+	return s.Meta(), sc.Err()
 }
 
 // RenameSession appends pi session_info metadata.

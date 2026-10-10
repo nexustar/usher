@@ -286,6 +286,7 @@ func serve(args []string) error {
 	}
 	if claudeRuntime, ok := backends["claude"].Runtime.(*sender.Sender); ok {
 		claudeRuntime.SetScheduled(func(id string) bool {
+			d.Complete(id)
 			s, ok := d.Get(id)
 			return ok && s.Activity.Pins()
 		})

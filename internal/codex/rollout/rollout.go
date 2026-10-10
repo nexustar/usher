@@ -115,9 +115,104 @@ func isTurnAbortedType(t string) bool {
 	}
 }
 
-// ReadSessionMeta reads the lightweight descriptor: id/cwd/start from the
-// session_meta header, last-activity from the final timestamped line, and a
-// title from the first real user prompt.
+// MetaScanner folds a rollout's lines, fed in file order, into the lightweight
+// descriptor: id/cwd/start from the session_meta header, last-activity from
+// the final timestamped line, and a title from the first real user prompt.
+type MetaScanner struct {
+	meta        core.SessionMeta
+	firstPrompt string
+}
+
+func NewMetaScanner(path string) *MetaScanner {
+	return &MetaScanner{meta: core.SessionMeta{ID: SessionIDFromPath(path)}}
+}
+
+func (s *MetaScanner) Feed(raw []byte) {
+	meta := &s.meta
+	var l line
+	if err := json.Unmarshal(raw, &l); err != nil {
+		return
+	}
+	if meta.StartedAt.IsZero() && !l.Timestamp.IsZero() {
+		meta.StartedAt = l.Timestamp
+	}
+	if !l.Timestamp.IsZero() {
+		meta.LastEventAt = l.Timestamp
+	}
+	switch l.Type {
+	case "session_meta":
+		var p struct {
+			ID             string `json:"id"`
+			Cwd            string `json:"cwd"`
+			ParentThreadID string `json:"parent_thread_id"`
+			ThreadSource   string `json:"thread_source"`
+			AgentNickname  string `json:"agent_nickname"`
+			AgentPath      string `json:"agent_path"`
+		}
+		if err := json.Unmarshal(l.Payload, &p); err == nil {
+			if p.ID != "" {
+				meta.ID = p.ID
+			}
+			meta.Cwd = p.Cwd
+			meta.IsSubagent = p.ThreadSource == "subagent"
+			if meta.IsSubagent {
+				meta.ParentID = p.ParentThreadID
+			}
+			meta.AgentName = p.AgentNickname
+			if meta.AgentName == "" {
+				meta.AgentName = p.AgentPath
+			}
+		}
+	case "event_msg":
+		var usage struct {
+			Type string `json:"type"`
+			Info *struct {
+				Last struct {
+					Total int64 `json:"total_tokens"`
+				} `json:"last_token_usage"`
+				ContextWindow int64 `json:"model_context_window"`
+			} `json:"info"`
+		}
+		if json.Unmarshal(l.Payload, &usage) == nil && usage.Type == "token_count" && usage.Info != nil {
+			meta.Runtime.ContextTokens = usage.Info.Last.Total
+			meta.Runtime.ContextWindow = usage.Info.ContextWindow
+		}
+		if msg, ok := cleanUserPrompt(l.Payload); ok {
+			if s.firstPrompt == "" {
+				s.firstPrompt = msg
+			}
+			// The clean typed prompt — the sort key
+			// (core.SessionMeta.LastInputAt).
+			if !l.Timestamp.IsZero() {
+				meta.LastInputAt = l.Timestamp
+			}
+		}
+	case "turn_context":
+		var p struct {
+			Model  string `json:"model"`
+			Effort string `json:"effort"`
+		}
+		if json.Unmarshal(l.Payload, &p) == nil {
+			if p.Model != "" {
+				meta.Runtime.Model = p.Model
+			}
+			if p.Effort != "" {
+				meta.Runtime.Effort = p.Effort
+			}
+		}
+	}
+}
+
+// Meta is the metadata of the lines fed so far.
+func (s *MetaScanner) Meta() core.SessionMeta {
+	meta := s.meta
+	if s.firstPrompt != "" {
+		meta.Prompt = textutil.Truncate(strings.TrimSpace(s.firstPrompt), 60)
+	}
+	return meta
+}
+
+// ReadSessionMeta scans the whole rollout at path.
 func ReadSessionMeta(path string) (core.SessionMeta, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -125,87 +220,12 @@ func ReadSessionMeta(path string) (core.SessionMeta, error) {
 	}
 	defer f.Close()
 
-	meta := core.SessionMeta{ID: SessionIDFromPath(path)}
+	s := NewMetaScanner(path)
 	sc := newScanner(f)
-	var firstPrompt string
 	for sc.Scan() {
-		var l line
-		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
-			continue
-		}
-		if meta.StartedAt.IsZero() && !l.Timestamp.IsZero() {
-			meta.StartedAt = l.Timestamp
-		}
-		if !l.Timestamp.IsZero() {
-			meta.LastEventAt = l.Timestamp
-		}
-		switch l.Type {
-		case "session_meta":
-			var p struct {
-				ID             string `json:"id"`
-				Cwd            string `json:"cwd"`
-				ParentThreadID string `json:"parent_thread_id"`
-				ThreadSource   string `json:"thread_source"`
-				AgentNickname  string `json:"agent_nickname"`
-				AgentPath      string `json:"agent_path"`
-			}
-			if err := json.Unmarshal(l.Payload, &p); err == nil {
-				if p.ID != "" {
-					meta.ID = p.ID
-				}
-				meta.Cwd = p.Cwd
-				meta.IsSubagent = p.ThreadSource == "subagent"
-				if meta.IsSubagent {
-					meta.ParentID = p.ParentThreadID
-				}
-				meta.AgentName = p.AgentNickname
-				if meta.AgentName == "" {
-					meta.AgentName = p.AgentPath
-				}
-			}
-		case "event_msg":
-			var usage struct {
-				Type string `json:"type"`
-				Info *struct {
-					Last struct {
-						Total int64 `json:"total_tokens"`
-					} `json:"last_token_usage"`
-					ContextWindow int64 `json:"model_context_window"`
-				} `json:"info"`
-			}
-			if json.Unmarshal(l.Payload, &usage) == nil && usage.Type == "token_count" && usage.Info != nil {
-				meta.Runtime.ContextTokens = usage.Info.Last.Total
-				meta.Runtime.ContextWindow = usage.Info.ContextWindow
-			}
-			if msg, ok := cleanUserPrompt(l.Payload); ok {
-				if firstPrompt == "" {
-					firstPrompt = msg
-				}
-				// The clean typed prompt — the sort key
-				// (core.SessionMeta.LastInputAt).
-				if !l.Timestamp.IsZero() {
-					meta.LastInputAt = l.Timestamp
-				}
-			}
-		case "turn_context":
-			var p struct {
-				Model  string `json:"model"`
-				Effort string `json:"effort"`
-			}
-			if json.Unmarshal(l.Payload, &p) == nil {
-				if p.Model != "" {
-					meta.Runtime.Model = p.Model
-				}
-				if p.Effort != "" {
-					meta.Runtime.Effort = p.Effort
-				}
-			}
-		}
+		s.Feed(sc.Bytes())
 	}
-	if firstPrompt != "" {
-		meta.Prompt = textutil.Truncate(strings.TrimSpace(firstPrompt), 60)
-	}
-	return meta, sc.Err()
+	return s.Meta(), sc.Err()
 }
 
 // ReadThreadNames reads the latest name for every indexed thread.

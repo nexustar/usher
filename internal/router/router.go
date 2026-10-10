@@ -473,6 +473,22 @@ func (r *Router) GetSession(id string) (core.Session, bool) {
 	return sess, true
 }
 
+// OpenSession is GetSession for a session about to be shown: it also carries
+// the schedules and goal recorded in the transcript, unless reading a long one
+// for them takes more than wait — the read goes on, and a later call has them.
+func (r *Router) OpenSession(id string, wait time.Duration) (core.Session, bool) {
+	done := make(chan struct{})
+	go func() {
+		r.discovery.Complete(id)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(wait):
+	}
+	return r.GetSession(id)
+}
+
 func (r *Router) SessionPath(id string) (string, bool) {
 	return r.discovery.Path(id)
 }
@@ -713,6 +729,9 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 	// Reorder the sidebar the instant the user sends, without waiting for the
 	// prompt to land in the jsonl (see discovery.MarkInput).
 	r.discovery.MarkInput(id, time.Now().UTC())
+	// A session about to hold a worker needs its schedules known before the
+	// pool next looks for one to evict.
+	go r.discovery.Complete(id)
 
 	r.sendMu.Lock()
 	if _, busy := r.activeSend[id]; busy || len(r.sendQueue[id]) > 0 {

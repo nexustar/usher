@@ -77,10 +77,78 @@ func ParseLine(line []byte) (Event, error) {
 // backend-neutral transcript contract lives in core.
 type SessionMeta = core.SessionMeta
 
-// ReadSessionMeta scans the file at path and produces a SessionMeta. It walks
-// every line because cwd, title, and the first-prompt fallback can each appear
-// at different positions; long sessions are read once at discovery and cached
-// by the discovery layer.
+// MetaScanner folds a session log's lines, fed in file order, into its
+// SessionMeta. Cwd, title and the first prompt can each appear anywhere.
+type MetaScanner struct {
+	meta                                  SessionMeta
+	firstUserPrompt, aiTitle, customTitle string
+	activity                              activityScan
+}
+
+func NewMetaScanner(path string) *MetaScanner {
+	return &MetaScanner{meta: SessionMeta{ID: strings.TrimSuffix(filepath.Base(path), ".jsonl")}}
+}
+
+// Feed takes one line; a malformed one is skipped.
+func (s *MetaScanner) Feed(line []byte) {
+	ev, err := ParseLine(line)
+	if err != nil {
+		return
+	}
+	meta := &s.meta
+	s.activity.feed(ev)
+	if meta.StartedAt.IsZero() && !ev.Timestamp.IsZero() {
+		meta.StartedAt = ev.Timestamp
+	}
+	if !ev.Timestamp.IsZero() {
+		meta.LastEventAt = ev.Timestamp
+	}
+	if meta.Cwd == "" && ev.Cwd != "" {
+		meta.Cwd = ev.Cwd
+	}
+	if ev.Type == "ai-title" && ev.AITitle != "" {
+		s.aiTitle = ev.AITitle
+	}
+	if ev.CustomTitle != nil {
+		s.customTitle = *ev.CustomTitle
+	}
+	if meta.AgentName == "" && ev.AttributionAgent != "" {
+		meta.AgentName = ev.AttributionAgent
+	}
+	if ev.Type == "assistant" && len(ev.Message) > 0 {
+		updateClaudeRuntime(&meta.Runtime, ev.Message)
+	}
+	if ev.Type == "user" && len(ev.Message) > 0 {
+		content := extractUserContent(ev.Message)
+		if s.firstUserPrompt == "" && !ev.isBoilerplateMeta() {
+			s.firstUserPrompt = content
+		}
+		// A genuine typed prompt — not a tool_result echo or the
+		// "[Request interrupted ...]" marker claude writes on Ctrl-C.
+		if !ev.Timestamp.IsZero() && !hasToolResult(ev.Message) &&
+			!ev.IsMeta &&
+			!strings.HasPrefix(content, "[Request interrupted") {
+			meta.LastInputAt = ev.Timestamp
+		}
+	}
+}
+
+// Meta is the metadata of the lines fed so far.
+func (s *MetaScanner) Meta() SessionMeta {
+	meta := s.meta
+	if s.firstUserPrompt != "" {
+		meta.Prompt = textutil.Truncate(strings.TrimSpace(s.firstUserPrompt), 60)
+	}
+	if s.customTitle != "" {
+		meta.Title = s.customTitle
+	} else {
+		meta.Title = s.aiTitle
+	}
+	meta.Activity = s.activity.activity()
+	return meta
+}
+
+// ReadSessionMeta scans the whole file at path.
 func ReadSessionMeta(path string) (SessionMeta, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -88,69 +156,15 @@ func ReadSessionMeta(path string) (SessionMeta, error) {
 	}
 	defer f.Close()
 
-	meta := SessionMeta{
-		ID: strings.TrimSuffix(filepath.Base(path), ".jsonl"),
-	}
-
+	s := NewMetaScanner(path)
 	sc := bufio.NewScanner(f)
 	// Some events (assistant message with usage stats, large attachments)
 	// can exceed bufio's default 64K line limit.
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-
-	var firstUserPrompt, aiTitle, customTitle string
-	var activity activityScan
 	for sc.Scan() {
-		ev, err := ParseLine(sc.Bytes())
-		if err != nil {
-			continue // skip malformed lines, do not fail the whole read
-		}
-		activity.feed(ev)
-		if meta.StartedAt.IsZero() && !ev.Timestamp.IsZero() {
-			meta.StartedAt = ev.Timestamp
-		}
-		if !ev.Timestamp.IsZero() {
-			meta.LastEventAt = ev.Timestamp
-		}
-		if meta.Cwd == "" && ev.Cwd != "" {
-			meta.Cwd = ev.Cwd
-		}
-		if ev.Type == "ai-title" && ev.AITitle != "" {
-			aiTitle = ev.AITitle
-		}
-		if ev.CustomTitle != nil {
-			customTitle = *ev.CustomTitle
-		}
-		if meta.AgentName == "" && ev.AttributionAgent != "" {
-			meta.AgentName = ev.AttributionAgent
-		}
-		if ev.Type == "assistant" && len(ev.Message) > 0 {
-			updateClaudeRuntime(&meta.Runtime, ev.Message)
-		}
-		if ev.Type == "user" && len(ev.Message) > 0 {
-			content := extractUserContent(ev.Message)
-			if firstUserPrompt == "" && !ev.isBoilerplateMeta() {
-				firstUserPrompt = content
-			}
-			// A genuine typed prompt — not a tool_result echo or the
-			// "[Request interrupted ...]" marker claude writes on Ctrl-C.
-			if !ev.Timestamp.IsZero() && !hasToolResult(ev.Message) &&
-				!ev.IsMeta &&
-				!strings.HasPrefix(content, "[Request interrupted") {
-				meta.LastInputAt = ev.Timestamp
-			}
-		}
+		s.Feed(sc.Bytes())
 	}
-
-	if firstUserPrompt != "" {
-		meta.Prompt = textutil.Truncate(strings.TrimSpace(firstUserPrompt), 60)
-	}
-	if customTitle != "" {
-		meta.Title = customTitle
-	} else {
-		meta.Title = aiTitle
-	}
-	meta.Activity = activity.activity()
-	return meta, sc.Err()
+	return s.Meta(), sc.Err()
 }
 
 // RenameSession directly appends Claude's native custom-title record. The

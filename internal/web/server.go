@@ -717,7 +717,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	sess, ok := s.router.GetSession(id)
+	sess, ok := s.router.OpenSession(id, 300*time.Millisecond)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return

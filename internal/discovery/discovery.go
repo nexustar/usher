@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ type Discovery struct {
 	mu       sync.RWMutex
 	sessions map[string]core.Session // by id
 	paths    map[string]string       // id -> path
+	readings map[string]*reading     // by id
 }
 
 // NewMulti builds a Discovery that scans and watches several backend layouts at
@@ -50,6 +52,7 @@ func NewMulti(logger *slog.Logger, sources ...Source) (*Discovery, error) {
 		watcher:  w,
 		sessions: map[string]core.Session{},
 		paths:    map[string]string{},
+		readings: map[string]*reading{},
 	}, nil
 }
 
@@ -82,6 +85,17 @@ func (d *Discovery) Start(ctx context.Context) error {
 
 // scan walks every source's root once and upserts each session file found.
 func (d *Discovery) scan() error {
+	paths := make(chan string)
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range paths {
+				d.upsert(path)
+			}
+		}()
+	}
 	for _, s := range d.sources {
 		_ = filepath.Walk(s.Root(), func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -92,11 +106,13 @@ func (d *Discovery) scan() error {
 				return nil
 			}
 			if s.IsSessionFile(path) {
-				d.upsert(path)
+				paths <- path
 			}
 			return nil
 		})
 	}
+	close(paths)
+	wg.Wait()
 	return nil
 }
 
@@ -133,14 +149,26 @@ func (d *Discovery) addWatches() error {
 	return nil
 }
 
+// Complete reads every line of a session's log that has not been read yet, so
+// the session carries what only the whole transcript tells: its schedules and
+// goal. Listing reads the ends of a long log alone.
+func (d *Discovery) Complete(id string) {
+	if path, ok := d.Path(id); ok {
+		d.ingest(path, true)
+	}
+}
+
 // Upsert synchronously ingests the session file at path. fsnotify would pick
 // it up anyway; callers that are about to hand out the session id (fork) call
 // this so the id resolves immediately instead of racing the watcher.
 func (d *Discovery) Upsert(path string) { d.upsert(path) }
 
-// upsert reads and caches a jsonl file's metadata. Known sessions are re-read
-// when the file changes so cumulative usage stays current in the projection.
-func (d *Discovery) upsert(path string) {
+// upsert reads and caches a jsonl file's metadata. Known sessions are read
+// again when the file changes so cumulative usage stays current in the
+// projection.
+func (d *Discovery) upsert(path string) { d.ingest(path, false) }
+
+func (d *Discovery) ingest(path string, whole bool) {
 	src := d.sourceFor(path)
 	if src == nil {
 		return
@@ -154,6 +182,17 @@ func (d *Discovery) upsert(path string) {
 		return
 	}
 
+	d.mu.Lock()
+	r := d.readings[id]
+	if r == nil {
+		r = &reading{}
+		d.readings[id] = r
+	}
+	d.mu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	meta, whole, err := r.read(src, path, whole)
+
 	d.mu.RLock()
 	existing, known := d.sessions[id]
 	d.mu.RUnlock()
@@ -163,7 +202,7 @@ func (d *Discovery) upsert(path string) {
 		// cwd/prompt/title can land after the session file appears. Native
 		// rename commands also change title after it was first populated.
 		needTitle := existing.Title == ""
-		if meta, err := src.ReadMeta(path); err == nil {
+		if err == nil {
 			// Claude's live result event is the authoritative source because it
 			// includes the effective max window. Transcript usage is only a
 			// fallback; never let a later fsnotify scan erase a captured window.
@@ -207,8 +246,11 @@ func (d *Discovery) upsert(path string) {
 			if meta.Title != "" {
 				existing.Title = meta.Title
 			}
-			// Goals end and schedules get deleted: take the whole value.
-			existing.Activity = meta.Activity
+			// Goals end and schedules get deleted: take the whole value, which
+			// only a whole read knows.
+			if whole {
+				existing.Activity = meta.Activity
+			}
 		}
 		d.mu.Lock()
 		d.sessions[id] = existing
@@ -216,10 +258,12 @@ func (d *Discovery) upsert(path string) {
 		return
 	}
 
-	meta, err := src.ReadMeta(path)
 	if err != nil {
 		d.logger.Warn("read session meta", "path", path, "err", err)
 		return
+	}
+	if !whole {
+		meta.Activity = core.Activity{}
 	}
 	sess := core.Session{
 		ID:          id,
@@ -284,6 +328,7 @@ func (d *Discovery) Remove(id string) {
 	d.mu.Lock()
 	delete(d.sessions, id)
 	delete(d.paths, id)
+	delete(d.readings, id)
 	d.mu.Unlock()
 }
 
