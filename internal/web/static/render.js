@@ -29,16 +29,7 @@ window.marked.use({
   silent: true,
   renderer: {
     code(token) {
-      if (/^diff\b/.test(token.lang)) {
-        const lines = String(token.text).split('\n').map(line => {
-          const e = esc(line);
-          if (line.startsWith('+')) return '<span class="diff-add">' + e + '</span>';
-          if (line.startsWith('-')) return '<span class="diff-del">' + e + '</span>';
-          if (line.startsWith('@@')) return '<span class="diff-hunk">' + e + '</span>';
-          return e;
-        }).join('\n');
-        return '<pre><code>' + lines + '</code></pre>';
-      }
+      if (/^diff\b/.test(token.lang)) return '<pre><code>' + diffHTML(token.text) + '</code></pre>';
       return false;
     },
     html(token) { return esc(typeof token === 'string' ? token : token.text); },
@@ -50,18 +41,30 @@ window.marked.use({
       // through the same authenticated, contained endpoint as show_image.
       // URLs and hash references retain normal Markdown behavior.
       const external = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(href);
-      if (currentDetailId && href && !external) {
-        const src = '/api/sessions/' + encodeURIComponent(currentDetailId) +
-          '/image?path=' + encodeURIComponent(href);
-        return '<span class="markdown-image"><a href="' + esc(src) +
-          '" target="_blank" rel="noopener"><img loading="lazy" decoding="async" alt="' +
-          esc(alt) + '" src="' + esc(src) + '" data-path="' + esc(href) + '"' +
-          title + imgFallback + '></a></span>';
-      }
+      if (currentDetailId && href && !external) return sessionImageHTML(href, alt, title);
       return '<img src="' + esc(href) + '" alt="' + esc(alt) + '"' + title + imgFallback + '>';
     },
   },
 });
+
+function diffHTML(text) {
+  return String(text).split('\n').map(line => {
+    const e = esc(line);
+    if (line.startsWith('+')) return '<span class="diff-add">' + e + '</span>';
+    if (line.startsWith('-')) return '<span class="diff-del">' + e + '</span>';
+    if (line.startsWith('@@')) return '<span class="diff-hunk">' + e + '</span>';
+    return e;
+  }).join('\n');
+}
+
+function sessionImageHTML(path, alt, titleAttr) {
+  const src = '/api/sessions/' + encodeURIComponent(currentDetailId) +
+    '/image?path=' + encodeURIComponent(path);
+  return '<span class="markdown-image"><a href="' + esc(src) +
+    '" target="_blank" rel="noopener"><img loading="lazy" decoding="async" alt="' +
+    esc(alt) + '" src="' + esc(src) + '" data-path="' + esc(path) + '"' +
+    (titleAttr || '') + imgFallback + '></a></span>';
+}
 
 export function renderMarkdown(md) {
   if (renderMode === 'raw') {
@@ -129,8 +132,8 @@ const imgFallback = ' onerror="window._onImgError(this)"';
 // renderToolPart renders a single tool part as a collapsible <details> element.
 // Edit/Write expand by default; others collapse.
 // parseImageDims pulls {w,h} out of the show_image tool's JSON result. We extract
-// the first {…} span (codex fences tool output) rather than parsing the whole
-// string. Returns null if absent/unparseable.
+// the first {…} span rather than parsing the whole string. Returns null if
+// absent/unparseable.
 function parseImageDims(content) {
   if (!content) return null;
   const a = content.indexOf('{');
@@ -145,9 +148,20 @@ function parseImageDims(content) {
   return null;
 }
 
+// Tool output is data: never laid out as Markdown, whatever the md/raw switch.
+function toolBodyHTML(p) {
+  if (p.content_kind === 'image') {
+    return p.tool_target && currentDetailId
+      ? sessionImageHTML(p.tool_target, p.tool_target.split('/').pop() || 'image')
+      : '';
+  }
+  if (!p.content) return '';
+  return '<pre>' + (p.content_kind === 'diff' ? diffHTML(p.content) : esc(p.content)) + '</pre>';
+}
+
 export function renderToolPart(p) {
-  const name = p.toolName || 'tool';
-  const target = p.toolTarget || '';
+  const name = p.tool_name || 'tool';
+  const target = p.tool_target || '';
   // show_image renders as an inline image (not a collapsible tool block). The
   // path travels only as an encodeURIComponent'd query param, so it can't break
   // out of the attribute; /image resolves+validates it against the session cwd.
@@ -173,10 +187,9 @@ export function renderToolPart(p) {
     '<rect x="6" y="6" width="8" height="8" rx="1.5"/>' +
     '<path d="M4.5 10.5h-1a1.5 1.5 0 0 1-1.5-1.5V3.5A1.5 1.5 0 0 1 3.5 2h5.5A1.5 1.5 0 0 1 10.5 3.5v1"/>' +
     '</svg>';
-  // toolInput is the full command / JSON arguments, sent only when the title
-  // doesn't already show it all. It sits outside .tool-body, which raw mode
-  // re-renders wholesale from data-raw.
-  const input = p.toolInput || '';
+  // tool_input is the full command / JSON arguments, sent only when the title
+  // doesn't already show it all.
+  const input = p.tool_input || '';
   // Shell input gets a CSS-drawn `$ ` prompt, so copying never picks it up.
   const inputClass = /^(bash|shell)$/i.test(name) ? 'tool-input shell' : 'tool-input';
   // A title that is only the input's first line gets a CSS-drawn ellipsis.
@@ -187,12 +200,12 @@ export function renderToolPart(p) {
     (target || input
       ? '<button class="tool-copy" type="button" title="Copy" aria-label="Copy">' + copyIcon + '</button>'
       : '');
-  return `<details class="tool-details${p.toolError ? ' failed' : ''}"${openAttr}>` +
+  return `<details class="tool-details${p.tool_error ? ' failed' : ''}"${openAttr}>` +
     `<summary>${label}</summary>` +
     // One scroller, so input and output move sideways together.
     `<div class="tool-scroll">` +
     (input ? `<pre class="${inputClass}">${esc(input)}</pre>` : '') +
-    `<div class="tool-body" data-raw="${esc(p.content || '')}">${renderMarkdown(p.content || '')}</div>` +
+    `<div class="tool-body">${toolBodyHTML(p)}</div>` +
     `</div>` +
     `</details>`;
 }

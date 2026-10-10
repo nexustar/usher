@@ -619,7 +619,7 @@ func TestTranscriptSelectsActiveBranch(t *testing.T) {
 			t.Fatal("inactive branch was rendered")
 		}
 	}
-	if turns[1].Parts[1].ToolTarget != "go test ./..." || turns[1].Parts[1].Content != "```\nok\n```" {
+	if turns[1].Parts[1].ToolTarget != "go test ./..." || turns[1].Parts[1].Content != "ok" {
 		t.Fatalf("parts=%+v", turns[1].Parts)
 	}
 }
@@ -656,24 +656,6 @@ func TestForkRPCCommand(t *testing.T) {
 	}
 	if _, _, err := forkRPCCommand(state, "u2x"); err == nil {
 		t.Fatal("abandoned branch fork point accepted")
-	}
-}
-
-func TestRenderTerminalToolResult(t *testing.T) {
-	if got := renderToolResult("read", "package pi\n"); got != "```\npackage pi\n\n```" {
-		t.Fatalf("plain read result = %q", got)
-	}
-	if got := renderToolResult("Read", "before\n```go\nafter\n```"); !strings.HasPrefix(got, "````\n") || !strings.HasSuffix(got, "\n````") {
-		t.Fatalf("embedded fence was not widened: %q", got)
-	}
-	if got := renderToolResult("bash", "# output"); got != "```\n# output\n```" {
-		t.Fatalf("bash result = %q", got)
-	}
-	if got := renderToolResult("grep", "README.md:1:# usher"); got != "```\nREADME.md:1:# usher\n```" {
-		t.Fatalf("grep result = %q", got)
-	}
-	if got := renderToolResult("extension", "# markdown"); got != "# markdown" {
-		t.Fatalf("non-terminal result changed: %q", got)
 	}
 }
 
@@ -721,7 +703,7 @@ func TestCodemodeCallShowsItsScript(t *testing.T) {
 		t.Errorf("input = %q, want the whole script", parts[0].ToolInput)
 	}
 	_, parts = a.FeedLineParts([]byte(`{"type":"message","id":"r1","timestamp":"2026-07-01T10:00:01Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"codemode","content":[{"type":"text","text":"Script completed in 0.1s"}]}}`))
-	if len(parts) != 1 || !strings.HasPrefix(parts[0].Content, "```") {
+	if len(parts) != 1 || parts[0].Content != "Script completed in 0.1s" {
 		t.Errorf("result not fenced: %+v", parts)
 	}
 }

@@ -311,8 +311,8 @@ func TestReadTurns_RichToolResults(t *testing.T) {
 	if edit.ToolName != "Edit" {
 		t.Errorf("edit.ToolName = %q", edit.ToolName)
 	}
-	if !strings.Contains(edit.Content, "```diff") || !strings.Contains(edit.Content, "@@ -1,1 +1,2 @@") {
-		t.Errorf("edit content missing diff fence/hunk: %q", edit.Content)
+	if edit.ContentKind != core.ContentDiff || !strings.Contains(edit.Content, "@@ -1,1 +1,2 @@") {
+		t.Errorf("edit content missing diff kind/hunk: %q", edit.Content)
 	}
 	if !strings.Contains(edit.Content, "+new1") || !strings.Contains(edit.Content, "-old") {
 		t.Errorf("edit content missing diff lines: %q", edit.Content)
@@ -322,7 +322,7 @@ func TestReadTurns_RichToolResults(t *testing.T) {
 	if read.ToolName != "Read" {
 		t.Errorf("read.ToolName = %q", read.ToolName)
 	}
-	if !strings.Contains(read.Content, "package bar") || strings.Contains(read.Content, "```diff") {
+	if !strings.Contains(read.Content, "package bar") || read.ContentKind != "" {
 		t.Errorf("read content = %q", read.Content)
 	}
 
@@ -414,13 +414,13 @@ func TestRenderToolResult_FallbackUnknownShape(t *testing.T) {
 	// A tool with no special-cased toolUseResult shape falls back to the inline
 	// tool_result text.
 	ev, _ := ParseLine([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"g1","content":"match.go\nother.go"}]},"toolUseResult":{"mode":"files_with_matches","numFiles":2}}`))
-	if body := renderToolResult(ev, parseBody(ev.Message), "*.go"); !strings.Contains(body, "match.go") {
+	if body, kind := renderToolResult(ev, parseBody(ev.Message), "*.go"); body != "match.go\nother.go" || kind != "" {
 		t.Errorf("fallback body = %q", body)
 	}
 }
 
 // Reading an image yields a tool_result with no text — the part must still
-// render, as a Markdown image the client can resolve to the file.
+// render, as an image the client loads from the tool's target.
 func TestReadTurns_ImageToolResult(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
@@ -448,21 +448,8 @@ func TestReadTurns_ImageToolResult(t *testing.T) {
 	if parts[0].Type != "tool" || parts[0].ToolName != "Read" || parts[0].ToolTarget != img {
 		t.Errorf("part = %+v", parts[0])
 	}
-	// Angle brackets keep the spaces in the path inside the destination.
-	if want := "![Screen Shot 1.png](<" + img + ">)"; parts[0].Content != want {
-		t.Errorf("content = %q, want %q", parts[0].Content, want)
-	}
-}
-
-func TestImageMarkdown_UnspellablePath(t *testing.T) {
-	if got := imageMarkdown(""); got != "[image]" {
-		t.Errorf("empty path = %q", got)
-	}
-	if got := imageMarkdown("/tmp/a<b>.png"); got != "[image]" {
-		t.Errorf("bracketed path = %q", got)
-	}
-	if got := imageMarkdown("/tmp/a[1].png"); got != "![image](</tmp/a[1].png>)" {
-		t.Errorf("bracketed name = %q", got)
+	if parts[0].ContentKind != core.ContentImage || parts[0].Content != "" {
+		t.Errorf("kind = %q content = %q, want an image part", parts[0].ContentKind, parts[0].Content)
 	}
 }
 

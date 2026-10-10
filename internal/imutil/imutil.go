@@ -61,7 +61,7 @@ var ImageExts = map[string]bool{
 }
 
 // PartImageRefs extracts show_image file paths from a backend-neutral tool
-// "part" event. The router puts a tool's path-like argument into toolTarget,
+// "part" event. The router puts a tool's path-like argument into tool_target,
 // so this covers streamed show_image calls without tying IM frontends to one
 // backend's raw log shape.
 func PartImageRefs(raw json.RawMessage) []string {
@@ -69,8 +69,8 @@ func PartImageRefs(raw json.RawMessage) []string {
 		Role string `json:"role"`
 		Part struct {
 			Type       string `json:"type"`
-			ToolName   string `json:"toolName"`
-			ToolTarget string `json:"toolTarget"`
+			ToolName   string `json:"tool_name"`
+			ToolTarget string `json:"tool_target"`
 		} `json:"part"`
 	}
 	if err := json.Unmarshal(raw, &o); err != nil {

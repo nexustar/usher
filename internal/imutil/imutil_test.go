@@ -106,9 +106,9 @@ func TestPartImageRefs(t *testing.T) {
 		raw  string
 		want []string
 	}{
-		{`{"role":"assistant","part":{"type":"tool","toolName":"mcp__usher__show_image","toolTarget":"out/chart.png"}}`, []string{"out/chart.png"}},
-		{`{"role":"assistant","part":{"type":"tool","toolName":"show_image","toolTarget":"/abs/a.jpg"}}`, []string{"/abs/a.jpg"}},
-		{`{"role":"assistant","part":{"type":"tool","toolName":"Bash","toolTarget":"ls"}}`, nil},
+		{`{"role":"assistant","part":{"type":"tool","tool_name":"mcp__usher__show_image","tool_target":"out/chart.png"}}`, []string{"out/chart.png"}},
+		{`{"role":"assistant","part":{"type":"tool","tool_name":"show_image","tool_target":"/abs/a.jpg"}}`, []string{"/abs/a.jpg"}},
+		{`{"role":"assistant","part":{"type":"tool","tool_name":"Bash","tool_target":"ls"}}`, nil},
 		{`{"role":"assistant","part":{"type":"text","content":"hi"}}`, nil},
 		{`not json`, nil},
 	}

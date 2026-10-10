@@ -35,25 +35,6 @@ func ShortID(id string) string {
 	return id
 }
 
-// Fence wraps body in a markdown code fence whose backtick run is widened past
-// any run inside body, so a payload containing ``` cannot close the block
-// early. lang may be empty.
-func Fence(lang, body string) string {
-	longest, run := 0, 0
-	for _, r := range body {
-		if r == '`' {
-			run++
-			if run > longest {
-				longest = run
-			}
-		} else {
-			run = 0
-		}
-	}
-	ticks := strings.Repeat("`", max(3, longest+1))
-	return ticks + lang + "\n" + body + "\n" + ticks
-}
-
 // IndentJSON renders v as indented JSON without HTML escaping, or "" when v
 // is empty (nil, null, {}) or not encodable.
 func IndentJSON(v any) string {

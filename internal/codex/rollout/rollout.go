@@ -461,20 +461,13 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 	}
 }
 
-// appendTool appends a tool part: title and input as given, body fenced as the
+// appendTool appends a tool part: title and input as given, body as the
 // tool's output. The returned part is the turn's own, so a caller may still
 // flag it.
 func (a *Assembler) appendTool(ts time.Time, name, title, input, body string) *core.TurnPart {
 	a.ensureTurn(ts)
-	a.cur.Parts = append(a.cur.Parts, core.NewToolPart(name, title, input, fenceBody(body)))
+	a.cur.Parts = append(a.cur.Parts, core.NewToolPart(name, title, input, body))
 	return &a.cur.Parts[len(a.cur.Parts)-1]
-}
-
-func fenceBody(body string) string {
-	if body == "" {
-		return ""
-	}
-	return textutil.Fence("", textutil.ClampBody(body))
 }
 
 // appendArgsTool appends an MCP/dynamic tool part, whose input is its arguments.
@@ -508,6 +501,10 @@ func (a *Assembler) patchApplyPart(l line) *core.TurnPart {
 			body = append(body, diff)
 		}
 	}
+	kind := ""
+	if len(body) > 0 {
+		kind = core.ContentDiff
+	}
 	if p.Stdout != "" {
 		body = append(body, p.Stdout)
 	}
@@ -518,6 +515,7 @@ func (a *Assembler) patchApplyPart(l line) *core.TurnPart {
 		body = append(body, p.Status)
 	}
 	part := a.appendTool(l.Timestamp, "Edit", strings.Join(paths, ", "), "", strings.Join(body, "\n"))
+	part.ContentKind = kind
 	// The legacy event carries success, the paginated item a status.
 	part.ToolError = p.Status == "failed" || p.Status == "declined" || (p.Status == "" && !p.Success)
 	return part
@@ -555,7 +553,7 @@ func (a *Assembler) commandPart(l line) *core.TurnPart {
 	var part *core.TurnPart
 	if bg != nil && bg.turn != nil && bg.turn == a.cur {
 		a.ensureTurn(l.Timestamp)
-		a.cur.Parts[bg.idx] = core.NewToolPart("Shell", core.ToolTitle("", command), command, fenceBody(body))
+		a.cur.Parts[bg.idx] = core.NewToolPart("Shell", core.ToolTitle("", command), command, body)
 		part = &a.cur.Parts[bg.idx]
 	} else {
 		part = a.appendTool(l.Timestamp, "Shell", core.ToolTitle("", command), command, body)
@@ -1265,8 +1263,8 @@ func (a *Assembler) backgroundProgress(ts time.Time, name, session string, bg *b
 		}
 		a.ensureTurn(ts)
 		bg.body = joinOutput(bg.body, output)
-		a.cur.Parts[bg.idx].Content = fenceBody(bg.body)
-		increment := core.NewToolPart(name, title, "", fenceBody(output))
+		a.cur.Parts[bg.idx].Content = textutil.ClampBody(bg.body)
+		increment := core.NewToolPart(name, title, "", output)
 		return &increment
 	}
 	if output == "" && !spawned {

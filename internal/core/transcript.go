@@ -27,21 +27,30 @@ type SessionMeta struct {
 
 // TurnPart is one segment within a grouped assistant turn.
 type TurnPart struct {
-	Type     string `json:"type"`
-	Content  string `json:"content"`
-	ToolName string `json:"toolName,omitempty"`
+	Type string `json:"type"`
+	// Content is Markdown in a text part, a tool's verbatim output in a tool part.
+	Content string `json:"content"`
+	// ContentKind is empty for plain tool output, else ContentDiff or ContentImage.
+	ContentKind string `json:"content_kind,omitempty"`
+	ToolName    string `json:"tool_name,omitempty"`
 	// ToolTarget is the card title; for show_image, the path clients load.
-	ToolTarget string `json:"toolTarget,omitempty"`
+	ToolTarget string `json:"tool_target,omitempty"`
 	// ToolInput is the full command or JSON arguments, empty when the title
 	// already shows it all. Content holds only the output.
-	ToolInput string `json:"toolInput,omitempty"`
+	ToolInput string `json:"tool_input,omitempty"`
 	// ToolError marks a call its backend reported as failed.
-	ToolError bool `json:"toolError,omitempty"`
+	ToolError bool `json:"tool_error,omitempty"`
 
 	// ToolUseID is parser bookkeeping used to join metadata follow-ups to the
 	// tool part they enrich. It is never part of the public transcript shape.
 	ToolUseID string `json:"-"`
 }
+
+const (
+	ContentDiff = "diff"
+	// ContentImage has no Content: clients load the image at ToolTarget.
+	ContentImage = "image"
+)
 
 // ToolTitle is a shell tool's card title: target (a description) when set,
 // else the first line of command.
@@ -52,15 +61,14 @@ func ToolTitle(target, command string) string {
 	return target
 }
 
-// NewToolPart builds a tool part from its title, full input and rendered
-// output. The input is dropped when the title already shows all of it.
+// NewToolPart builds a tool part from its title, full input and output. The input is dropped when the title already shows all of it.
 func NewToolPart(name, title, input, content string) TurnPart {
 	if strings.TrimSpace(input) == title {
 		input = ""
 	}
 	return TurnPart{
 		Type:       "tool",
-		Content:    content,
+		Content:    textutil.ClampBody(content),
 		ToolName:   name,
 		ToolTarget: title,
 		ToolInput:  textutil.ClampBody(input),

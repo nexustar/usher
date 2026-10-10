@@ -1198,12 +1198,6 @@ pre.raw-markdown {
   content: '$ ';
   opacity: 0.5;
 }
-.chat-message.assistant .tool-details .tool-body pre code {
-  background: transparent;
-  color: inherit;
-  padding: 0;
-  font-size: inherit;
-}
 .chat-message.placeholder .content { color: var(--text-disabled); font-style: italic; }
 .live-working {
   color: var(--text-disabled);

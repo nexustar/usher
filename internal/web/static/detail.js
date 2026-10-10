@@ -1541,8 +1541,8 @@ function appendLivePart(d) {
     for (let i = lt.parts.length - 1; i >= 0; i--) {
       const prev = lt.parts[i];
       if (prev.type === 'tool' && !prev.content &&
-          prev.toolName === p.toolName && prev.toolTarget === p.toolTarget &&
-          (prev.toolInput || '') === (p.toolInput || '')) {
+          prev.tool_name === p.tool_name && prev.tool_target === p.tool_target &&
+          (prev.tool_input || '') === (p.tool_input || '')) {
         enrichIndex = i;
         break;
       }
@@ -1874,7 +1874,7 @@ async function loadEarlier(id) {
 // it uses content; for assistant turns it fingerprints the parts array.
 function turnKey(t) {
   if (t.parts && t.parts.length) {
-    const fp = t.parts.map(p => (p.type || '') + (p.toolName || '') + (p.content || '').length).join('|');
+    const fp = t.parts.map(p => (p.type || '') + (p.tool_name || '') + (p.content || '').length).join('|');
     return (t.role || '') + '\x00' + (t.ts || '') + '\x00' + fp;
   }
   const c = t.content || '';

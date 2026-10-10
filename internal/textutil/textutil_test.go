@@ -41,17 +41,6 @@ func TestShortID(t *testing.T) {
 	}
 }
 
-func TestFence_WidensPastBackticks(t *testing.T) {
-	// Body containing a ``` run must be wrapped in a longer fence.
-	out := Fence("", "a\n```\nb")
-	if !strings.HasPrefix(out, "````\n") || !strings.HasSuffix(out, "\n````") {
-		t.Errorf("fence did not widen: %q", out)
-	}
-	if out := Fence("diff", "x"); !strings.HasPrefix(out, "```diff\n") {
-		t.Errorf("lang not applied: %q", out)
-	}
-}
-
 func TestIndentJSON(t *testing.T) {
 	got := IndentJSON(json.RawMessage(`{"text":"a < b && c > d"}`))
 	if got != "{\n  \"text\": \"a < b && c > d\"\n}" {

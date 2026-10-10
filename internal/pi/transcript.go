@@ -266,7 +266,7 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 			if a.cur.Parts[i].ToolName == "" {
 				a.cur.Parts[i].ToolName = m.ToolName
 			}
-			a.cur.Parts[i].Content = renderToolResult(a.cur.Parts[i].ToolName, content)
+			a.cur.Parts[i].Content = textutil.ClampBody(content)
 			a.cur.Parts[i].ToolError = m.IsError
 			p := a.cur.Parts[i]
 			a.cur.Touch(ts)
@@ -274,29 +274,12 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 		}
 		// Preserve orphaned results as a tool part rather than leaking raw tool
 		// output into the assistant prose stream.
-		p := core.TurnPart{Type: "tool", Content: renderToolResult(m.ToolName, content), ToolName: m.ToolName, ToolUseID: m.ToolCallID, ToolError: m.IsError}
+		p := core.TurnPart{Type: "tool", Content: textutil.ClampBody(content), ToolName: m.ToolName, ToolUseID: m.ToolCallID, ToolError: m.IsError}
 		a.cur.Parts = append(a.cur.Parts, p)
 		a.cur.Touch(ts)
 		return nil, []*core.TurnPart{&p}
 	}
 	return nil, nil
-}
-
-// renderToolResult fences terminal-style output before shared Markdown rendering.
-func renderToolResult(name, body string) string {
-	if body == "" || !terminalOutputTool(name) {
-		return body
-	}
-	return textutil.Fence("", textutil.ClampBody(body))
-}
-
-func terminalOutputTool(name string) bool {
-	switch strings.ToLower(name) {
-	case "read", "bash", "grep", "find", "ls", "codemode":
-		return true
-	default:
-		return false
-	}
 }
 
 func toolTarget(name string, args json.RawMessage) string {

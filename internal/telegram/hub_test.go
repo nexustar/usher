@@ -253,7 +253,7 @@ func TestHubMirrorsShowImage(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"role": "assistant",
 		"part": map[string]any{
-			"type": "tool", "toolName": "mcp__usher__show_image", "toolTarget": "chart.png",
+			"type": "tool", "tool_name": "mcp__usher__show_image", "tool_target": "chart.png",
 		},
 	})
 	fr.events <- broker.Event{SessionID: "s1", Type: "part", Raw: raw}

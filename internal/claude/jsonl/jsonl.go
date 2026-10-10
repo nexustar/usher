@@ -493,12 +493,13 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 
 	// user event carrying a tool_result: append as a "tool" part.
 	ti, tuID, failed := b.matchToolInfo(a.toolMap)
-	content := renderToolResult(ev, b, ti.target)
+	content, kind := renderToolResult(ev, b, ti.target)
 	// A known tool that printed nothing (mkdir, git add) still gets its card.
 	if content == "" && ti.name == "" {
 		return nil, nil
 	}
 	p := core.NewToolPart(ti.name, ti.target, ti.input, content)
+	p.ContentKind = kind
 	p.ToolUseID, p.ToolError = tuID, failed
 	a.cur.Parts = append(a.cur.Parts, p)
 	return nil, &p
@@ -570,39 +571,28 @@ func xmlTagContent(s, tag string) string {
 
 func hasToolResult(msg json.RawMessage) bool { return parseBody(msg).hasToolResult() }
 
-// renderToolResult produces the display body for a tool_result ("tool") turn.
-// It is built from the line-level toolUseResult, which carries the rich payload
-// (Edit/Write diff, Read file content, Bash stdout/stderr) that the inline
-// message.content does not; tools whose shape we do not special-case fall back
-// to the inline tool_result text.
-func renderToolResult(ev Event, b body, target string) string {
+// renderToolResult produces the output of a tool_result ("tool") turn and its
+// content kind. It is built from the line-level toolUseResult, which carries
+// the rich payload (Edit/Write diff, Read file content, Bash stdout/stderr)
+// that the inline message.content does not; tools whose shape we do not
+// special-case fall back to the inline tool_result text.
+func renderToolResult(ev Event, b body, target string) (content, kind string) {
 	var tur toolUseResultData
 	if len(ev.ToolUseResult) > 0 {
 		_ = json.Unmarshal(ev.ToolUseResult, &tur)
 	}
-	if body := tur.render(); body != "" {
-		return body
+	if body, kind := tur.render(); body != "" {
+		return body, kind
 	}
-	content := b.firstToolResultContent()
+	inline := b.firstToolResultContent()
 	// An image comes back as bytes only — no text to fall back on.
-	if tur.Type == "image" || hasImageBlock(content) {
-		return imageMarkdown(target)
+	if tur.Type == "image" || hasImageBlock(inline) {
+		if target == "" {
+			return "[image]", ""
+		}
+		return "", core.ContentImage
 	}
-	return textutil.ClampBody(flattenToolResult(content))
-}
-
-// imageMarkdown points at the image file a tool returned as bytes. The angle
-// brackets hold a path with spaces in one destination; a path that cannot be
-// spelled as one degrades to a bare marker.
-func imageMarkdown(path string) string {
-	if path == "" || strings.ContainsAny(path, "<>\n") {
-		return "[image]"
-	}
-	alt := filepath.Base(path)
-	if strings.ContainsAny(alt, "[]") {
-		alt = "image"
-	}
-	return "![" + alt + "](<" + path + ">)"
+	return flattenToolResult(inline), ""
 }
 
 // isBoilerplateMeta reports whether the event is meta Claude Code injects for
@@ -677,14 +667,14 @@ type toolUseResultData struct {
 	Stderr string `json:"stderr"`
 }
 
-// render turns the structured payload into a fenced markdown block, or "" when
-// the shape is not one we special-case (caller falls back to inline text).
-func (t toolUseResultData) render() string {
+// render turns the structured payload into output text and its content kind,
+// or "" when the shape is not one we special-case.
+func (t toolUseResultData) render() (body, kind string) {
 	switch {
 	case len(t.StructuredPatch) > 0:
-		return textutil.Fence("diff", textutil.ClampBody(patchBody(t.StructuredPatch)))
+		return patchBody(t.StructuredPatch), core.ContentDiff
 	case t.File != nil && t.File.Content != "":
-		return textutil.Fence("", textutil.ClampBody(t.File.Content))
+		return t.File.Content, ""
 	case t.Stdout != "" || t.Stderr != "":
 		out := t.Stdout
 		if t.Stderr != "" {
@@ -693,12 +683,12 @@ func (t toolUseResultData) render() string {
 			}
 			out += t.Stderr
 		}
-		return textutil.Fence("", textutil.ClampBody(out))
+		return out, ""
 	}
-	return ""
+	return "", ""
 }
 
-// patchBody renders structuredPatch hunks as unified-diff text (no fence).
+// patchBody renders structuredPatch hunks as unified-diff text.
 func patchBody(hunks []patchHunk) string {
 	var b strings.Builder
 	for i, h := range hunks {

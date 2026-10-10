@@ -844,7 +844,7 @@ func TestAssemblerCommandExecutionShowsScriptVerbatim(t *testing.T) {
 	if part == nil || part.ToolTarget != "cat > a.py <<'PY'" || part.ToolInput != heredoc {
 		t.Fatalf("multi-line: %+v, want first line as title and the script as input", part)
 	}
-	if part.Content != "```\nok\n```" {
+	if part.Content != "ok" {
 		t.Fatalf("content = %q, want only the output", part.Content)
 	}
 }
