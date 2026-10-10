@@ -1,6 +1,6 @@
-# Router MCP prototype
+# Router MCP
 
-`usher mcp-stdio` normally exposes only `show_image`. The experimental
+`usher mcp-stdio` normally exposes only `show_image`. The
 `--router-tools` flag additionally exposes usher's session-routing tools:
 
 - `list_sessions`, `resolve_session`, `send_to_session`
@@ -15,9 +15,9 @@ next to `mcp.json` in the data dir — passed as spawn arguments; for Codex the
 same registration as config overrides in its thread/start and thread/resume
 params; for pi a generated bridge extension (pi has no MCP) that bakes in the
 tool catalog and forwards each call to a spawned
-`usher mcp-stdio --router-tools`. Set the designation with a
-[router agent](agents.md#router-agents); the flag stays available by hand for
-driving a `claude` started outside usher.
+`usher mcp-stdio --router-tools`. Which agent the router is created from is
+[an instance setting](agents.md#the-router-agent); the flag stays available by
+hand for driving a `claude` started outside usher.
 
 ## Replies come back asynchronously — and not through the model
 
@@ -46,8 +46,8 @@ the reply — `read_session_transcript` is there for the rest. The queue is
 in-memory: an usher restart drops pending notes, and the transcripts remain the
 record.
 
-The caller never names the inbox. usher resolves it: the designated **router
-session**, recorded in `sessionmeta` and resolved inside the router's
+The caller never names the inbox. usher resolves it: the **router session**,
+recorded in `settings.json` and resolved inside the router's
 `RouteToSession`/`RouteNewSession`.
 Holding the routing tools is what makes a session the router, so asking to
 relay is all the MCP has to say.
@@ -75,18 +75,20 @@ knowing before adding any other server-side prompt rewriting.
 
 ## Test through usher
 
-Configure an agent with `"router": true` and a model, then create a session from
-it — in the composer's agent picker, or over the API:
+Start a router session — from the built-in router agent, or the one chosen
+with `PUT /api/router`:
 
 ```sh
-curl -sS -X POST localhost:8080/api/sessions \
+curl -sS -X POST localhost:8080/api/router \
   -H 'Content-Type: application/json' \
-  -d '{"agent":"main","initial_message":"List my active sessions."}'
+  -d '{"initial_message":"List my active sessions."}'
 ```
 
-usher spawns it with the routing tools, designates it, and relays every routed
-reply back into it. Its own jsonl makes it a session like any other, so it
-appears in its own `list_sessions` output — it must not route work to itself.
+usher spawns it with the routing tools, makes it the router in place of any
+previous one, and relays every routed reply back into it. Its own jsonl makes
+it a session like any other, so it appears in its own `list_sessions` output;
+routing work to itself is refused, and so is approving its own permission
+requests — those stay with the user.
 
 ## Test a hand-started Claude Code
 

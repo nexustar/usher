@@ -72,43 +72,42 @@ GUI and API changes are written atomically and take effect immediately.
 Unknown agent names, unavailable backends, and invalid models cause session
 creation to fail rather than falling back silently.
 
-## Router agents
+## The router agent
 
-An agent with `"router": true` creates usher's **router session**: it spawns
-with the session-routing MCP tools (`list_sessions`, `send_to_session`,
-`create_session`, …) instead of the ordinary `show_image`-only registration,
-and every session it routes work to delivers its reply back into it. Give it
-the routing persona through `append_system_prompt` — the tools describe
-themselves, but only the prompt keeps the model from answering questions on its
-own instead of handing them to a session.
+usher has one **router session**: it holds the session-routing MCP tools
+(`list_sessions`, `send_to_session`, `create_session`, …) on top of the ordinary
+`show_image`, and every session it routes work to delivers its reply back into
+it. Which agent it is created from is an instance setting, not a property of
+the agent:
 
-```json
-{
-  "id": "main",
-  "cwd": "/home/dev",
-  "backend": "claude",
-  "model": "sonnet",
-  "router": true,
-  "append_system_prompt": "You are usher's session router. Never answer a substantive question yourself — route it to a session."
-}
+```sh
+curl -sS -X PUT localhost:8080/api/router \
+  -H 'Content-Type: application/json' -d '{"agent":"main"}'
 ```
 
-usher keeps one router at a time: creating another session from a router agent
-repoints the designation, and the previous router becomes an ordinary session
-from its next cold start. The designation is persisted, so it survives a
-restart. Every backend can host one: Claude receives the tools as spawn
-arguments (`mcp-router.json`), Codex in its thread/start config params, and pi
-through a generated bridge extension that spawns the same MCP server. See
-[Router MCP](router-mcp.md) for what the tools promise.
+With no agent set, usher uses a built-in one: the default backend, a routing
+persona, and that backend's local tools taken away (the recipes below), so it
+can only route. An agent of your own needs the persona in its
+`append_system_prompt` — the tools describe themselves, but only the prompt
+keeps the model from answering questions instead of handing them to a session.
+An agent that names no `cwd` runs in `router/` under the data directory.
+
+Starting a router session replaces the current one, which becomes an ordinary
+session from its next cold start. The setting and the current router session
+are kept in `settings.json`, so both survive a restart. Every backend can host
+the router: Claude receives the tools as spawn arguments (`mcp-router.json`),
+Codex in its thread/start config params, and pi through a generated bridge
+extension that spawns the same MCP server. See [Router MCP](router-mcp.md) for
+what the tools promise.
 
 ### Restricting local tools
 
-A dedicated router should not be able to answer questions itself, and a
+A router should not be able to answer questions itself, and a
 "read-only analyst" should not write. Both are per-backend `extra_args`
 recipes — supervision of the model, not a security boundary against the
 authenticated user:
 
-- **Claude**: `["--disallowedTools", "Bash,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,WebFetch,WebSearch"]`
+- **Claude**: `["--disallowedTools", "Bash,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,Agent,WebFetch,WebSearch"]`
   removes tools by name; `mcp__usher__*` tools are unaffected. Drop entries to
   taste for an analyst profile.
 - **Codex**: no per-tool switches. `["--sandbox", "read-only", "--ask-for-approval", "never"]`

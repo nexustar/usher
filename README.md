@@ -130,6 +130,7 @@ command-line help:
 
 - [Security and trust model](docs/reference/security.md)
 - [Session agents](docs/reference/agents.md)
+- [Router MCP](docs/reference/router-mcp.md)
 - Complete CLI options: `usher serve -h`
 
 ## Project boundaries

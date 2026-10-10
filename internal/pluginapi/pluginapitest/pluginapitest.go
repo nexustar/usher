@@ -109,6 +109,12 @@ func (f *FakeRouter) GetSession(id string) (core.Session, bool) {
 	return s, ok
 }
 
+func (f *FakeRouter) RouterSession() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.routerSession
+}
+
 func (f *FakeRouter) ListSessions() []core.Session {
 	f.mu.Lock()
 	defer f.mu.Unlock()

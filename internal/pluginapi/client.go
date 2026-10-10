@@ -209,6 +209,8 @@ type SessionView struct {
 	core.Session
 	Archived    bool `json:"archived"`
 	AutoApprove bool `json:"auto_approve"`
+	// Router marks usher's router session — the one holding the routing tools.
+	Router bool `json:"router,omitempty"`
 }
 
 // TranscriptPage is a core.TranscriptPage on the wire, plus the precomputed

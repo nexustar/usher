@@ -203,7 +203,7 @@ function renderForm(agent, copy = false) {
   const creating = !agent || copy;
   const value = agent || {
     name: '', cwd: '', backend: '', model: '', append_system_prompt: '',
-    auto_approve: false, router: false,
+    auto_approve: false,
   };
   const name = copy ? value.name + '-copy' : value.name;
   const selectedBackend = value.backend || backends[0] || '';
@@ -225,10 +225,6 @@ function renderForm(agent, copy = false) {
       <label class="cfg-form-check">
         <input type="checkbox" name="auto_approve"${value.auto_approve ? ' checked' : ''}>
         <span>Auto-approve tool calls</span>
-      </label>
-      <label class="cfg-form-check">
-        <input type="checkbox" name="router"${value.router ? ' checked' : ''}>
-        <span>Router session (one at a time)</span>
       </label>
       <details class="cfg-form-advanced"${value.append_system_prompt || (value.extra_args || []).length ? ' open' : ''}>
         <summary>Advanced</summary>
@@ -271,7 +267,6 @@ function renderForm(agent, copy = false) {
     const payload = Object.fromEntries(new FormData(form));
     // FormData reports a checkbox as "on" or omits it; the API wants a bool.
     payload.auto_approve = form.elements.auto_approve.checked;
-    payload.router = form.elements.router.checked;
     // The API wants an array; an empty field must not send [""].
     const extraArgs = form.elements.extra_args.value.trim();
     payload.extra_args = extraArgs ? extraArgs.split(/\s+/) : undefined;

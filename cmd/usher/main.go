@@ -31,6 +31,7 @@ import (
 	"github.com/nexustar/usher/internal/schedule"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
+	"github.com/nexustar/usher/internal/settings"
 	"github.com/nexustar/usher/internal/telegram"
 	"github.com/nexustar/usher/internal/terminal"
 	"github.com/nexustar/usher/internal/transcript"
@@ -308,6 +309,7 @@ func serve(args []string) error {
 	)
 	term := terminal.New("tmux", *tmuxSocket+"-terminal", *terminalShell, logger)
 	r := router.New(d, backends, defaultBackend, b, h, meta, term)
+	r.SetSettings(settings.New(filepath.Join(*dataDir, "settings.json")), filepath.Join(*dataDir, "router"))
 
 	mainStore, err := mainchat.NewStore(filepath.Join(*dataDir, "mainchats"))
 	if err != nil {

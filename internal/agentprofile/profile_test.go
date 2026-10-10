@@ -78,21 +78,21 @@ func TestResolveCarriesAutoApprove(t *testing.T) {
 	}
 }
 
-// The router flag is the agent's alone: no create request carries it, so a
-// profile is the only way a session becomes usher's router.
-func TestResolveCarriesRouterFlag(t *testing.T) {
-	store := New([]Profile{{Name: "main", Cwd: "/w", Backend: "claude", Router: true}})
-	got, err := store.Resolve("main", "", "", "sonnet")
-	if err != nil {
-		t.Fatal(err)
+// With no agent named, the router is the built-in one: the backend's local
+// tools are taken away, so it can only route.
+func TestResolveRouter(t *testing.T) {
+	store := New([]Profile{{Name: "main", Cwd: "/w", Backend: "codex"}})
+	got, err := store.ResolveRouter("main", "claude")
+	if err != nil || got.Backend != "codex" || got.Cwd != "/w" {
+		t.Fatalf("ResolveRouter(main) = %+v, %v", got, err)
 	}
-	want := core.CreateOptions{Backend: "claude", Cwd: "/w", Model: "sonnet", Router: true}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Resolve = %+v, want %+v", got, want)
+	builtin, err := store.ResolveRouter("", "claude")
+	if err != nil || builtin.Backend != "claude" || builtin.AppendSystemPrompt == "" ||
+		len(builtin.ExtraArgs) != 2 || builtin.ExtraArgs[0] != "--disallowedTools" {
+		t.Fatalf("ResolveRouter() = %+v, %v", builtin, err)
 	}
-	plain, err := store.Resolve("", "/w", "claude", "sonnet")
-	if err != nil || plain.Router {
-		t.Fatalf("Resolve without an agent = %+v, %v", plain, err)
+	if _, err := store.ResolveRouter("missing", "claude"); err == nil {
+		t.Fatal("an unknown router agent resolved")
 	}
 }
 

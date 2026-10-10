@@ -26,6 +26,7 @@ import (
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
+	"github.com/nexustar/usher/internal/settings"
 	"github.com/nexustar/usher/internal/terminal"
 	"github.com/nexustar/usher/internal/textutil"
 )
@@ -47,6 +48,8 @@ type Router struct {
 	broker         *broker.Broker
 	interactions   *interaction.Manager
 	meta           *sessionmeta.Store
+	settings       *settings.Store
+	routerDir      string
 	terminal       *terminal.Manager
 	composerMu     sync.Mutex
 	composerCache  map[composerCacheKey][]backendpkg.ComposerItem
@@ -117,7 +120,6 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 		composerCache:  map[composerCacheKey][]backendpkg.ComposerItem{},
 	}
 	if meta != nil {
-		routerID, _ := meta.Router()
 		for _, backend := range backends {
 			if setter, ok := backend.Runtime.(backendpkg.SystemPrompter); ok {
 				setter.SetSystemPromptLookup(meta.AppendSystemPrompt)
@@ -125,14 +127,28 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 			if setter, ok := backend.Runtime.(backendpkg.ExtraArgser); ok {
 				setter.SetExtraArgsLookup(meta.ExtraArgs)
 			}
-			// The designation outlives usher, so a restart has to hand the
-			// routing tools back before the router session is resumed.
-			if setter, ok := backend.Runtime.(backendpkg.RouterDesignator); ok && routerID != "" {
-				setter.SetRouterSession(routerID)
-			}
 		}
 	}
 	return r
+}
+
+// SetSettings attaches the instance settings; routerDir is the cwd of a router
+// session whose agent names none. The router designation outlives usher, so
+// this hands the routing tools back before the router session is resumed.
+func (r *Router) SetSettings(s *settings.Store, routerDir string) {
+	r.settings = s
+	r.routerDir = routerDir
+	r.designateRouter(s.Router().SessionID)
+}
+
+// designateRouter tells every runtime which session is the router; each keeps
+// the routing tools off any other session from its next cold start.
+func (r *Router) designateRouter(id string) {
+	for _, backend := range r.backends {
+		if setter, ok := backend.Runtime.(backendpkg.RouterDesignator); ok {
+			setter.SetRouterSession(id)
+		}
+	}
 }
 
 type composerCacheKey struct {
@@ -548,14 +564,59 @@ func (r *Router) IsArchived(sessionID string) bool {
 	return r.meta.IsArchived(sessionID, staleClock(sess), time.Now())
 }
 
-// routerInbox is the session usher drives main chat with — the only place a
-// relayed reply can be delivered — or "" when none is designated.
+// routerInbox is the router session — the only place a relayed reply can be
+// delivered — or "" when none is designated.
 func (r *Router) routerInbox() string {
-	if r.meta == nil {
+	if r.settings == nil {
 		return ""
 	}
-	id, _ := r.meta.Router()
+	return r.settings.Router().SessionID
+}
+
+// RouterSession is the router session, or "" when none is designated or the
+// designated one is gone.
+func (r *Router) RouterSession() string {
+	id := r.routerInbox()
+	if _, ok := r.GetSession(id); !ok {
+		return ""
+	}
 	return id
+}
+
+// StartRouter creates a session as the router, replacing the current one: the
+// previous router is an ordinary session from its next cold start.
+func (r *Router) StartRouter(o core.CreateOptions) (string, error) {
+	if r.settings == nil {
+		return "", errors.New("router sessions are not configured")
+	}
+	o.Router = true
+	if o.Cwd == "" {
+		if err := os.MkdirAll(r.routerDir, 0o700); err != nil {
+			return "", err
+		}
+		o.Cwd = r.routerDir
+	}
+	return r.StartSession(o)
+}
+
+// RouterAgent names the agent new router sessions are created from; empty is
+// the built-in router agent.
+func (r *Router) RouterAgent() string {
+	if r.settings == nil {
+		return ""
+	}
+	return r.settings.Router().Agent
+}
+
+func (r *Router) SetRouterAgent(name string) {
+	if r.settings != nil {
+		r.settings.SetRouterAgent(name)
+	}
+}
+
+// DefaultBackend is the backend a create request that names none runs on.
+func (r *Router) DefaultBackend() string {
+	return r.defaultBackend
 }
 
 // SetArchived is the toggle shape of Archive/Unarchive, for the control
@@ -739,7 +800,15 @@ func (r *Router) stopLive(id string) {
 // A router session's prompt carries any replies that landed since it last
 // spoke — see queueRelay.
 func (r *Router) SendToSession(id, text string) error {
-	return r.enqueueSend(id, r.foldRelays(id, text), nil, nil)
+	folded, notes := r.foldRelays(id, text)
+	err := r.enqueueSend(id, folded, nil, nil)
+	if err != nil && len(notes) > 0 {
+		// The prompt never left, so its notes go back to the front of the queue.
+		r.sendMu.Lock()
+		r.relayIn[id] = append(notes, r.relayIn[id]...)
+		r.sendMu.Unlock()
+	}
+	return err
 }
 
 // relayNote is one finished turn a router dispatched, waiting to be told to it.
@@ -783,15 +852,15 @@ func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
 	r.relayIn[routerID] = notes
 }
 
-// foldRelays prefixes a router's pending notes to its next prompt and clears
-// them. Ordinary sessions never have any, so this is a map lookup for them.
-func (r *Router) foldRelays(id, text string) string {
+// foldRelays prefixes a router's pending notes to its next prompt and takes
+// them off the queue, returning them so a failed send can put them back. Ordinary sessions never have any, so this is a map lookup for them.
+func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 	r.sendMu.Lock()
 	notes := r.relayIn[id]
 	delete(r.relayIn, id)
 	r.sendMu.Unlock()
 	if len(notes) == 0 {
-		return text
+		return text, nil
 	}
 	var b strings.Builder
 	for _, note := range notes {
@@ -799,7 +868,7 @@ func (r *Router) foldRelays(id, text string) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString(text)
-	return b.String()
+	return b.String(), notes
 }
 
 // relayNoteText renders one note. The [session <id> replied] form is the one
@@ -1601,6 +1670,9 @@ func (r *Router) RouteToSession(id, text string) (bool, error) {
 	if inbox == "" {
 		return false, r.SendToSession(id, text)
 	}
+	if id == inbox {
+		return false, errors.New("the router session cannot route work to itself")
+	}
 	err := r.SendToSessionRelayed(id, text, func(sessionID, reply string, err error) {
 		r.queueRelay(inbox, sessionID, reply, err)
 	})
@@ -1775,12 +1847,16 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 	if r.meta != nil {
 		r.meta.SetAppendSystemPrompt(id, o.AppendSystemPrompt)
 		r.meta.SetExtraArgs(id, o.ExtraArgs)
-		if o.Router {
-			// The runtime already spawned this process with the routing tools;
-			// persisting the designation is what makes it the relay inbox and
-			// what survives a restart.
-			r.meta.SetRouter(id)
+	}
+	if o.Router && r.settings != nil {
+		// The runtime already spawned this process with the routing tools;
+		// persisting the designation is what makes it the relay inbox and
+		// what survives a restart.
+		if prev := r.settings.Router().SessionID; prev != "" && prev != id {
+			slog.Info("router session replaced", "session", id, "previous", prev)
 		}
+		r.settings.SetRouterSession(id)
+		r.designateRouter(id)
 	}
 	slog.Info("session created", "session", id, "backend", o.Backend, "cwd", o.Cwd)
 	tok := &sendToken{cancel: cancel, started: time.Now()}

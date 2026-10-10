@@ -37,6 +37,7 @@ import (
 type RouterAPI interface {
 	GetSession(id string) (core.Session, bool)
 	ListSessions() []core.Session
+	RouterSession() string
 	StartSession(o core.CreateOptions) (string, error)
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	SendToSession(id, text string) error
@@ -138,12 +139,14 @@ func (s *Server) handlePendingInteractions(w http.ResponseWriter, _ *http.Reques
 
 func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 	sessions := s.router.ListSessions()
+	routerID := s.router.RouterSession()
 	out := make([]SessionView, 0, len(sessions))
 	for _, sess := range sessions {
 		out = append(out, SessionView{
 			Session:     sess,
 			Archived:    s.router.IsArchived(sess.ID),
 			AutoApprove: s.router.IsAutoApprove(sess.ID),
+			Router:      sess.ID == routerID,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

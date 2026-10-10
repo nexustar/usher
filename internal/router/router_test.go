@@ -21,6 +21,7 @@ import (
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
+	"github.com/nexustar/usher/internal/settings"
 	"github.com/nexustar/usher/internal/transcript"
 	"github.com/nexustar/usher/internal/window"
 )
@@ -892,8 +893,8 @@ func TestEnrichExitSkipsConsecutiveUsersAndZeroEndTime(t *testing.T) {
 // of order; notes are self-describing either way.
 func TestSendQueueSerializesAndAttributesReplies(t *testing.T) {
 	r := newQueueTestRouter(t)
-	r.meta = sessionmeta.New(filepath.Join(t.TempDir(), "meta.json"), 0)
-	r.meta.SetRouter("inbox-1")
+	r.settings = settings.New("")
+	r.settings.SetRouterSession("inbox-1")
 
 	for _, prompt := range []string{"one", "two", "three"} {
 		relayed, err := r.RouteToSession("abc12345", prompt)
@@ -915,7 +916,7 @@ func TestSendQueueSerializesAndAttributesReplies(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	folded := r.foldRelays("inbox-1", "next")
+	folded, _ := r.foldRelays("inbox-1", "next")
 	for _, reply := range []string{"re: one", "re: two", "re: three"} {
 		if strings.Count(folded, "[session abc12345 replied] "+reply+"\n") != 1 {
 			t.Errorf("folded notes = %q — %q not attributed exactly once", folded, reply)
@@ -1049,36 +1050,42 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metaPath := filepath.Join(t.TempDir(), "sessions.json")
-	meta := sessionmeta.New(metaPath, 0)
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
 	rt := &routerDesignationRuntime{newID: "router-1"}
 	r := New(d, map[string]backend.Backend{
 		"claude": {Runtime: rt, Transcript: transcript.Claude{}},
 		"codex":  {Runtime: rt, Transcript: transcript.Claude{}},
 		"pi":     {Runtime: rt, Transcript: transcript.Claude{}},
-	}, "claude", broker.New(), nil, meta, nil)
+	}, "claude", broker.New(), nil, sessionmeta.New("", 0), nil)
+	routerDir := filepath.Join(t.TempDir(), "router")
+	r.SetSettings(settings.New(settingsPath), routerDir)
 
-	id, err := r.StartSession(core.CreateOptions{
-		Cwd: t.TempDir(), InitialMessage: "hi", Router: true,
-	})
+	// A router agent that names no cwd runs in usher's own router directory.
+	id, err := r.StartRouter(core.CreateOptions{InitialMessage: "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !rt.req.Router {
 		t.Fatal("StartRequest.Router was not passed to the backend")
 	}
-	if got, ok := meta.Router(); !ok || got != id {
-		t.Fatalf("designated router = %q (%v), want %q", got, ok, id)
+	if rt.req.Cwd != routerDir {
+		t.Fatalf("router cwd = %q, want %q", rt.req.Cwd, routerDir)
 	}
-	if got, ok := sessionmeta.New(metaPath, 0).Router(); !ok || got != id {
-		t.Fatalf("persisted router = %q (%v), want %q", got, ok, id)
+	if got := r.RouterSession(); got != id {
+		t.Fatalf("designated router = %q, want %q", got, id)
+	}
+	if got := settings.New(settingsPath).Router().SessionID; got != id {
+		t.Fatalf("persisted router = %q, want %q", got, id)
+	}
+	if rt.designated != id {
+		t.Fatalf("runtimes were told %q, want %q", rt.designated, id)
 	}
 
 	// A restart hands the designation back before anything resumes.
 	rt2 := &routerDesignationRuntime{newID: "router-2"}
 	New(d, map[string]backend.Backend{
 		"claude": {Runtime: rt2, Transcript: transcript.Claude{}},
-	}, "claude", broker.New(), nil, sessionmeta.New(metaPath, 0), nil)
+	}, "claude", broker.New(), nil, nil, nil).SetSettings(settings.New(settingsPath), routerDir)
 	if rt2.designated != id || rt2.designatedAt != 0 {
 		t.Fatalf("restored designation = %q after %d starts, want %q before any", rt2.designated, rt2.designatedAt, id)
 	}
@@ -1127,7 +1134,7 @@ func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
 		t.Fatalf("folded prompt = %q, want %q", got[0], want)
 	}
 	// Folding consumes: the next prompt carries only what the user typed.
-	if got := r.foldRelays("abc12345", "again"); got != "again" {
+	if got, _ := r.foldRelays("abc12345", "again"); got != "again" {
 		t.Fatalf("notes survived folding: %q", got)
 	}
 }
@@ -1137,7 +1144,7 @@ func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
 func TestFoldedRelayExcerptsLongReplies(t *testing.T) {
 	r := newQueueTestRouter(t)
 	r.queueRelay("abc12345", "worker", strings.Repeat("长", relayExcerptRunes+50), nil)
-	folded := r.foldRelays("abc12345", "next")
+	folded, _ := r.foldRelays("abc12345", "next")
 	if !strings.Contains(folded, "truncated") || strings.Contains(folded, strings.Repeat("长", relayExcerptRunes+1)) {
 		t.Fatalf("folded = %q", folded)
 	}
@@ -1148,5 +1155,26 @@ func TestFoldedRelayExcerptsLongReplies(t *testing.T) {
 	// so that their own echo suppression survives the preamble.
 	if !strings.HasPrefix(folded, imutil.RelayNoteMark) {
 		t.Fatalf("folded prompt does not open with %q: %q", imutil.RelayNoteMark, folded)
+	}
+}
+
+func TestRouterCannotRouteToItself(t *testing.T) {
+	r := newQueueTestRouter(t)
+	r.settings = settings.New("")
+	r.settings.SetRouterSession("abc12345")
+	if _, err := r.RouteToSession("abc12345", "loop"); err == nil {
+		t.Fatal("routing to the router session itself was accepted")
+	}
+}
+
+// A prompt that never leaves must not take the router's notes with it.
+func TestFailedSendKeepsRelayNotes(t *testing.T) {
+	r := newQueueTestRouter(t)
+	r.queueRelay("gone", "worker", "done", nil)
+	if err := r.SendToSession("gone", "next"); err == nil {
+		t.Fatal("send to a missing session succeeded")
+	}
+	if folded, _ := r.foldRelays("gone", "next"); !strings.Contains(folded, "[session worker replied] done") {
+		t.Fatalf("notes lost with the failed send: %q", folded)
 	}
 }

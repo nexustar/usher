@@ -264,3 +264,32 @@ func TestCallRejectsUnknownToolAndNilAPI(t *testing.T) {
 		t.Fatal("unknown tool accepted")
 	}
 }
+
+// The router's own permission requests stay with the user: the session calling
+// these tools must not be able to approve itself.
+func TestCallRouterCannotApproveItself(t *testing.T) {
+	f := pluginapitest.NewFakeRouter()
+	f.AddSession(core.Session{ID: "router-1", Title: "router"})
+	f.AddSession(core.Session{ID: "worker-1", Title: "worker"})
+	f.SetRouterSession("router-1")
+	f.SetPending(
+		interaction.Pending{ID: "own", SessionID: "router-1"},
+		interaction.Pending{ID: "other", SessionID: "worker-1"},
+	)
+	r := start(t, f)
+
+	if _, err := r.Call("set_auto_approve", json.RawMessage(`{"session_id":"router-1","enabled":true}`)); err == nil {
+		t.Fatal("the router turned on its own auto-approve")
+	}
+	if f.IsAutoApprove("router-1") {
+		t.Fatal("auto-approve reached the router session")
+	}
+	if _, err := r.Call("respond_to_interaction", json.RawMessage(`{"id":"own","behavior":"allow"}`)); err == nil {
+		t.Fatal("the router answered its own permission request")
+	}
+	call(t, r, "set_auto_approve", `{"session_id":"worker-1","enabled":true}`)
+	call(t, r, "respond_to_interaction", `{"id":"other","behavior":"allow"}`)
+	if !f.IsAutoApprove("worker-1") || f.Response("other").Behavior != "allow" {
+		t.Fatal("approving another session was refused")
+	}
+}

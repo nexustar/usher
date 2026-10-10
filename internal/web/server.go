@@ -222,6 +222,8 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("POST /api/interactions/{id}/respond", s.handleRespondInteraction)
 
 	webMux.HandleFunc("GET /api/config", s.handleConfig)
+	webMux.HandleFunc("POST /api/router", s.handleStartRouter)
+	webMux.HandleFunc("PUT /api/router", s.handleSetRouterAgent)
 	webMux.HandleFunc("GET /theme.css", s.handleTheme)
 
 	webMux.HandleFunc("GET /api/push/vapid-key", s.handlePushVAPIDKey)
@@ -710,9 +712,63 @@ func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 // optional UI.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
-		EditorURL string `json:"editor_url"`
-		ReadOnly  bool   `json:"read_only"`
-	}{s.editorURL, s.readOnly})
+		EditorURL string       `json:"editor_url"`
+		ReadOnly  bool         `json:"read_only"`
+		Router    routerConfig `json:"router"`
+	}{s.editorURL, s.readOnly, routerConfig{s.router.RouterAgent(), s.router.RouterSession()}})
+}
+
+// routerConfig is the router agent setting and the current router session;
+// session_id is empty until a first message creates one.
+type routerConfig struct {
+	Agent     string `json:"agent"`
+	SessionID string `json:"session_id"`
+}
+
+type startRouterRequest struct {
+	InitialMessage string `json:"initial_message"`
+}
+
+// handleStartRouter creates a session from the router agent and makes it the
+// router, replacing the current one.
+func (s *Server) handleStartRouter(w http.ResponseWriter, r *http.Request) {
+	var req startRouterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	opts, err := s.agents.ResolveRouter(s.router.RouterAgent(), s.router.DefaultBackend())
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	opts.InitialMessage = req.InitialMessage
+	id, err := s.router.StartRouter(opts)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
+}
+
+type routerAgentRequest struct {
+	Agent string `json:"agent"`
+}
+
+// handleSetRouterAgent picks the agent the next router session is created
+// from; the current router is left as it is.
+func (s *Server) handleSetRouterAgent(w http.ResponseWriter, r *http.Request) {
+	var req routerAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if _, err := s.agents.ResolveRouter(req.Agent, ""); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.router.SetRouterAgent(req.Agent)
+	writeJSON(w, http.StatusOK, routerConfig{req.Agent, s.router.RouterSession()})
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {

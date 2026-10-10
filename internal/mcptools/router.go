@@ -329,7 +329,19 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if args.ID == "" || args.Behavior != "allow" && args.Behavior != "deny" {
 			return nil, errors.New("id and behavior (allow|deny) are required")
 		}
-		err := api.RespondInteraction(args.ID, interaction.Response{
+		pending, err := api.ListPendingInteractions()
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range pending {
+			if p.ID != args.ID {
+				continue
+			}
+			if err := notRouter(api, p.SessionID); err != nil {
+				return nil, err
+			}
+		}
+		err = api.RespondInteraction(args.ID, interaction.Response{
 			Behavior: args.Behavior, Reason: args.Reason, Scope: "once",
 		})
 		if err != nil {
@@ -347,6 +359,9 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		}
 		if args.SessionID == "" {
 			return nil, errors.New("session_id is required")
+		}
+		if err := notRouter(api, args.SessionID); err != nil {
+			return nil, err
 		}
 		if err := api.SetAutoApprove(args.SessionID, args.Enabled); err != nil {
 			return nil, err
@@ -391,6 +406,21 @@ func deliveredResult(d pluginapi.Delivery) map[string]any {
 		out["note"] = "no reply will be reported back; read_session_transcript is the only way to collect it"
 	}
 	return out
+}
+
+// notRouter refuses to let the router session — the one calling these tools —
+// approve its own requests: those are the user's to answer.
+func notRouter(api *pluginapi.Client, sessionID string) error {
+	all, err := api.ListSessions()
+	if err != nil {
+		return err
+	}
+	for _, sess := range all {
+		if sess.Router && sess.ID == sessionID {
+			return errors.New("the router session's own permissions are the user's to grant")
+		}
+	}
+	return nil
 }
 
 func decode(raw json.RawMessage, dst any) error {
