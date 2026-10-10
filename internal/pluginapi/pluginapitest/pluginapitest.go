@@ -251,12 +251,28 @@ func (f *FakeRouter) RouteNewSession(o core.CreateOptions) (string, bool, error)
 	return id, f.relay(id, "created: "+o.InitialMessage), nil
 }
 
-func (f *FakeRouter) ReadSessionTranscriptPage(id string, _, _ int) (core.TranscriptPage, error) {
+// ReadTurns serves one fixed assistant turn made of a text part and a tool
+// call, with an older page behind it.
+func (f *FakeRouter) ReadTurns(id, before string, _ int) ([]core.Turn, bool, error) {
 	if _, ok := f.GetSession(id); !ok {
-		return core.TranscriptPage{}, errors.New("no such session")
+		return nil, false, core.ErrSessionNotFound
 	}
-	return core.TranscriptPage{
-		Turns: []core.TranscriptTurn{{Role: "assistant", Content: "tail"}}, Total: 1,
+	if before != "" {
+		return []core.Turn{{Role: "user", Content: "head", Cursor: "c0"}}, false, nil
+	}
+	return []core.Turn{{Role: "assistant", Cursor: "c1", Parts: []core.TurnPart{
+		{Type: "text", Content: "tail"},
+		{Type: "tool", ToolName: "Bash", ToolTarget: "ls"},
+	}}}, true, nil
+}
+
+func (f *FakeRouter) ReadTurnsFrom(id, from string) ([]core.Turn, error) {
+	if _, ok := f.GetSession(id); !ok {
+		return nil, core.ErrSessionNotFound
+	}
+	return []core.Turn{
+		{Role: "user", Content: "from " + from, Cursor: from},
+		{Role: "assistant", Cursor: "c9", Parts: []core.TurnPart{{Type: "text", Content: "after"}}},
 	}, nil
 }
 
@@ -271,10 +287,16 @@ func (f *FakeRouter) SearchAllSessions(query string, _, _ int) ([]core.SessionSe
 	return []core.SessionSearchResult{{SessionID: "s1", Snippet: query}}, false, nil
 }
 
-func (f *FakeRouter) SetArchived(id string, archived bool) {
+func (f *FakeRouter) Archive(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.archived[id] = archived
+	f.archived[id] = true
+}
+
+func (f *FakeRouter) Unarchive(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.archived[id] = false
 }
 
 func (f *FakeRouter) IsArchived(id string) bool {
@@ -386,4 +408,27 @@ func TempSocketPath(t *testing.T) string {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return filepath.Join(dir, "plugin.sock")
+}
+
+// The rest of api.Router: operations these tests never drive.
+
+func (f *FakeRouter) ListSessionsWithSubagents() []core.Session { return f.ListSessions() }
+
+func (f *FakeRouter) OpenSession(id string, _ time.Duration) (core.Session, bool) {
+	return f.GetSession(id)
+}
+
+func (f *FakeRouter) DefaultEffort(context.Context, string, string) string { return "" }
+func (f *FakeRouter) DeleteSession(string) error                           { return nil }
+func (f *FakeRouter) ForkSession(string, string) (string, error)           { return "", nil }
+func (f *FakeRouter) CancelSend(string) error                              { return nil }
+func (f *FakeRouter) Rename(context.Context, string, string) error         { return nil }
+func (f *FakeRouter) Pin(string)                                           {}
+func (f *FakeRouter) Unpin(string)                                         {}
+func (f *FakeRouter) IsPinned(string) bool                                 { return false }
+func (f *FakeRouter) HasTerminal(string) bool                              { return false }
+func (f *FakeRouter) TerminalAvailable() bool                              { return false }
+
+func (f *FakeRouter) SubscribeSession(id string) (<-chan broker.Event, func()) {
+	return f.broker.Subscribe(id)
 }

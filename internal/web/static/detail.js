@@ -223,10 +223,8 @@ function wireUpload(url, promptEl, notify) {
   installDropGuard();
 
   const uploadFile = async (file) => {
-    const form = new FormData();
-    form.append('file', file);
     try {
-      const res = await fetch(url, { method: 'POST', body: form });
+      const res = await fetch(url + '?filename=' + encodeURIComponent(file.name), { method: 'POST', body: file });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         notify('upload failed: ' + (err.error || 'HTTP ' + res.status), 'error');
@@ -1227,8 +1225,9 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       // missing payload means a native error — ignore it (es.onerror handles
       // reconnect) instead of rendering a spurious "{}" error bubble.
       if (ev.data == null) return;
+      // Each frame is the whole event; the handlers take its payload.
       let data;
-      try { data = JSON.parse(ev.data); } catch { data = { raw: ev.data }; }
+      try { data = JSON.parse(ev.data).raw || {}; } catch { data = { raw: ev.data }; }
       try { fn(data); } catch (e) { console.error('handler error', name, e); }
     });
   });

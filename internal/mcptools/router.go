@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/pluginapi"
 )
@@ -94,16 +96,20 @@ func RouterTools() []Tool {
 		},
 		{
 			Name:        "read_session_transcript",
-			Description: "Read one page of a session transcript. Omit offset for the latest page; use the returned absolute offset to page backward.",
+			Description: "Read a page of a session transcript, oldest turn first. With neither cursor, the latest page. " +
+				"before pages backward: pass the returned before value while more is true. " +
+				"from starts at a turn found by search_sessions: pass a hit's cursor.",
 			InputSchema: object(map[string]any{
 				"session_id": map[string]any{"type": "string"},
 				"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
-				"offset":     map[string]any{"type": "integer", "minimum": 0},
+				"before":     map[string]any{"type": "string"},
+				"from":       map[string]any{"type": "string"},
 			}, "session_id"),
 		},
 		{
 			Name:        "search_sessions",
-			Description: "Search transcript text. With session_id, search that session; without it, find matching sessions.",
+			Description: "Search transcript text. With session_id, search that session; without it, find matching sessions. " +
+				"Each hit carries a cursor for read_session_transcript's from.",
 			InputSchema: object(map[string]any{
 				"session_id":    map[string]any{"type": "string"},
 				"query":         map[string]any{"type": "string"},
@@ -255,7 +261,8 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		var args struct {
 			SessionID string `json:"session_id"`
 			Limit     int    `json:"limit"`
-			Offset    *int   `json:"offset"`
+			Before    string `json:"before"`
+			From      string `json:"from"`
 		}
 		if err := decode(raw, &args); err != nil {
 			return nil, err
@@ -263,11 +270,23 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if args.SessionID == "" {
 			return nil, errors.New("session_id is required")
 		}
-		offset := -1
-		if args.Offset != nil {
-			offset = *args.Offset
+		limit := bounded(args.Limit, 20, 200)
+		page, err := api.ReadTurns(args.SessionID, args.Before, args.From, limit)
+		if err != nil {
+			return nil, err
 		}
-		return api.ReadSessionTranscriptPage(args.SessionID, offset, bounded(args.Limit, 20, 200))
+		// from has no server-side limit: it returns everything after the cursor.
+		if len(page.Turns) > limit {
+			page.Turns = page.Turns[:limit]
+		}
+		out := transcriptPage{Turns: make([]transcriptTurn, len(page.Turns)), More: page.More}
+		for i, t := range page.Turns {
+			out.Turns[i] = transcriptTurn{Role: t.Role, Content: turnText(t), Time: t.DisplayTime()}
+		}
+		if page.More && len(page.Turns) > 0 {
+			out.Before = page.Turns[0].Cursor
+		}
+		return out, nil
 
 	case "search_sessions":
 		var args struct {
@@ -289,8 +308,8 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 
 	case "create_session":
 		// A local struct, not pluginapi.CreateRequest: the wire type also
-		// carries agent and relay, which must stay out of the model's reach —
-		// the input schema is only enforced client-side.
+		// carries agent, which must stay out of the model's reach — the input
+		// schema is only enforced client-side.
 		var args struct {
 			Cwd            string `json:"cwd"`
 			InitialMessage string `json:"initial_message"`
@@ -303,11 +322,9 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if args.Cwd == "" || args.InitialMessage == "" {
 			return nil, errors.New("cwd and initial_message are required")
 		}
-		out, err := api.CreateSession(pluginapi.CreateRequest{
+		out, err := api.RouteNewSession(pluginapi.CreateRequest{
 			Cwd: args.Cwd, InitialMessage: args.InitialMessage,
 			Backend: args.Backend, Model: args.Model,
-			// Never the model's call: routed work always reports back.
-			Relay: true,
 		})
 		if err != nil {
 			return nil, err
@@ -421,6 +438,48 @@ func notRouter(api *pluginapi.Client, sessionID string) error {
 		}
 	}
 	return nil
+}
+
+// transcriptPage is a transcript page as the model reads it: each turn
+// flattened to text, tool calls reduced to a marker.
+type transcriptPage struct {
+	Turns []transcriptTurn `json:"turns"`
+	More  bool             `json:"more"`
+	// Before is the cursor for the page of older turns, set while More.
+	Before string `json:"before,omitempty"`
+}
+
+type transcriptTurn struct {
+	Role    string    `json:"role"`
+	Content string    `json:"content"`
+	Time    time.Time `json:"ts"`
+}
+
+// turnText renders a turn as plain text. User turns carry their text in
+// Content; assistant turns carry it in Parts, where a tool call becomes a
+// `[tool: Name target]` marker.
+func turnText(t core.Turn) string {
+	if t.Role != "assistant" {
+		return t.Content
+	}
+	var b strings.Builder
+	for _, p := range t.Parts {
+		var line string
+		switch p.Type {
+		case "text":
+			line = p.Content
+		case "tool":
+			line = "[tool: " + strings.TrimSpace(p.ToolName+" "+p.ToolTarget) + "]"
+		}
+		if line == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 func decode(raw json.RawMessage, dst any) error {

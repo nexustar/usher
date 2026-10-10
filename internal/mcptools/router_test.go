@@ -52,7 +52,7 @@ func TestCallListFiltersAndCaps(t *testing.T) {
 	f.AddSession(core.Session{ID: "active", Status: core.StatusLive})
 	f.AddSession(core.Session{ID: "idle", Status: core.StatusIdle})
 	f.AddSession(core.Session{ID: "old", Status: core.StatusIdle})
-	f.SetArchived("old", true)
+	f.Archive("old")
 	r := start(t, f)
 
 	payload := call(t, r, "list_sessions", `{"statuses":["live"],"limit":999}`).(map[string]any)
@@ -200,9 +200,20 @@ func TestCallSearchAndTranscript(t *testing.T) {
 	f.AddSession(core.Session{ID: "s1"})
 	r := start(t, f)
 
-	page := call(t, r, "read_session_transcript", `{"session_id":"s1"}`).(pluginapi.TranscriptPage)
-	if len(page.Turns) != 1 || page.Turns[0].Content != "tail" {
+	// A turn reaches the model as text, its tool calls as markers, and the
+	// cursor for the older page only while there is one.
+	page := call(t, r, "read_session_transcript", `{"session_id":"s1"}`).(transcriptPage)
+	if len(page.Turns) != 1 || page.Turns[0].Content != "tail\n[tool: Bash ls]" || !page.More || page.Before != "c1" {
 		t.Fatalf("transcript = %+v", page)
+	}
+	older := call(t, r, "read_session_transcript", `{"session_id":"s1","before":"c1"}`).(transcriptPage)
+	if len(older.Turns) != 1 || older.Turns[0].Content != "head" || older.More || older.Before != "" {
+		t.Fatalf("older page = %+v", older)
+	}
+	// from starts at a search hit and is capped client-side.
+	from := call(t, r, "read_session_transcript", `{"session_id":"s1","from":"hit","limit":1}`).(transcriptPage)
+	if len(from.Turns) != 1 || from.Turns[0].Content != "from hit" {
+		t.Fatalf("from page = %+v", from)
 	}
 	scoped := call(t, r, "search_sessions", `{"session_id":"s1","query":"needle"}`).(pluginapi.SearchResult)
 	if scoped.Scope != "session" || len(scoped.Hits) != 1 {

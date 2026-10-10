@@ -31,11 +31,13 @@ import (
 	"github.com/nexustar/usher/internal/textutil"
 )
 
-// ErrSessionNotFound is returned when an operation targets a session with no
-// log on disk (so its path/backend can't be resolved).
-var ErrSessionNotFound = errors.New("session not found")
-var ErrBackendUnavailable = errors.New("backend capability unavailable")
-var ErrInvalidTitle = errors.New("session title must not be empty")
+var (
+	ErrSessionNotFound    = core.ErrSessionNotFound
+	ErrReadOnlySession    = core.ErrReadOnlySession
+	ErrSendQueueFull      = core.ErrSendQueueFull
+	ErrInvalidTitle       = core.ErrInvalidTitle
+	ErrBackendUnavailable = errors.New("backend capability unavailable")
+)
 
 type Router struct {
 	discovery *discovery.Discovery
@@ -520,7 +522,7 @@ func (r *Router) SessionPath(id string) (string, bool) {
 // turn containing afterUUID and returns the new session id.
 func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 	if sess, ok := r.discovery.Get(srcID); ok && sess.IsSubagent {
-		return "", errors.New("subagent transcripts are read-only")
+		return "", ErrReadOnlySession
 	}
 	path, ok := r.discovery.Path(srcID)
 	if !ok {
@@ -681,11 +683,11 @@ func (r *Router) Unarchive(sessionID string) {
 // hide), this is destructive.
 func (r *Router) DeleteSession(id string) error {
 	if sess, ok := r.discovery.Get(id); ok && sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	path, ok := r.discovery.Path(id)
 	if !ok {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 	// Release any in-flight turn first so its tail goroutine stops before the
 	// file is pulled out from under it.
@@ -752,9 +754,9 @@ func (r *Router) deleteSubagentTranscripts(parentID, rootPath string) {
 // It is the manual equivalent of LRU eviction.
 func (r *Router) PauseSession(id string) error {
 	if sess, ok := r.discovery.Get(id); !ok {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	} else if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	r.stopLive(id)
 	return nil
@@ -768,7 +770,7 @@ func (r *Router) ResumeSession(ctx context.Context, id string) error {
 		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	return r.senderFor(id).Resume(ctx, id, sess.Cwd)
 }
@@ -899,10 +901,10 @@ func relayNoteText(note relayNote) string {
 func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) error {
 	sess, ok := r.discovery.Get(id)
 	if !ok {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	// Reorder the sidebar the instant the user sends, without waiting for the
 	// prompt to land in the jsonl (see discovery.MarkInput).
@@ -915,7 +917,7 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 	if _, busy := r.activeSend[id]; busy || len(r.sendQueue[id]) > 0 {
 		if len(r.sendQueue[id]) >= maxQueuedSends {
 			r.sendMu.Unlock()
-			return errors.New("send queue full for session")
+			return ErrSendQueueFull
 		}
 		r.sendQueue[id] = append(r.sendQueue[id], pendingSend{text: text, pre: pre, abort: abort})
 		queued := len(r.sendQueue[id])
@@ -1292,7 +1294,7 @@ func (r *Router) OpenTerminal(id string, cols, rows int) error {
 		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	if r.terminal == nil {
 		return terminal.ErrUnavailable
@@ -1323,7 +1325,7 @@ func (r *Router) SubmitTerminal(id, requestID, text string) error {
 		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	if r.terminal == nil {
 		return terminal.ErrUnavailable
@@ -1552,6 +1554,7 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 		}
 		if len(hits) > 0 {
 			res.TurnIndex = hits[0].TurnIndex
+			res.Cursor = hits[0].Cursor
 			res.Snippet = hits[0].Snippet
 		}
 		results = append(results, res)
@@ -1586,6 +1589,7 @@ func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (
 			Role:        t.Role,
 			Time:        t.Time,
 			TurnIndex:   i,
+			Cursor:      t.Cursor,
 			Occurrences: count,
 			Snippet:     snippetAround(text, first, len(q), contextChars),
 		})

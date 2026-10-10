@@ -138,9 +138,12 @@ func TestSessionControlRoundTrip(t *testing.T) {
 	if err != nil || len(sessions) != 1 || sessions[0].ID != "s1" {
 		t.Fatalf("ListSessions = %+v, %v", sessions, err)
 	}
-	page, err := c.ReadSessionTranscriptPage("s1", -1, 20)
-	if err != nil || len(page.Turns) != 1 || page.Turns[0].Content != "tail" {
-		t.Fatalf("ReadSessionTranscriptPage = %+v, %v", page, err)
+	page, err := c.ReadTurns("s1", "", "", 20)
+	if err != nil || len(page.Turns) != 1 || !page.More || page.Turns[0].Cursor != "c1" {
+		t.Fatalf("ReadTurns = %+v, %v", page, err)
+	}
+	if older, err := c.ReadTurns("s1", "c1", "", 20); err != nil || older.More || older.Turns[0].Content != "head" {
+		t.Fatalf("ReadTurns before c1 = %+v, %v", older, err)
 	}
 	found, err := c.SearchSessions("s1", "needle", 20, 120)
 	if err != nil || found.Scope != "session" || len(found.Hits) != 1 || found.Hits[0].Snippet != "needle" {
@@ -264,11 +267,9 @@ func TestCreateRelaysFirstReply(t *testing.T) {
 	c := pluginapitest.Start(t, f)
 
 	f.SetRouterSession("router")
-	got, err := c.CreateSession(pluginapi.CreateRequest{
-		Cwd: "/tmp/new", InitialMessage: "build", Relay: true,
-	})
+	got, err := c.RouteNewSession(pluginapi.CreateRequest{Cwd: "/tmp/new", InitialMessage: "build"})
 	if err != nil || got.SessionID != "s_new" || !got.Relayed {
-		t.Fatalf("CreateSession = %+v, %v", got, err)
+		t.Fatalf("RouteNewSession = %+v, %v", got, err)
 	}
 	notes := f.WaitForRelay(t, "router", 1)
 	if notes[0].SessionID != "s_new" || notes[0].Reply != "created: build" {

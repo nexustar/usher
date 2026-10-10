@@ -65,9 +65,10 @@ router:
   spawned it with the routing tools, and recorded the designation, so the relay
   closes the loop with no polling anywhere.
 
-On the control socket the whole mechanism is one optional boolean: `relay` on
-`POST /v1/sessions/{id}/send` and `POST /v1/sessions`. Omitted, both keep the
-fire-and-forget shape (204 / 202) the IM sidecars already use.
+The control socket serves the same session routes as the web API, under
+`/v1`. Routed work has two routes of its own, used only by these tools:
+`POST /v1/sessions/{id}/route` and `POST /v1/route` take the body of a send and
+of a create, and answer `{"id", "relayed"}`.
 
 Because a folded prompt is no longer byte-identical to what the user typed, the
 IM hubs match their own echo by that preamble (`imutil.SamePromptEcho`) — worth

@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nexustar/usher/internal/api"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,13 +46,13 @@ type chatEvent struct {
 func (s *Server) handleListMainChats(w http.ResponseWriter, r *http.Request) {
 	chats, err := s.main.List()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if chats == nil {
 		chats = []mainchat.Chat{}
 	}
-	writeJSON(w, http.StatusOK, chats)
+	api.WriteJSON(w, http.StatusOK, chats)
 }
 
 func (s *Server) handleListMainChatMessages(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +67,7 @@ func (s *Server) handleListMainChatMessages(w http.ResponseWriter, r *http.Reque
 	// tool-heavy turn cannot make visible messages disappear from the page.
 	msgs, err := s.main.Read(id, 0)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if msgs == nil {
@@ -81,7 +82,7 @@ func (s *Server) handleListMainChatMessages(w http.ResponseWriter, r *http.Reque
 	if limit > 0 && len(visible) > limit {
 		visible = visible[len(visible)-limit:]
 	}
-	writeJSON(w, http.StatusOK, visible)
+	api.WriteJSON(w, http.StatusOK, visible)
 }
 
 type focusDetail struct {
@@ -233,11 +234,11 @@ func (s *Server) handleGetMainChat(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	msgs, err := s.main.Read(id, 0)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	info := mainChatInfo{ID: id, Focus: s.lastFocus(msgs)}
-	writeJSON(w, http.StatusOK, info)
+	api.WriteJSON(w, http.StatusOK, info)
 }
 
 // lastFocus walks msgs newest-first and returns the most recent non-empty
@@ -269,17 +270,17 @@ const maxQueuedChatTurns = 8
 // can't kill it — and all resulting messages arrive over the SSE stream.
 func (s *Server) handleMainChatSend(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req sendRequest
+	var req api.SendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if req.Text == "" {
-		writeErr(w, http.StatusBadRequest, "text is required")
+		api.WriteError(w, http.StatusBadRequest, "text is required")
 		return
 	}
 	if err := mainchat.ValidateID(id); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -287,17 +288,17 @@ func (s *Server) handleMainChatSend(w http.ResponseWriter, r *http.Request) {
 	// must leave no trace, or it would sit in the history as a ghost no
 	// worker will ever process.
 	if !s.tryReserveTurn(id) {
-		writeErr(w, http.StatusTooManyRequests, "chat is busy (turn queue full); try again shortly")
+		api.WriteError(w, http.StatusTooManyRequests, "chat is busy (turn queue full); try again shortly")
 		return
 	}
 	userMsg := mainchat.Message{Role: "user", Content: req.Text, Time: time.Now().UTC()}
 	if err := s.appendChat(id, userMsg, nil); err != nil {
 		s.releaseTurn(id)
-		writeErr(w, http.StatusInternalServerError, "persist message: "+err.Error())
+		api.WriteError(w, http.StatusInternalServerError, "persist message: "+err.Error())
 		return
 	}
 	s.chatQueue(id) <- userMsg // can't block: reservations gate the buffer
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+	api.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
 // tryReserveTurn claims one of the chat's maxQueuedChatTurns queue slots;
@@ -783,7 +784,7 @@ func (s *Server) subscribeChat(chatID string) (<-chan chatFrame, func()) {
 func (s *Server) handleMainChatEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := mainchat.ValidateID(id); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -792,7 +793,7 @@ func (s *Server) handleMainChatEvents(w http.ResponseWriter, r *http.Request) {
 	ch, cancel := s.subscribeChat(id)
 	defer cancel()
 
-	flusher, ok := sseStart(w)
+	flusher, ok := api.SSEStart(w)
 	if !ok {
 		return
 	}

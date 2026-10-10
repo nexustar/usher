@@ -1,7 +1,10 @@
 // Package core holds shared types referenced by multiple internal packages.
 package core
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Status describes a session's relationship to usher's worker pool. "live"
 // means usher holds a warm worker for it (idle, ready to answer instantly);
@@ -122,11 +125,13 @@ type SessionRuntime struct {
 // follow-up read. Snippet is the matched text with limited context on either
 // side of the first occurrence; Occurrences counts all matches in that turn.
 type TranscriptSearchHit struct {
-	Role        string    `json:"role"`
-	Time        time.Time `json:"ts"`
-	TurnIndex   int       `json:"turn_index"`
-	Occurrences int       `json:"occurrences"`
-	Snippet     string    `json:"snippet"`
+	Role      string    `json:"role"`
+	Time      time.Time `json:"ts"`
+	TurnIndex int       `json:"turn_index"`
+	// Cursor names the matching turn; a transcript read from it starts there.
+	Cursor      string `json:"cursor,omitempty"`
+	Occurrences int    `json:"occurrences"`
+	Snippet     string `json:"snippet"`
 }
 
 // SessionSearchResult is one session's summary from a cross-session search:
@@ -139,6 +144,7 @@ type SessionSearchResult struct {
 	Cwd       string `json:"cwd"`
 	HitCount  int    `json:"hit_count"`
 	TurnIndex int    `json:"turn_index"`
+	Cursor    string `json:"cursor,omitempty"`
 	Snippet   string `json:"snippet"`
 }
 
@@ -159,3 +165,14 @@ type CreateOptions struct {
 	// replacing any previous designation.
 	Router bool
 }
+
+// Errors a caller can branch on, whichever layer raised them.
+var (
+	// ErrSessionNotFound: the operation targets a session with no log on disk.
+	ErrSessionNotFound = errors.New("session not found")
+	// ErrReadOnlySession: the operation would change a session usher only reads.
+	ErrReadOnlySession = errors.New("subagent transcripts are read-only")
+	// ErrSendQueueFull: a busy session cannot queue another prompt.
+	ErrSendQueueFull = errors.New("send queue full for session")
+	ErrInvalidTitle  = errors.New("session title must not be empty")
+)

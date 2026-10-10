@@ -34,10 +34,9 @@ import (
 
 	"github.com/nexustar/usher/internal/agent/usheragent"
 	"github.com/nexustar/usher/internal/agentprofile"
-	"github.com/nexustar/usher/internal/attachment"
+	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
-	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/pathutil"
@@ -46,7 +45,6 @@ import (
 	"github.com/nexustar/usher/internal/router"
 	"github.com/nexustar/usher/internal/schedule"
 	"github.com/nexustar/usher/internal/terminal"
-	"github.com/nexustar/usher/internal/window"
 )
 
 //go:embed static
@@ -153,7 +151,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			models[name] = catalog
 		}
 	}
-	writeJSON(w, http.StatusOK, struct {
+	api.WriteJSON(w, http.StatusOK, struct {
 		Backends []string                   `json:"backends"`
 		Models   map[string][]backend.Model `json:"models"`
 	}{
@@ -174,37 +172,22 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("GET /logout", s.handleLogout)
 	webMux.HandleFunc("POST /logout", s.handleLogout)
 
-	webMux.HandleFunc("GET /api/sessions", s.handleListSessions)
-	webMux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	api.New(s.router, s.agents, s.attachmentsDir).Register(webMux, "/api")
 	webMux.HandleFunc("POST /api/uploads", s.handleDraftUpload)
 	webMux.HandleFunc("GET /api/models", s.handleModels)
 	webMux.HandleFunc("GET /api/agents", s.handleAgents)
 	webMux.HandleFunc("POST /api/agents", s.handleCreateAgent)
 	webMux.HandleFunc("PUT /api/agents/{name}", s.handleUpdateAgent)
 	webMux.HandleFunc("DELETE /api/agents/{name}", s.handleDeleteAgent)
-	webMux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	webMux.HandleFunc("GET /api/sessions/{id}/commands", s.handleSessionCommands)
-	webMux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
-	webMux.HandleFunc("GET /api/sessions/{id}/transcript", s.handleTranscript)
-	webMux.HandleFunc("POST /api/sessions/{id}/fork", s.handleFork)
-	webMux.HandleFunc("POST /api/sessions/{id}/send", s.handleSend)
-	webMux.HandleFunc("DELETE /api/sessions/{id}/send", s.handleCancelSend)
 	webMux.HandleFunc("POST /api/sessions/{id}/pause", s.handlePauseSession)
 	webMux.HandleFunc("POST /api/sessions/{id}/resume", s.handleResumeSession)
-	webMux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 	webMux.HandleFunc("POST /api/sessions/{id}/terminal", s.handleOpenTerminal)
 	webMux.HandleFunc("DELETE /api/sessions/{id}/terminal", s.handleCloseTerminal)
 	webMux.HandleFunc("POST /api/sessions/{id}/terminal/input", s.handleTerminalInput)
 	webMux.HandleFunc("GET /api/sessions/{id}/terminal/screen", s.handleTerminalScreen)
 	webMux.HandleFunc("GET /api/sessions/{id}/image", s.handleSessionImage)
-	webMux.HandleFunc("POST /api/sessions/{id}/upload", s.handleUpload)
 	webMux.HandleFunc("POST /api/sessions/{id}/terminal/control", s.handleTerminalControl)
-	webMux.HandleFunc("POST /api/sessions/{id}/auto-approve", s.handleAutoApprove)
-	webMux.HandleFunc("POST /api/sessions/{id}/rename", s.handleRename)
-	webMux.HandleFunc("POST /api/sessions/{id}/archive", s.handleArchive)
-	webMux.HandleFunc("DELETE /api/sessions/{id}/archive", s.handleUnarchive)
-	webMux.HandleFunc("POST /api/sessions/{id}/pin", s.handlePin)
-	webMux.HandleFunc("DELETE /api/sessions/{id}/pin", s.handleUnpin)
 
 	webMux.HandleFunc("GET /api/mainchats", s.handleListMainChats)
 	webMux.HandleFunc("GET /api/mainchats/{id}", s.handleGetMainChat)
@@ -217,9 +200,6 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("PUT /api/schedules/{id}", s.handleUpdateSchedule)
 	webMux.HandleFunc("DELETE /api/schedules/{id}", s.handleDeleteSchedule)
 	webMux.HandleFunc("POST /api/schedules/{id}/run", s.handleRunSchedule)
-
-	webMux.HandleFunc("GET /api/interactions", s.handleListInteractions)
-	webMux.HandleFunc("POST /api/interactions/{id}/respond", s.handleRespondInteraction)
 
 	webMux.HandleFunc("GET /api/config", s.handleConfig)
 	webMux.HandleFunc("POST /api/router", s.handleStartRouter)
@@ -346,7 +326,7 @@ func readOnlyMiddleware(next http.Handler) http.Handler {
 		case r.Method == http.MethodGet || r.Method == http.MethodHead:
 		case r.URL.Path == "/login" || r.URL.Path == "/logout":
 		default:
-			writeErr(w, http.StatusForbidden, "this usher instance is read-only")
+			api.WriteError(w, http.StatusForbidden, "this usher instance is read-only")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -377,7 +357,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// API/XHR clients get 401; full-page navigations get a redirect to
 		// /login so the user lands on the form instead of seeing JSON.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			api.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		target := "/login"
@@ -458,7 +438,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.auth.Limiter.OnSuccess(ip)
 	cookieVal, err := s.auth.IssueCookie()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	http.SetCookie(w, s.auth.NewSessionCookie(cookieVal))
@@ -485,133 +465,43 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	// 4xx is the client's mistake and comes back in its response body; 5xx is
-	// ours, so leave a server-side trace too.
-	if status >= 500 {
-		slog.Warn("request failed", "status", status, "err", msg)
-	}
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
 // --- sessions ------------------------------------------------------------
 
-// sessionDTO wraps core.Session with web-only fields (auto-approve flag
-// and archive visibility). We don't put these on core.Session because
-// the state is process-local and shouldn't leak into the discovery model.
-type sessionDTO struct {
-	core.Session
-	AutoApprove       bool `json:"auto_approve"`
-	Archived          bool `json:"archived"`
-	Pinned            bool `json:"pinned"`
-	TerminalOpen      bool `json:"terminal_open,omitempty"`
-	TerminalAvailable bool `json:"terminal_available,omitempty"`
-}
-
-// handleListSessions returns root sessions by default. The sidebar opts into
-// archived roots and read-only subagents for its disclosure controls.
-func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	includeArchived := r.URL.Query().Get("include_archived") == "1"
-	includeSubagents := r.URL.Query().Get("include_subagents") == "1"
-	sessions := s.router.ListSessions()
-	if includeSubagents {
-		sessions = s.router.ListSessionsWithSubagents()
-	}
-	out := make([]sessionDTO, 0, len(sessions))
-	for _, sess := range sessions {
-		if sess.IsSubagent {
-			out = append(out, sessionDTO{Session: sess})
-			continue
-		}
-		archived := s.router.IsArchived(sess.ID)
-		if archived && !includeArchived {
-			continue
-		}
-		out = append(out, sessionDTO{
-			Session:     sess,
-			AutoApprove: s.router.IsAutoApprove(sess.ID),
-			Archived:    archived,
-			Pinned:      s.router.IsPinned(sess.ID),
-		})
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-// AutoApprove is a pointer: omitted keeps the agent's default, an explicit
-// false turns it off for this session only.
-type createSessionRequest struct {
-	Agent          string `json:"agent"`
-	Cwd            string `json:"cwd"`
-	InitialMessage string `json:"initial_message"`
-	Backend        string `json:"backend"`
-	Model          string `json:"model"`
-	AutoApprove    *bool  `json:"auto_approve"`
-}
-
-func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	var req createSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	opts, err := s.agents.Resolve(req.Agent, req.Cwd, req.Backend, req.Model)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	opts.InitialMessage = req.InitialMessage
-	if req.AutoApprove != nil {
-		opts.AutoApprove = *req.AutoApprove
-	}
-	id, err := s.router.StartSession(opts)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
-}
-
 func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"agents": s.agents.List()})
+	api.WriteJSON(w, http.StatusOK, map[string]any{"agents": s.agents.List()})
 }
 
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var profile agentprofile.Profile
 	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	created, err := s.agents.Create(profile)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	api.WriteJSON(w, http.StatusCreated, created)
 }
 
 func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	var profile agentprofile.Profile
 	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	updated, err := s.agents.Update(r.PathValue("name"), profile)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	api.WriteJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	if err := s.agents.Delete(r.PathValue("name")); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
+		api.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -647,7 +537,7 @@ func (s *Server) handleSchedules(w http.ResponseWriter, _ *http.Request) {
 	}
 	// The zone rides with the list, not /api/config: it is only meaningful next
 	// to these timestamps, and the pane cannot render one before knowing it.
-	writeJSON(w, http.StatusOK, map[string]any{
+	api.WriteJSON(w, http.StatusOK, map[string]any{
 		"schedules": out,
 		"timezone":  schedule.LocalZone(now),
 	})
@@ -656,42 +546,42 @@ func (s *Server) handleSchedules(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	var task schedule.Task
 	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if err := s.validateScheduleTarget(task); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	created, err := s.schedules.Store().Create(task)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, scheduleDTO{Task: created, NextRun: created.NextRun(time.Now())})
+	api.WriteJSON(w, http.StatusCreated, scheduleDTO{Task: created, NextRun: created.NextRun(time.Now())})
 }
 
 func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	var task schedule.Task
 	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if err := s.validateScheduleTarget(task); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	updated, err := s.schedules.Store().Update(r.PathValue("id"), task)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, scheduleDTO{Task: updated, NextRun: updated.NextRun(time.Now())})
+	api.WriteJSON(w, http.StatusOK, scheduleDTO{Task: updated, NextRun: updated.NextRun(time.Now())})
 }
 
 func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	if err := s.schedules.Store().Delete(r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
+		api.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -702,16 +592,16 @@ func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 	id, err := s.schedules.RunNow(r.PathValue("id"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
+	api.WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
 }
 
 // handleConfig exposes the few server-side settings the SPA needs to render
 // optional UI.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, struct {
+	api.WriteJSON(w, http.StatusOK, struct {
 		EditorURL string       `json:"editor_url"`
 		ReadOnly  bool         `json:"read_only"`
 		Router    routerConfig `json:"router"`
@@ -734,21 +624,21 @@ type startRouterRequest struct {
 func (s *Server) handleStartRouter(w http.ResponseWriter, r *http.Request) {
 	var req startRouterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	opts, err := s.agents.ResolveRouter(s.router.RouterAgent(), s.router.DefaultBackend())
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	opts.InitialMessage = req.InitialMessage
 	id, err := s.router.StartRouter(opts)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
+	api.WriteJSON(w, http.StatusAccepted, map[string]string{"id": id})
 }
 
 type routerAgentRequest struct {
@@ -760,69 +650,37 @@ type routerAgentRequest struct {
 func (s *Server) handleSetRouterAgent(w http.ResponseWriter, r *http.Request) {
 	var req routerAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if _, err := s.agents.ResolveRouter(req.Agent, ""); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.router.SetRouterAgent(req.Agent)
-	writeJSON(w, http.StatusOK, routerConfig{req.Agent, s.router.RouterSession()})
-}
-
-func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, ok := s.router.OpenSession(id, 300*time.Millisecond)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	if sess.Runtime.Effort == "" {
-		sess.Runtime.Effort = s.router.DefaultEffort(r.Context(), sess.Backend, sess.Runtime.Model)
-	}
-	writeJSON(w, http.StatusOK, sessionDTO{
-		Session:           sess,
-		AutoApprove:       s.router.IsAutoApprove(id),
-		Archived:          s.router.IsArchived(id),
-		Pinned:            s.router.IsPinned(id),
-		TerminalOpen:      s.router.HasTerminal(id),
-		TerminalAvailable: s.router.TerminalAvailable(),
-	})
+	api.WriteJSON(w, http.StatusOK, routerConfig{req.Agent, s.router.RouterSession()})
 }
 
 func (s *Server) handleSessionCommands(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, ok := s.router.GetSession(id)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
+		api.WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
 	catalog, err := s.router.ComposerItems(r.Context(), id, sess.Cwd)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		api.WriteError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	if catalog.Items == nil {
 		catalog.Items = []backend.ComposerItem{}
 	}
-	writeJSON(w, http.StatusOK, struct {
+	api.WriteJSON(w, http.StatusOK, struct {
 		Source    string                 `json:"source"`
 		Available bool                   `json:"available"`
 		Commands  []backend.ComposerItem `json:"commands"`
 	}{Source: sess.Backend, Available: catalog.Available, Commands: catalog.Items})
-}
-
-// handleDeleteSession permanently deletes a session and its jsonl. Destructive
-// and irreversible — distinct from archive (DELETE .../archive), which only
-// un-hides. Returns 404 for an unknown id.
-func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.router.DeleteSession(id); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 // handlePauseSession tears down the session's live worker without deleting
@@ -832,10 +690,10 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePauseSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.router.PauseSession(id); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
+		api.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"paused": true})
+	api.WriteJSON(w, http.StatusOK, map[string]bool{"paused": true})
 }
 
 // handleResumeSession starts an idle backend worker without adding a user turn.
@@ -843,194 +701,13 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.router.ResumeSession(r.Context(), id); err != nil {
 		if errors.Is(err, router.ErrSessionNotFound) {
-			writeErr(w, http.StatusNotFound, err.Error())
+			api.WriteError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"resumed": true})
-}
-
-func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	var req struct {
-		Title string `json:"title"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-	title := strings.TrimSpace(req.Title)
-	if err := s.router.Rename(r.Context(), id, title); err != nil {
-		if errors.Is(err, router.ErrInvalidTitle) {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"title": title})
-}
-
-func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	s.router.Archive(id)
-	writeJSON(w, http.StatusOK, map[string]bool{"archived": true})
-}
-
-func (s *Server) handleUnarchive(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	s.router.Unarchive(id)
-	writeJSON(w, http.StatusOK, map[string]bool{"archived": false})
-}
-
-func (s *Server) handlePin(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	s.router.Pin(id)
-	writeJSON(w, http.StatusOK, map[string]bool{"pinned": true})
-}
-
-func (s *Server) handleUnpin(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	s.router.Unpin(id)
-	writeJSON(w, http.StatusOK, map[string]bool{"pinned": false})
-}
-
-type autoApproveRequest struct {
-	Enabled bool `json:"enabled"`
-}
-
-func (s *Server) handleAutoApprove(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	var req autoApproveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	s.router.SetAutoApprove(id, req.Enabled)
-	writeJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})
-}
-
-type forkRequest struct {
-	AfterUUID string `json:"after_uuid"` // fork point: the uuid a transcript turn carries
-}
-
-// handleFork branches a session at a past turn into a new session. Responds
-// with the new session id.
-func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var req forkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	if req.AfterUUID == "" {
-		writeErr(w, http.StatusBadRequest, "after_uuid is required")
-		return
-	}
-	newID, err := s.router.ForkSession(id, req.AfterUUID)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": newID})
-}
-
-type sendRequest struct {
-	Text string `json:"text"`
-}
-
-func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var req sendRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	if req.Text == "" {
-		writeErr(w, http.StatusBadRequest, "text is required")
-		return
-	}
-	if err := s.router.SendToSession(id, req.Text); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
-}
-
-func (s *Server) handleCancelSend(w http.ResponseWriter, r *http.Request) {
-	if err := s.router.CancelSend(r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
-}
-
-// transcriptPage is a slice of a session's turns, oldest first. More reports
-// older turns ahead of the first one.
-type transcriptPage struct {
-	Turns []core.Turn `json:"turns"`
-	More  bool        `json:"more,omitempty"`
-}
-
-// handleTranscript serves the newest ?limit= turns, the page ?before= a turn's
-// cursor, or the turn at ?from= a cursor and everything after it.
-func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
-	id, q := r.PathValue("id"), r.URL.Query()
-	limit := 0
-	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
-		limit = n
-	}
-	var page transcriptPage
-	var err error
-	if from := q.Get("from"); from != "" {
-		page.Turns, err = s.router.ReadTurnsFrom(id, from)
-	} else {
-		page.Turns, page.More, err = s.router.ReadTurns(id, q.Get("before"), limit)
-	}
-	switch {
-	case errors.Is(err, router.ErrSessionNotFound):
-		// A session that exists but has written no log yet reads as empty.
-		if _, ok := s.router.GetSession(id); !ok {
-			writeErr(w, http.StatusNotFound, "session not found")
-			return
-		}
-	case errors.Is(err, window.ErrBadCursor):
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	case err != nil:
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if page.Turns == nil {
-		page.Turns = []core.Turn{}
-	}
-	writeJSON(w, http.StatusOK, page)
+	api.WriteJSON(w, http.StatusOK, map[string]bool{"resumed": true})
 }
 
 // imageContentTypes is the /image allowlist (also the forced Content-Type).
@@ -1051,17 +728,17 @@ func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, ok := s.router.GetSession(id)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
+		api.WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
 	rel := r.URL.Query().Get("path")
 	if rel == "" {
-		writeErr(w, http.StatusBadRequest, "missing path")
+		api.WriteError(w, http.StatusBadRequest, "missing path")
 		return
 	}
 	ctype, ok := imageContentTypes[strings.ToLower(filepath.Ext(rel))]
 	if !ok {
-		writeErr(w, http.StatusForbidden, "not a supported image type")
+		api.WriteError(w, http.StatusForbidden, "not a supported image type")
 		return
 	}
 	// Beyond the cwd: this session's uploads, the pre-session uploads its
@@ -1071,18 +748,18 @@ func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
 		filepath.Join(s.attachmentsDir, draftsDir),
 		pathutil.CodexGeneratedImagesDir(id))
 	if !ok {
-		writeErr(w, http.StatusNotFound, "image not found")
+		api.WriteError(w, http.StatusNotFound, "image not found")
 		return
 	}
 	f, err := os.Open(full)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "image not found")
+		api.WriteError(w, http.StatusNotFound, "image not found")
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		writeErr(w, http.StatusNotFound, "image not found")
+		api.WriteError(w, http.StatusNotFound, "image not found")
 		return
 	}
 	w.Header().Set("Content-Type", ctype)
@@ -1091,27 +768,9 @@ func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, filepath.Base(full), info.ModTime(), f)
 }
 
-const (
-	maxUploadSize   = 100 << 20 // 100 MB total request limit
-	maxUploadMemory = 8 << 20   // spill larger multipart file data to disk
-)
-
 // draftsDir holds uploads made before a session exists, one subdirectory per
 // upload. Session ids are UUIDs, so it can't collide with a session's own.
 const draftsDir = "_drafts"
-
-// handleUpload accepts a multipart file upload and stores it in the session's
-// managed attachment directory. Returns the absolute path so the user can
-// reference it in a prompt for the session agent to read.
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	_, ok := s.router.GetSession(id)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	s.saveUpload(w, r, s.attachmentsDir, id)
-}
 
 // handleDraftUpload does the same for the new-session composer, which has no
 // id to file the upload under yet. Nothing relocates it afterwards: the id is
@@ -1120,137 +779,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDraftUpload(w http.ResponseWriter, r *http.Request) {
 	var b [8]byte
 	_, _ = rand.Read(b[:]) // documented never to fail
-	s.saveUpload(w, r, filepath.Join(s.attachmentsDir, draftsDir), fmt.Sprintf("%x", b[:]))
-}
-
-func (s *Server) saveUpload(w http.ResponseWriter, r *http.Request, root, dir string) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
-	if err := r.ParseMultipartForm(maxUploadMemory); err != nil {
-		writeErr(w, http.StatusBadRequest, "file too large or invalid multipart")
-		return
-	}
-	defer r.MultipartForm.RemoveAll()
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "missing file field")
-		return
-	}
-	defer file.Close()
-
-	dst, err := attachment.Save(root, dir, header.Filename, file, maxUploadSize)
-	if errors.Is(err, attachment.ErrInvalidName) {
-		writeErr(w, http.StatusBadRequest, "invalid filename")
-		return
-	}
-	if errors.Is(err, attachment.ErrTooLarge) {
-		writeErr(w, http.StatusBadRequest, "file too large")
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to write file")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"path": dst})
-}
-
-// sseForward is the event vocabulary the web client consumes. Raw jsonl
-// lines ("user", "assistant", "system", bookkeeping types) are deliberately
-// NOT forwarded: the client renders live turns from the derived "part" /
-// "turn.user" events (server-side grouped, see router.publishStream), and
-// the raw lines — thinking blocks, usage stats, file-history snapshots —
-// would only burn mobile bandwidth.
-var sseForward = map[string]bool{
-	backend.EventProcessStarted: true,
-	backend.EventProcessExit:    true,
-	backend.EventError:          true,
-	backend.EventPart:           true,
-	backend.EventPartDelta:      true,
-	backend.EventTurnStatus:     true,
-	backend.EventTurnUser:       true,
-	backend.EventRuntime:        true,
-}
-
-// sseStart asserts streaming support and writes the SSE preamble (headers +
-// 200 + first flush). Returns false after answering 500 itself. The single
-// home for proxy-facing details like X-Accel-Buffering — fix once, fix every
-// stream.
-func sseStart(w http.ResponseWriter) (http.Flusher, bool) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
-		return nil, false
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-	return flusher, true
-}
-
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
-		return
-	}
-	// Register before flushing the 200 response: once EventSource observes the
-	// connection as open, every later broker event must have a subscriber.
-	ch, cancel := s.router.SubscribeSession(id)
-	defer cancel()
-
-	flusher, ok := sseStart(w)
-	if !ok {
-		return
-	}
-
-	// Snapshot-on-connect: the broker has no replay, so a turn whose start (or
-	// end) happened before this subscribe is invisible to the client. Emit the
-	// current turn state on every connect so a refresh/reconnect can reconcile
-	// either way: turn.active stands the bubble back up; turn.idle lets a client
-	// that still thinks it's mid-turn (its subprocess.exit was dropped on a
-	// dropped connection) finalize. The client handles both idempotently.
-	turnEvent := "turn.idle"
-	if sess, ok := s.router.GetSession(id); ok &&
-		(sess.Status == core.StatusRunning || sess.Status == core.StatusAwaitingPermission) {
-		turnEvent = "turn.active"
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: {}\n\n", turnEvent); err == nil {
-		flusher.Flush()
-	}
-
-	heartbeat := time.NewTicker(15 * time.Second)
-	defer heartbeat.Stop()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-heartbeat.C:
-			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
-		case ev, ok := <-ch:
-			if !ok {
-				return
-			}
-			if !sseForward[ev.Type] {
-				continue
-			}
-			payload := ev.Raw
-			if len(payload) == 0 {
-				payload = []byte("{}")
-			}
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, payload); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
-	}
+	api.SaveUpload(w, r, filepath.Join(s.attachmentsDir, draftsDir), fmt.Sprintf("%x", b[:]))
 }
 
 // --- session terminal ----------------------------------------------------
@@ -1300,7 +829,7 @@ func (s *Server) handleOpenTerminal(w http.ResponseWriter, r *http.Request) {
 	var req terminalOpenRequest
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+			api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 			return
 		}
 	}
@@ -1313,18 +842,18 @@ func (s *Server) handleOpenTerminal(w http.ResponseWriter, r *http.Request) {
 	req.Cols = clampInt(req.Cols, 60, 240)
 	req.Rows = clampInt(req.Rows, 4, 200)
 	if err := s.router.OpenTerminal(id, req.Cols, req.Rows); err != nil {
-		writeErr(w, terminalErrStatus(err), err.Error())
+		api.WriteError(w, terminalErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"open": true})
+	api.WriteJSON(w, http.StatusOK, map[string]bool{"open": true})
 }
 
 func (s *Server) handleCloseTerminal(w http.ResponseWriter, r *http.Request) {
 	if err := s.router.CloseTerminal(r.PathValue("id")); err != nil {
-		writeErr(w, terminalErrStatus(err), err.Error())
+		api.WriteError(w, terminalErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"open": false})
+	api.WriteJSON(w, http.StatusOK, map[string]bool{"open": false})
 }
 
 type terminalInputRequest struct {
@@ -1337,44 +866,44 @@ func (s *Server) handleTerminalInput(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxTerminalInput)
 	var req terminalInputRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if req.Text == "" {
-		writeErr(w, http.StatusBadRequest, "terminal input is empty")
+		api.WriteError(w, http.StatusBadRequest, "terminal input is empty")
 		return
 	}
 	if req.RequestID == "" || len(req.RequestID) > 128 {
-		writeErr(w, http.StatusBadRequest, "invalid terminal request_id")
+		api.WriteError(w, http.StatusBadRequest, "invalid terminal request_id")
 		return
 	}
 	if strings.IndexByte(req.Text, 0) >= 0 {
-		writeErr(w, http.StatusBadRequest, "terminal input contains NUL")
+		api.WriteError(w, http.StatusBadRequest, "terminal input contains NUL")
 		return
 	}
 	if err := s.router.SubmitTerminal(r.PathValue("id"), req.RequestID, req.Text); err != nil {
-		writeErr(w, terminalErrStatus(err), err.Error())
+		api.WriteError(w, terminalErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // handleTerminalScreen streams changed tmux snapshots over SSE.
 func (s *Server) handleTerminalScreen(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, ok := s.router.GetSession(id); !ok {
-		writeErr(w, http.StatusNotFound, "session not found")
+		api.WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
 	if !s.router.TerminalAvailable() {
-		writeErr(w, http.StatusServiceUnavailable, "terminal unavailable: tmux is not installed")
+		api.WriteError(w, http.StatusServiceUnavailable, "terminal unavailable: tmux is not installed")
 		return
 	}
 	if !s.router.HasTerminal(id) {
-		writeErr(w, http.StatusConflict, "terminal is not open")
+		api.WriteError(w, http.StatusConflict, "terminal is not open")
 		return
 	}
-	flusher, ok := sseStart(w)
+	flusher, ok := api.SSEStart(w)
 	if !ok {
 		return
 	}
@@ -1477,19 +1006,19 @@ func (s *Server) handleTerminalControl(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req terminalControlRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	tmuxKey, ok := terminalControls[req.Control]
 	if !ok {
-		writeErr(w, http.StatusBadRequest, "unknown terminal control")
+		api.WriteError(w, http.StatusBadRequest, "unknown terminal control")
 		return
 	}
 	if err := s.router.SendTerminalControl(id, tmuxKey); err != nil {
-		writeErr(w, terminalErrStatus(err), err.Error())
+		api.WriteError(w, terminalErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // --- interactions ---------------------------------------------------------------
@@ -1512,7 +1041,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	// this endpoint for one rolling-upgrade window; it never creates a pending
 	// interaction.
 	if eventName == "PermissionRequest" {
-		writeJSON(w, http.StatusOK, map[string]any{"continue": true})
+		api.WriteJSON(w, http.StatusOK, map[string]any{"continue": true})
 		return
 	}
 
@@ -1520,7 +1049,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	var ev hookPayload
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &ev); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid hook payload: "+err.Error())
+			api.WriteError(w, http.StatusBadRequest, "invalid hook payload: "+err.Error())
 			return
 		}
 	}
@@ -1530,7 +1059,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	// Managed Claude permissions use the stream-json control protocol. The only
 	// command hook still routed over HTTP is AskUserQuestion's PreToolUse.
 	if eventName != "PreToolUse" {
-		writeJSON(w, http.StatusOK, map[string]any{})
+		api.WriteJSON(w, http.StatusOK, map[string]any{})
 		return
 	}
 
@@ -1544,7 +1073,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.logger.Warn("hook submit cancelled", "session", ev.SessionID, "err", err)
-		writeJSON(w, http.StatusOK, map[string]any{})
+		api.WriteJSON(w, http.StatusOK, map[string]any{})
 		return
 	}
 
@@ -1570,52 +1099,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		ti["answers"] = resp.Answers
 		hookOut["updatedInput"] = ti
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hookSpecificOutput": hookOut})
-}
-
-func (s *Server) handleListInteractions(w http.ResponseWriter, r *http.Request) {
-	list := s.router.ListPendingInteractions()
-	if list == nil {
-		list = []interaction.Pending{}
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-type respondReq struct {
-	Behavior string `json:"behavior"`
-	Reason   string `json:"reason"`
-	Scope    string `json:"scope"` // "" or "once" or "session"
-	// Answers carries an AskUserQuestion choice (question → chosen label).
-	// Sent with Behavior "allow"; the server forwards it into the hook
-	// response's updatedInput.
-	Answers map[string]string `json:"answers,omitempty"`
-}
-
-func (s *Server) handleRespondInteraction(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var req respondReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if req.Behavior != "allow" && req.Behavior != "deny" {
-		writeErr(w, http.StatusBadRequest, "behavior must be allow|deny")
-		return
-	}
-	if req.Scope != "" && req.Scope != "once" && req.Scope != "session" {
-		writeErr(w, http.StatusBadRequest, "scope must be once|session")
-		return
-	}
-	if err := s.router.RespondInteraction(id, interaction.Response{
-		Behavior: req.Behavior,
-		Reason:   req.Reason,
-		Scope:    req.Scope,
-		Answers:  req.Answers,
-	}); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	api.WriteJSON(w, http.StatusOK, map[string]any{"hookSpecificOutput": hookOut})
 }
 
 // --- web push ------------------------------------------------------------
@@ -1625,41 +1109,41 @@ func (s *Server) handleRespondInteraction(w http.ResponseWriter, r *http.Request
 // the notifications toggle.
 func (s *Server) handlePushVAPIDKey(w http.ResponseWriter, r *http.Request) {
 	if s.push == nil {
-		writeErr(w, http.StatusNotFound, "push not available")
+		api.WriteError(w, http.StatusNotFound, "push not available")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"key": s.push.VAPIDPublicKey()})
+	api.WriteJSON(w, http.StatusOK, map[string]string{"key": s.push.VAPIDPublicKey()})
 }
 
 func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.push == nil {
-		writeErr(w, http.StatusNotFound, "push not available")
+		api.WriteError(w, http.StatusNotFound, "push not available")
 		return
 	}
 	var sub push.Subscription
 	if err := json.NewDecoder(r.Body).Decode(&sub); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	if err := s.push.Subscribe(sub); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "subscribed"})
+	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "subscribed"})
 }
 
 func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.push == nil {
-		writeErr(w, http.StatusNotFound, "push not available")
+		api.WriteError(w, http.StatusNotFound, "push not available")
 		return
 	}
 	var req struct {
 		Endpoint string `json:"endpoint"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
 	s.push.Unsubscribe(req.Endpoint)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "unsubscribed"})
+	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "unsubscribed"})
 }

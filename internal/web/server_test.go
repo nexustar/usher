@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -253,20 +253,7 @@ func TestDraftUploadKeepsFilenamePerUpload(t *testing.T) {
 	s := &Server{attachmentsDir: t.TempDir()}
 	upload := func() string {
 		t.Helper()
-		var body bytes.Buffer
-		mw := multipart.NewWriter(&body)
-		part, err := mw.CreateFormFile("file", "screenshot.png")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := part.Write([]byte("png data")); err != nil {
-			t.Fatal(err)
-		}
-		if err := mw.Close(); err != nil {
-			t.Fatal(err)
-		}
-		req := httptest.NewRequest(http.MethodPost, "/api/uploads", &body)
-		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req := httptest.NewRequest(http.MethodPost, "/api/uploads?filename=screenshot.png", strings.NewReader("png data"))
 		rec := httptest.NewRecorder()
 		s.handleDraftUpload(rec, req)
 		if rec.Code != http.StatusOK {
