@@ -201,10 +201,10 @@ export function renderSidebarSessions(allSessions) {
 
 export function updateSidebarActive() {
   const hash = location.hash || '#/';
-  const inMainChat = hash === '#/chat' || hash.startsWith('#/chat/') ||
+  const inRouter = hash === '#/chat' || hash.startsWith('#/chat/') ||
     getLastSessions().some(s => s.router && hash === '#/s/' + encodeURIComponent(s.id));
-  document.querySelectorAll('.sidebar-mainchat').forEach(a => {
-    a.classList.toggle('active', inMainChat);
+  document.querySelectorAll('.sidebar-router').forEach(a => {
+    a.classList.toggle('active', inRouter);
   });
   document.querySelectorAll('.sidebar-new:not(.cwd-new)').forEach(a => {
     a.classList.toggle('active', hash === '#/new');

@@ -627,16 +627,6 @@ func (r *Router) DefaultBackend() string {
 	return r.defaultBackend
 }
 
-// SetArchived is the toggle shape of Archive/Unarchive, for the control
-// socket's single archive endpoint.
-func (r *Router) SetArchived(sessionID string, archived bool) {
-	if archived {
-		r.Archive(sessionID)
-	} else {
-		r.Unarchive(sessionID)
-	}
-}
-
 func (r *Router) Archive(sessionID string)       { r.meta.Archive(sessionID) }
 func (r *Router) IsPinned(sessionID string) bool { return r.meta.IsPinned(sessionID) }
 func (r *Router) Pin(sessionID string)           { r.meta.Pin(sessionID) }
@@ -840,8 +830,8 @@ const relayExcerptRunes = 600
 // queueRelay records that a session a router dispatched has finished. The
 // reply is NOT sent as a prompt: that would start a turn whose only product is
 // the model restating text the user can already read verbatim. It waits for
-// the router's next prompt instead — the same split the web main chat has
-// always had between displaying a reply and telling the agent about it.
+// the router's next prompt instead: displaying a reply and telling the model
+// about it are two separate things.
 func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
 	if routerID == "" {
 		return
@@ -902,10 +892,9 @@ func stripRelayNotes(prompt string) string {
 	return prompt
 }
 
-// relayNoteText renders one note. The [session <id> replied] form is the one
-// the main chat has always used, so a model that has seen either recognizes
-// both. A failed turn is reported the same way: swallowing it would leave the
-// router waiting on a reply that is never coming.
+// relayNoteText renders one note. A failed turn is reported the same way as a
+// reply: swallowing it would leave the router waiting on one that is never
+// coming.
 func relayNoteText(note relayNote) string {
 	if note.err != nil {
 		return fmt.Sprintf("[session %s failed] %s", note.sessionID, note.err.Error())
@@ -1413,79 +1402,6 @@ func (r *Router) IsAutoApprove(sessionID string) bool {
 	return r.interactions.IsAutoApprove(sessionID)
 }
 
-// --- transcript / blocking send (v0.2 LLM agent helpers) ----------------
-
-// ReadSessionTranscript projects the most recent N user/assistant turns of
-// a session's jsonl into core.TranscriptTurn. limit ≤ 0 returns everything.
-func (r *Router) ReadSessionTranscript(id string, limit int) ([]core.TranscriptTurn, error) {
-	path, ok := r.discovery.Path(id)
-	if !ok {
-		return nil, ErrSessionNotFound
-	}
-	turns, err := r.readTurnsForBackend(path, r.backendOf(id), limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]core.TranscriptTurn, len(turns))
-	for i, t := range turns {
-		out[i] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.DisplayTime()}
-	}
-	return out, nil
-}
-
-// ReadSessionTranscriptPage returns one page of the transcript: up to limit
-// turns starting at absolute index offset (0-based from the start of the
-// session). A negative offset means "the most recent page". Because the jsonl
-// is append-only, an absolute index is a stable cursor even as the session
-// grows.
-//
-// This is the primitive behind read_session_transcript's paging: the per-call
-// limit bounds how much enters the agent's context, while offset + total keep
-// any depth reachable — there is no hard wall, only a page boundary.
-func (r *Router) ReadSessionTranscriptPage(id string, offset, limit int) (core.TranscriptPage, error) {
-	path, ok := r.discovery.Path(id)
-	if !ok {
-		return core.TranscriptPage{}, ErrSessionNotFound
-	}
-	turns, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
-	if err != nil {
-		return core.TranscriptPage{}, err
-	}
-	total := len(turns)
-	start, end := pageBounds(offset, limit, total)
-	out := make([]core.TranscriptTurn, end-start)
-	for i := start; i < end; i++ {
-		t := turns[i]
-		out[i-start] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.DisplayTime()}
-	}
-	return core.TranscriptPage{Turns: out, Offset: start, Total: total}, nil
-}
-
-// pageBounds resolves [start, end) into a slice of length total for a page of
-// up to limit items beginning at offset. A negative offset selects the last
-// page (start = total-limit). Everything is clamped to [0, total], so an
-// offset past the end yields an empty page rather than a panic.
-func pageBounds(offset, limit, total int) (start, end int) {
-	if limit <= 0 {
-		limit = 1
-	}
-	start = offset
-	if start < 0 {
-		start = total - limit
-	}
-	if start < 0 {
-		start = 0
-	}
-	if start > total {
-		start = total
-	}
-	end = start + limit
-	if end > total {
-		end = total
-	}
-	return start, end
-}
-
 // flattenTurnText renders a core.Turn to plain text. User turns carry their
 // text in Content; assistant turns carry it in Parts (text blocks interleaved
 // with tool annotations). When includeTools is set, tool parts are inlined as
@@ -1582,7 +1498,6 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 			HitCount:  matched,
 		}
 		if len(hits) > 0 {
-			res.TurnIndex = hits[0].TurnIndex
 			res.Cursor = hits[0].Cursor
 			res.Snippet = hits[0].Snippet
 		}
@@ -1604,7 +1519,7 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 // maxHits located snippets and the total count of matching turns. Shared by
 // the single-session and cross-session searches.
 func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (hits []core.TranscriptSearchHit, matched int) {
-	for i, t := range turns {
+	for _, t := range turns {
 		text := []rune(flattenTurnText(t, false))
 		first, count := foldFindAll(text, q)
 		if first < 0 {
@@ -1617,7 +1532,6 @@ func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (
 		hits = append(hits, core.TranscriptSearchHit{
 			Role:        t.Role,
 			Time:        t.Time,
-			TurnIndex:   i,
 			Cursor:      t.Cursor,
 			Occurrences: count,
 			Snippet:     snippetAround(text, first, len(q), contextChars),
@@ -1718,10 +1632,6 @@ func (r *Router) RouteToSession(id, text string) (bool, error) {
 // the ceiling passes with no response at all — killed window, exit never
 // observed — onDone is NOT called: a day-late "(relay: timeout)" message is
 // noise, and the reply, if any, is in the transcript.
-//
-// RouteToSession is the callback-free form; this one exists for the
-// deprecated main-chat agent, whose replies flow to its own UI, and folds
-// into RouteToSession when that agent goes.
 func (r *Router) SendToSessionRelayed(id, text string, onDone func(sessionID, reply string, err error)) error {
 	return r.enqueueSend(id, text,
 		func() {
@@ -1937,35 +1847,6 @@ func validateCreateInputs(cwd, initialMsg string) (string, error) {
 		cwd = resolved
 	}
 	return cwd, nil
-}
-
-// CreateSession spawns a brand-new session on the default backend and waits for
-// the assistant's first response (subject to timeout). Returns the
-// generated session id and the accumulated assistant text. The session
-// will appear in discovery via fsnotify shortly after the subprocess
-// starts writing its jsonl.
-func (r *Router) CreateSession(ctx context.Context, o core.CreateOptions, timeout time.Duration) (string, string, error) {
-	o, err := r.prepare(ctx, o)
-	if err != nil {
-		return "", "", err
-	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	sessionID, ch, tok, err := r.beginNewSession(waitCtx, cancel, o)
-	if err != nil {
-		return "", "", err
-	}
-
-	reply := r.collectNewSessionText(sessionID, o.Backend, ch)
-	expired := waitCtx.Err() != nil // before releaseSend, which cancels waitCtx
-	r.releaseSend(sessionID, tok)
-
-	if expired && reply == "" {
-		return sessionID, "", fmt.Errorf("create_session timeout (no response received within %s)", timeout)
-	}
-	return sessionID, reply, nil
 }
 
 // RouteNewSession starts a session like RouteToSession sends: the first

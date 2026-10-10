@@ -412,21 +412,6 @@ func TestReadTurnsAssistantEndTime(t *testing.T) {
 		t.Errorf("assistant ts = %v, want %v (turn end)", turns[1].Time, want)
 	}
 
-	// Same projection through the agent-facing transcript readers.
-	tt, err := r.ReadSessionTranscript("end", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tt) != 2 || !tt[1].Time.Equal(turns[1].Time) {
-		t.Errorf("ReadSessionTranscript ts = %v, want %v", tt, turns[1].Time)
-	}
-	page, err := r.ReadSessionTranscriptPage("end", 0, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page.Turns) != 2 || !page.Turns[1].Time.Equal(turns[1].Time) {
-		t.Errorf("ReadSessionTranscriptPage ts = %v, want %v", page.Turns, turns[1].Time)
-	}
 }
 
 func TestBackendForModel(t *testing.T) {

@@ -1,6 +1,6 @@
-// Package mcptools defines usher-owned MCP tools independently of the
-// main-chat agent. Router tools talk to usher's control API; the MCP stdio
-// command is only protocol framing and transport wiring.
+// Package mcptools defines usher-owned MCP tools. Router tools talk to usher's
+// control API; the MCP stdio command is only protocol framing and transport
+// wiring.
 package mcptools
 
 import (
@@ -31,9 +31,9 @@ type Router struct {
 	API *pluginapi.Client
 }
 
-// RouterTools returns the opt-in session-management tool catalog. Descriptions
-// preserve the old main-chat agent's routing boundary: substantive work goes
-// to a coding-agent session, never to the router model itself.
+// RouterTools returns the session-management tool catalog. Descriptions hold
+// the routing boundary: substantive work goes to a coding-agent session, never
+// to the router model itself.
 //
 // The send/create descriptions promise the report-back, because holding these
 // tools is what makes a session the router. Each call's result confirms whether

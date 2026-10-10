@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestHandleTheme(t *testing.T) {
@@ -138,36 +137,6 @@ func TestTerminalInputValidation(t *testing.T) {
 	}
 }
 
-func TestFocusSwitchBanner(t *testing.T) {
-	full := "0af0c1d2-3e4f-5678-9abc-def012345678"
-
-	// Same focus → no banner; the persistent UI focus link already shows it.
-	if got := focusSwitchBanner(full, full, "auth"); got != "" {
-		t.Errorf("same focus should give no banner, got %q", got)
-	}
-	// Turn that touched no session → no banner.
-	if got := focusSwitchBanner(full, "", "auth"); got != "" {
-		t.Errorf("untouched turn should give no banner, got %q", got)
-	}
-
-	// Switch between sessions → "Switching to" + title + link.
-	got := focusSwitchBanner("11111111-aaaa", full, "auth-service")
-	want := "↪ Switching to [auth-service](#/s/" + full + ")\n\n"
-	if got != want {
-		t.Errorf("switch banner:\n got %q\nwant %q", got, want)
-	}
-
-	// First focus (none → X) → "Routing to".
-	if got := focusSwitchBanner("", full, "auth-service"); got != "↪ Routing to [auth-service](#/s/"+full+")\n\n" {
-		t.Errorf("first-focus banner = %q", got)
-	}
-
-	// Untitled session → short id as link text.
-	if got := focusSwitchBanner("", full, ""); got != "↪ Routing to [0af0c1d2](#/s/"+full+")\n\n" {
-		t.Errorf("untitled banner = %q", got)
-	}
-}
-
 func TestGzipMiddleware(t *testing.T) {
 	json200 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -279,26 +248,6 @@ func TestDraftUploadKeepsFilenamePerUpload(t *testing.T) {
 		}
 		if data, err := os.ReadFile(p); err != nil || string(data) != "png data" {
 			t.Errorf("content of %q = %q (err %v)", p, data, err)
-		}
-	}
-}
-
-func TestHumanizeAge(t *testing.T) {
-	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
-	cases := []struct {
-		last time.Time
-		want string
-	}{
-		{time.Time{}, "unknown"},                 // zero → unknown
-		{now.Add(-10 * time.Second), "just now"}, // <1m
-		{now.Add(-5 * time.Minute), "5m ago"},    // minutes
-		{now.Add(-3 * time.Hour), "3h ago"},      // hours
-		{now.Add(-50 * time.Hour), "2d ago"},     // days (floored)
-		{now.Add(10 * time.Second), "just now"},  // future/skew
-	}
-	for _, c := range cases {
-		if got := humanizeAge(now, c.last); got != c.want {
-			t.Errorf("humanizeAge(now, %v) = %q, want %q", c.last, got, c.want)
 		}
 	}
 }

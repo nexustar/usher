@@ -29,17 +29,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/nexustar/usher/internal/agent/usheragent"
 	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
-	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
 	"github.com/nexustar/usher/internal/push"
@@ -63,17 +60,12 @@ func init() {
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 }
 
-// Verify Router satisfies AgentAPI at compile time.
-var _ usheragent.AgentAPI = (*router.Router)(nil)
-
 type Server struct {
 	addr           string
 	hookSockPath   string
 	attachmentsDir string
 	auth           *auth.Store
 	router         *router.Router
-	main           *mainchat.Store
-	agent          usheragent.Agent
 	push           *push.Manager
 	logger         *slog.Logger
 	// editorURL is the --editor-url template for the "Open in editor" entry
@@ -86,18 +78,6 @@ type Server struct {
 	// readOnly rejects every state-changing web request (see
 	// readOnlyMiddleware); reads, SSE, and static files stay available.
 	readOnly bool
-
-	// Main-chat delivery. The user message is persisted in the POST handler
-	// (202 means durable); the agent turn then runs on the chat's single
-	// worker goroutine, fed by a bounded FIFO queue. Everything the chat
-	// displays reaches clients through the per-chat SSE stream; chatSubs
-	// maps each subscriber channel to its cancel so a slow subscriber is
-	// force-closed rather than silently dropped (reconnect + refetch is the
-	// only gap-healing path).
-	chatMu      sync.Mutex
-	chatSubs    map[string]map[chan chatFrame]func()
-	chatQueues  map[string]chan mainchat.Message
-	chatPending map[string]int // reserved turn-queue slots (see tryReserveTurn)
 }
 
 func NewServer(
@@ -106,8 +86,6 @@ func NewServer(
 	attachmentsDir string,
 	authStore *auth.Store,
 	r *router.Router,
-	main *mainchat.Store,
-	agent usheragent.Agent,
 	pushMgr *push.Manager,
 	editorURL string,
 	uiDir string,
@@ -126,8 +104,6 @@ func NewServer(
 		attachmentsDir: attachmentsDir,
 		auth:           authStore,
 		router:         r,
-		main:           main,
-		agent:          agent,
 		push:           pushMgr,
 		logger:         logger,
 		editorURL:      editorURL,
@@ -136,9 +112,6 @@ func NewServer(
 		agents:         agents,
 		schedules:      schedules,
 		readOnly:       readOnly,
-		chatSubs:       map[string]map[chan chatFrame]func(){},
-		chatQueues:     map[string]chan mainchat.Message{},
-		chatPending:    map[string]int{},
 	}
 }
 
@@ -189,12 +162,6 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("GET /api/sessions/{id}/terminal/screen", s.handleTerminalScreen)
 	webMux.HandleFunc("GET /api/sessions/{id}/image", s.handleSessionImage)
 	webMux.HandleFunc("POST /api/sessions/{id}/terminal/control", s.handleTerminalControl)
-
-	webMux.HandleFunc("GET /api/mainchats", s.handleListMainChats)
-	webMux.HandleFunc("GET /api/mainchats/{id}", s.handleGetMainChat)
-	webMux.HandleFunc("GET /api/mainchats/{id}/messages", s.handleListMainChatMessages)
-	webMux.HandleFunc("GET /api/mainchats/{id}/events", s.handleMainChatEvents)
-	webMux.HandleFunc("POST /api/mainchats/{id}/send", s.handleMainChatSend)
 
 	webMux.HandleFunc("GET /api/schedules", s.handleSchedules)
 	webMux.HandleFunc("POST /api/schedules", s.handleCreateSchedule)

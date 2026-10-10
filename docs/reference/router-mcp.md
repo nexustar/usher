@@ -26,8 +26,7 @@ accepted. They never wait for the turn: turns run for minutes or hours, and
 neither a held request nor the host agent's own tool-call timeout could outlast
 them.
 
-When the turn completes, usher splits what happens next in two — the same split
-the web main chat has always had:
+When the turn completes, usher splits what happens next in two:
 
 - **The user's copy is verbatim and program-delivered.** usher shows the routed
   session's answer as a message of its own in the router conversation, where it

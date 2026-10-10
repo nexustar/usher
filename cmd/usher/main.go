@@ -15,14 +15,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nexustar/usher/internal/agent/usheragent"
 	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/discovery"
 	"github.com/nexustar/usher/internal/interaction"
-	"github.com/nexustar/usher/internal/mainchat"
 	"github.com/nexustar/usher/internal/modelcatalog"
 	piagent "github.com/nexustar/usher/internal/pi"
 	"github.com/nexustar/usher/internal/pluginapi"
@@ -139,16 +137,6 @@ func serve(args []string) error {
 			"A warm Codex process keeps the session from being resumed in another Codex client. 0 keeps processes until evicted")
 	maxLiveSessions := fs.Int("max-live-sessions", 8,
 		"max concurrent live Claude stream-json processes; least-recently-used sessions are evicted beyond this")
-	agentMode := fs.String("agent-mode", "rule",
-		"main-chat agent backend: rule | llm")
-	llmBaseURL := fs.String("llm-base-url", "https://api.openai.com/v1",
-		"OpenAI-compatible chat completions base URL (e.g. https://api.openai.com/v1, http://localhost:11434/v1)")
-	llmModel := fs.String("llm-model", "",
-		"model identifier when --agent-mode=llm (e.g. gpt-4o-mini, claude-haiku-4-5, qwen2.5:14b)")
-	llmAPIKeyEnv := fs.String("llm-api-key-env", "OPENAI_API_KEY",
-		"env var holding the API key (use empty value for backends without auth, e.g. local Ollama)")
-	llmStrict := fs.Bool("llm-strict", false,
-		"append a small-model enforcement block to the system prompt (recommended for haiku / mini / flash / 7B-class models)")
 	autoArchiveDays := fs.Int("auto-archive-days", 7,
 		"sessions whose jsonl mtime is older than this fall out of the sidebar's default view; 0 disables auto-archive (manual archive still works)")
 	uiDir := fs.String("ui-dir", "",
@@ -178,6 +166,12 @@ func serve(args []string) error {
 			"--data-dir and sessions directories.")
 	logLevel := fs.String("log-level", "info", "log verbosity (debug|info|warn|error)")
 	logFormat := fs.String("log-format", "text", "log output format (text|json)")
+	// The main-chat agent is gone; its flags are still accepted so a service
+	// unit written for an older usher keeps starting.
+	for _, name := range []string{"agent-mode", "llm-base-url", "llm-model", "llm-api-key-env"} {
+		fs.String(name, "", "ignored: the main-chat agent was replaced by the router session")
+	}
+	fs.Bool("llm-strict", false, "ignored: the main-chat agent was replaced by the router session")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -192,6 +186,11 @@ func serve(args []string) error {
 	// Packages without an injected logger (interaction, sessionmeta) log via
 	// the slog default; align it so every line shares one handler and format.
 	slog.SetDefault(logger)
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "agent-mode" || strings.HasPrefix(f.Name, "llm-") {
+			logger.Warn("flag ignored: the main-chat agent was replaced by the router session", "flag", "--"+f.Name)
+		}
+	})
 
 	if *dataDir == "" {
 		return fmt.Errorf("could not resolve data dir; pass --data-dir")
@@ -311,16 +310,6 @@ func serve(args []string) error {
 	r := router.New(d, backends, defaultBackend, b, h, meta, term)
 	r.SetSettings(settings.New(filepath.Join(*dataDir, "settings.json")), filepath.Join(*dataDir, "router"))
 
-	mainStore, err := mainchat.NewStore(filepath.Join(*dataDir, "mainchats"))
-	if err != nil {
-		return fmt.Errorf("init main chat store: %w", err)
-	}
-
-	agent, err := buildAgent(r, *agentMode, *llmBaseURL, *llmModel, *llmAPIKeyEnv, *llmStrict, logger)
-	if err != nil {
-		return err
-	}
-
 	// Web push: a second consumer of the broker/hook event seams, delivering
 	// turn-done and permission notifications to subscribed browsers. On by
 	// default but inert until a browser subscribes — which needs the user's
@@ -360,12 +349,6 @@ func serve(args []string) error {
 		go pushMgr.Run(ctx)
 	}
 
-	logger.Info("agent backend",
-		"mode", *agentMode,
-		"model", *llmModel,
-		"base_url", *llmBaseURL,
-		"strict", *llmStrict,
-	)
 	logger.Info("auth",
 		"configured", authStore.IsConfigured(),
 		"loopback_bind", addrIsLoopback(*addr),
@@ -399,16 +382,11 @@ func serve(args []string) error {
 	}
 
 	themePath := filepath.Join(*dataDir, "theme.css")
-	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, mainStore, agent, pushMgr, *editorURL, *uiDir, themePath, agents, scheduleRunner, *readOnly, logger)
+	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, pushMgr, *editorURL, *uiDir, themePath, agents, scheduleRunner, *readOnly, logger)
 
 	// Foreign-turn watcher: turns usher didn't start (background workflow
-	// continuations, pane-typed prompts) get relayed to the chats that
-	// routed to their session. Read-only keeps the watcher — every turn is
-	// foreign there, and its process-exit events are what refresh open
-	// transcript views — but skips the chat relay (the live instance's job).
-	if !*readOnly {
-		r.SetForeignTurnHandler(srv.RelayForeignTurn)
-	}
+	// continuations, pane-typed prompts) still have to refresh the transcript
+	// views that are open on their session.
 	go r.RunForeignWatch(ctx, 0)
 
 	return srv.Run(ctx)
@@ -495,25 +473,6 @@ func addrIsLoopback(addr string) bool {
 // hookSockPath returns the Unix socket path for the hook listener.
 func hookSockPath(dataDir string) string {
 	return filepath.Join(dataDir, "hook.sock")
-}
-
-func buildAgent(r *router.Router, mode, baseURL, model, apiKeyEnv string, strict bool, logger *slog.Logger) (usheragent.Agent, error) {
-	switch mode {
-	case "", "rule":
-		return usheragent.NewRule(r), nil
-	case "llm":
-		if model == "" {
-			return nil, fmt.Errorf("--agent-mode=llm requires --llm-model (e.g. --llm-model gpt-4o-mini)")
-		}
-		var apiKey string
-		if apiKeyEnv != "" {
-			apiKey = os.Getenv(apiKeyEnv)
-		}
-		client := usheragent.NewChatClient(baseURL, apiKey)
-		return usheragent.NewLLM(r, usheragent.LLMConfig{Client: client, Model: model, Strict: strict, Logger: logger})
-	default:
-		return nil, fmt.Errorf("unknown --agent-mode: %q (want rule | llm)", mode)
-	}
 }
 
 func defaultProjectsDir() string {

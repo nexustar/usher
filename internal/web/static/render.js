@@ -296,16 +296,9 @@ export function appendChatMessage(m, beforeNode) {
   div.className = 'chat-message ' + role + (m._placeholder ? ' placeholder' : '');
   const ts = m.ts ? `<span class="ts">${esc(new Date(m.ts).toLocaleString())}</span>` : '';
   const modelAttr = m.model ? ` title="${esc(m.model)}"` : '';
-  // A relay message is a session's own reply forwarded verbatim into the main
-  // chat — label it as the session speaking, linked to its detail view.
   let roleLabel = esc(role);
   // The user bubble (CSS) marks the speaker itself; keep only the ts.
   if (role === 'user' || role === 'assistant') roleLabel = '';
-  if (role === 'relay') {
-    roleLabel = m.source_session
-      ? `<a class="relay-source" href="#/s/${esc(m.source_session)}">session ${esc(m.source_session.slice(0, 8))}</a>`
-      : 'session';
-  }
 
   if (role === 'system' && m.content === 'Context compacted') {
     div.classList.add('compaction');
@@ -321,17 +314,8 @@ export function appendChatMessage(m, beforeNode) {
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
       (m.uuid ? forkBtnHTML(m.uuid) : '') +
       `</div>`;
-  } else if (role === 'summary') {
-    // Compaction marker: earlier turns were folded into this standing
-    // summary (model-side only — the full history stays above). Collapsed
-    // by default to keep the chat readable.
-    div.innerHTML =
-      `<details class="summary-body">` +
-      `<summary>earlier conversation compressed${ts}</summary>` +
-      `<div class="content" data-raw="${esc(m.content || '')}">${renderMarkdown(m.content || '')}</div>` +
-      `</details>`;
   } else {
-    // User, error, agent, relay, or streaming placeholder (flat content).
+    // User, error, or streaming placeholder (flat content).
     div.innerHTML =
       `<div class="content" data-raw="${esc(m.content || '')}">${renderMarkdown(m.content || '')}</div>` +
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>`;

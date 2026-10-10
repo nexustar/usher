@@ -469,7 +469,7 @@ func (h *Hub) coalesceGuestText(sessionID string, texts []string) string {
 	return strings.Join(texts, "\n\n")
 }
 
-// mirrorPrompt echoes a web/main-chat-originated prompt into its thread.
+// mirrorPrompt echoes a web-originated prompt into its thread.
 // Prompts typed in Lark are recorded by HandleMessage and skipped.
 func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 	text := strings.TrimSpace(imutil.TurnUserText(ev.Raw))

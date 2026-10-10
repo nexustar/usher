@@ -92,24 +92,6 @@ type Session struct {
 	Runtime SessionRuntime `json:"runtime"`
 }
 
-// TranscriptTurn is a single user/assistant turn extracted from a session
-// jsonl. Shared across packages so the router and the LLM agent can pass
-// transcripts through without copying types.
-type TranscriptTurn struct {
-	Role    string    `json:"role"`
-	Content string    `json:"content"`
-	Time    time.Time `json:"ts"`
-}
-
-// TranscriptPage is one window of a transcript. Offset is the absolute index
-// of Turns[0] (0-based from the start of the session); with Total it lets a
-// caller page in either direction and know when it has reached an end.
-type TranscriptPage struct {
-	Turns  []TranscriptTurn `json:"turns"`
-	Offset int              `json:"offset"`
-	Total  int              `json:"total"`
-}
-
 // SessionRuntime is the latest model configuration and active context recorded
 // for a session. Account-wide limits deliberately do not belong here.
 type SessionRuntime struct {
@@ -120,14 +102,11 @@ type SessionRuntime struct {
 }
 
 // TranscriptSearchHit is one matching turn from a transcript substring search.
-// TurnIndex is the 0-based position of the turn within the full transcript
-// (newest last), letting a caller locate the surrounding context with a
-// follow-up read. Snippet is the matched text with limited context on either
-// side of the first occurrence; Occurrences counts all matches in that turn.
+// Snippet is the matched text with limited context on either side of the first
+// occurrence; Occurrences counts all matches in that turn.
 type TranscriptSearchHit struct {
-	Role      string    `json:"role"`
-	Time      time.Time `json:"ts"`
-	TurnIndex int       `json:"turn_index"`
+	Role string    `json:"role"`
+	Time time.Time `json:"ts"`
 	// Cursor names the matching turn; a transcript read from it starts there.
 	Cursor      string `json:"cursor,omitempty"`
 	Occurrences int    `json:"occurrences"`
@@ -136,14 +115,12 @@ type TranscriptSearchHit struct {
 
 // SessionSearchResult is one session's summary from a cross-session search:
 // how many turns matched and a snippet at the first hit, enough to decide
-// which session to open or route to. TurnIndex locates the first hit for a
-// follow-up read_session_transcript.
+// which session to open or route to. Cursor names that first hit's turn.
 type SessionSearchResult struct {
 	SessionID string `json:"session_id"`
 	Title     string `json:"title"`
 	Cwd       string `json:"cwd"`
 	HitCount  int    `json:"hit_count"`
-	TurnIndex int    `json:"turn_index"`
 	Cursor    string `json:"cursor,omitempty"`
 	Snippet   string `json:"snippet"`
 }
