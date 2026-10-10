@@ -464,6 +464,7 @@ var sessionEvents = map[string]bool{
 	backend.EventTurnStatus:     true,
 	backend.EventTurnUser:       true,
 	backend.EventRuntime:        true,
+	core.EventRelayLanded:       true,
 }
 
 // SSEStart asserts streaming support and writes the SSE preamble (headers +

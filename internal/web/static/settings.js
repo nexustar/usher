@@ -331,8 +331,29 @@ async function loadAgentList() {
   agents = data.agents || [];
 }
 
+// The router agent is an instance setting, not a property of an agent: the
+// built-in one routes only, any other is the user's to restrict.
+async function loadRouterAgent() {
+  const select = document.getElementById('router-agent');
+  if (!select) return;
+  const response = await fetch('/api/config');
+  const current = response.ok ? ((await response.json()).router || {}).agent || '' : '';
+  const rows = [{value: '', label: 'Built-in'}, ...agents.map(a => ({value: a.name, label: a.name}))];
+  if (current && !agents.some(a => a.name === current)) rows.push({value: current, label: current + ' (unavailable)'});
+  select.innerHTML = optionsHTML(rows, current);
+  select.onchange = async () => {
+    const res = await fetch('/api/router', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent: select.value}),
+    });
+    if (!res.ok) loadRouterAgent(); // put the selection back to what the server holds
+  };
+}
+
 async function loadAgents() {
   await loadAgentList();
+  loadRouterAgent();
   if (selectedName && !agents.some(agent => agent.name === selectedName)) selectedName = '';
   if (!selectedName && agents.length) selectedName = agents[0].name;
   renderList();
@@ -347,6 +368,11 @@ async function renderAgentsPane(host) {
           <p class="cfg-intro">Reusable defaults for new sessions.</p>
           <button id="agent-new" type="button">+ new</button>
         </div>
+        <label class="cfg-router">
+          <span>Router agent</span>
+          <select id="router-agent" aria-describedby="router-agent-hint"></select>
+        </label>
+        <p id="router-agent-hint" class="cfg-field-hint">New Router conversations start from this agent.</p>
         <div id="agent-list"></div>
       </div>
       <div id="agent-editor" class="cfg-pane-editor"></div>

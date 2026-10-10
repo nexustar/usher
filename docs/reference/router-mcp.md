@@ -29,17 +29,19 @@ them.
 When the turn completes, usher splits what happens next in two — the same split
 the web main chat has always had:
 
-- **The user's copy is verbatim and program-delivered.** usher renders the
-  routed session's answer under the routing tool call that caused it: the
-  transcript already records the call and its target id, and the answer is in
-  that session's own transcript, so no new state is stored. The router model is
-  never the courier, and never gets the chance to paraphrase.
+- **The user's copy is verbatim and program-delivered.** usher shows the routed
+  session's answer as a message of its own in the router conversation, where it
+  landed. Nothing new is stored: the transcript already records the call and
+  what it sent, the target session's transcript holds the same text as a user
+  turn, and the turn answering it is the reply. The router model is never the
+  courier, and never gets the chance to paraphrase.
 - **The router's copy is a note, folded into its next prompt.** `[session <id>
   replied] <excerpt>` (`[session <id> failed] …` when the turn errored, so a
   dead turn is never silent) is prefixed to whatever the user types next, and
-  the queue is cleared. Nothing is sent when the reply lands: prompting the
-  router would start a turn whose only product is a restatement of text the
-  user can already read.
+  the queue is cleared. A closing `[end of session replies]` line separates the
+  notes from the prompt, and usher shows the user only what they typed. Nothing
+  is sent when the reply lands: prompting the router would start a turn whose
+  only product is a restatement of text the user can already read.
 
 The note is excerpted, because it exists to say *what finished*, not to carry
 the reply — `read_session_transcript` is there for the rest. The queue is

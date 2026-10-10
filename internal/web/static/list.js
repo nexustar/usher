@@ -82,7 +82,7 @@ export async function loadList() {
     // client-side, so toggling "show archived" needs no refetch.
     const res = await fetch('/api/sessions?include_archived=1');
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = (await res.json()) || [];
+    const data = ((await res.json()) || []).filter(s => !s.router);
     const sorted = data.slice().sort((a, b) =>
       (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
     const html = sorted.length ? sorted.map(s => {

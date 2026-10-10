@@ -1129,9 +1129,17 @@ func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
 	}
 	want := "[session worker-1 replied] built it\n\n" +
 		"[session worker-2 failed] backend died\n\n" +
+		"[end of session replies]\n\n" +
 		"what happened?"
 	if got[0] != want {
 		t.Fatalf("folded prompt = %q, want %q", got[0], want)
+	}
+	// The notes are the model's: what a client reads back is what was typed.
+	if typed := stripRelayNotes(want); typed != "what happened?" {
+		t.Fatalf("stripRelayNotes = %q", typed)
+	}
+	if plain := "[session x] is how my own message starts"; stripRelayNotes(plain) != plain {
+		t.Fatal("a prompt without folded notes was cut")
 	}
 	// Folding consumes: the next prompt carries only what the user typed.
 	if got, _ := r.foldRelays("abc12345", "again"); got != "again" {
@@ -1178,3 +1186,68 @@ func TestFailedSendKeepsRelayNotes(t *testing.T) {
 		t.Fatalf("notes lost with the failed send: %q", folded)
 	}
 }
+
+// A routed reply is found by content: the target's user turn carrying the
+// dispatched text, at or after the dispatching turn, and the turn answering it.
+func TestRoutedRepliesMatchByContent(t *testing.T) {
+	tmp := t.TempDir()
+	line := func(typ, ts, uuid, content string) string {
+		return `{"type":"` + typ + `","sessionId":"target01","cwd":"/tmp/x","timestamp":"` + ts + `","uuid":"` + uuid +
+			`","message":{"role":"` + typ + `","content":` + content + `}}` + "\n"
+	}
+	text := func(s string) string { return `[{"type":"text","text":"` + s + `"}]` }
+	log := line("user", "2026-07-01T10:00:00.000Z", "u1", `"run the tests"`) +
+		line("assistant", "2026-07-01T10:00:05.000Z", "a1", text("first run: green")) +
+		line("user", "2026-07-01T11:00:00.000Z", "u2", `"something the user typed"`) +
+		line("assistant", "2026-07-01T11:00:05.000Z", "a2", text("unrelated")) +
+		line("user", "2026-07-01T12:00:01.000Z", "u3", `"run the tests"`) +
+		line("assistant", "2026-07-01T12:00:09.000Z", "a3", text("second run: red"))
+	p := filepath.Join(tmp, "-tmp-x", "target01.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := d.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := New(d, map[string]backend.Backend{"claude": {Runtime: &routerDesignationRuntime{}, Transcript: transcript.Claude{}}}, "claude",
+		broker.New(), nil, sessionmeta.New("", 0), nil)
+
+	dispatch := func(at, input, output string) core.Turn {
+		ts, _ := time.Parse(time.RFC3339, at)
+		return core.Turn{Role: "assistant", Time: ts, Cursor: at, Parts: []core.TurnPart{
+			{Type: "text", Content: "on it"},
+			{Type: "tool", ToolName: "mcp__usher__send_to_session", ToolInput: input, Content: output},
+		}}
+	}
+	ok := `{"status":"delivered","session_id":"target01","relayed":true}`
+	got := r.RoutedReplies([]core.Turn{
+		dispatch("2026-07-01T10:00:00Z", `{"session_id":"target01","text":"run the tests"}`, ok),
+		dispatch("2026-07-01T12:00:00Z", `{"session_id":"target01","text":"run the tests"}`, ok),
+		dispatch("2026-07-01T13:00:00Z", `{"session_id":"target01","text":"not sent yet"}`, ok),
+		dispatch("2026-07-01T13:00:00Z", `{"session_id":"nope","text":"x"}`, `session not found: nope`),
+	})
+	if len(got) != 3 {
+		t.Fatalf("replies = %+v, want one per accepted dispatch", got)
+	}
+	if got[0].Reply != "first run: green" || !got[0].Done || got[0].Part != 1 || got[0].SessionID != "target01" {
+		t.Errorf("first dispatch = %+v", got[0])
+	}
+	// The same text sent again resolves to its own, later, answer.
+	if got[1].Reply != "second run: red" || !got[1].Done {
+		t.Errorf("second dispatch = %+v", got[1])
+	}
+	if got[2].Reply != "" || got[2].Done {
+		t.Errorf("unanswered dispatch = %+v", got[2])
+	}
+}
+
+func (r *routerDesignationRuntime) LiveSessions() []backend.LiveSession { return nil }

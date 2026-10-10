@@ -1092,7 +1092,7 @@ pre.raw-markdown {
    header links to the source session; the accent bar marks it as the
    session's voice rather than the router agent's. */
 .chat-message.relay { border-left: 2px solid var(--claude); padding-left: 0.5rem; }
-.chat-message.relay .role a.relay-source { color: var(--claude); text-decoration: none; }
+.chat-message.relay .role a.relay-source { color: var(--claude); text-decoration: none; text-transform: none; letter-spacing: 0; }
 .chat-message.relay .role a.relay-source:hover { text-decoration: underline; }
 /* Compaction marker: older turns folded into a standing summary (model-side
    view only — the full messages remain above). Collapsed and muted. */
@@ -2030,20 +2030,16 @@ pre.raw-markdown {
 }
 .cfg-form-advanced[open] summary { margin-bottom: 1.15rem; }
 .cfg-form-advanced label + label { margin-top: 1.15rem; }
-/* A routing tool call stands in for the reply it caused: usher fetches that
- * reply on expand, so the router model never has to repeat it. */
-.routed-part > summary { color: var(--text-muted); }
-.routed-open {
-  margin-left: 0.5rem;
-  font-size: var(--font-meta);
-  color: var(--text-faint);
-}
-.routed-reply {
-  padding: 0.4rem 0.65rem 0.55rem;
-  border-left: 2px solid var(--border);
-  margin-left: 0.35rem;
-}
-.routed-empty { color: var(--text-faint); }
+/* Work handed to another session: a marker where it was routed, and the reply
+ * as its own message where it landed. */
+.routed-part { color: var(--text-muted); font-size: var(--font-meta); }
+.routed-open { color: var(--text-faint); }
+.routed-part .routed-open { margin-left: 0.25rem; }
+.tool-sessions { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: var(--font-meta); }
+.chat-message.routed.pending .role { color: var(--text-faint); }
+.router-empty { padding: 0.5rem; }
+.cfg-router { display: flex; align-items: center; gap: 0.75rem; }
+.cfg-router select { flex: 1; min-width: 0; font-size: 16px; }
 .cfg-field-hint {
   color: var(--text-faint);
   line-height: 1.5;

@@ -3,7 +3,7 @@
 import {
   esc, cwdExpanded, cwdArchivedVisible,
   isUnread, reconcileUnread,
-  setLastSessions,
+  setLastSessions, getLastSessions,
   updateTabBadge,
   registerRenderSidebarSessions,
   refreshSubtitle, currentDetailId,
@@ -24,9 +24,8 @@ const archivedPageSize = 20;
 // ---------- Sidebar ----------
 //
 // Polled every 5s independently of the active route. Renders Claude Code
-// sessions grouped by cwd, recent activity first. The "main chat" entry is
-// static markup in index.html — no fetch needed since we only ever route
-// to a single mainchat (id=default).
+// sessions grouped by cwd, recent activity first. The Router entry is static
+// markup in index.html; which session it opens is resolved when it is opened.
 
 export async function loadSidebar() {
   try {
@@ -50,7 +49,8 @@ export async function loadSidebar() {
 export function renderSidebarSessions(allSessions) {
   const wrap = document.getElementById('sidebar-sessions');
   const count = document.getElementById('sidebar-session-count');
-  const roots = allSessions.filter(s => !s.is_subagent);
+  // The router session lives behind the Router entry, not in the list.
+  const roots = allSessions.filter(s => !s.is_subagent && !s.router);
   const children = new Map();
   for (const s of allSessions) {
     if (!s.is_subagent || !s.parent_id) continue;
@@ -201,7 +201,8 @@ export function renderSidebarSessions(allSessions) {
 
 export function updateSidebarActive() {
   const hash = location.hash || '#/';
-  const inMainChat = hash === '#/chat' || hash.startsWith('#/chat/');
+  const inMainChat = hash === '#/chat' || hash.startsWith('#/chat/') ||
+    getLastSessions().some(s => s.router && hash === '#/s/' + encodeURIComponent(s.id));
   document.querySelectorAll('.sidebar-mainchat').forEach(a => {
     a.classList.toggle('active', inMainChat);
   });

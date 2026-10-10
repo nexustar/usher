@@ -95,7 +95,7 @@ func RouterTools() []Tool {
 			}, "session_id", "text"),
 		},
 		{
-			Name:        "read_session_transcript",
+			Name: "read_session_transcript",
 			Description: "Read a page of a session transcript, oldest turn first. With neither cursor, the latest page. " +
 				"before pages backward: pass the returned before value while more is true. " +
 				"from starts at a turn found by search_sessions: pass a hit's cursor.",
@@ -107,7 +107,7 @@ func RouterTools() []Tool {
 			}, "session_id"),
 		},
 		{
-			Name:        "search_sessions",
+			Name: "search_sessions",
 			Description: "Search transcript text. With session_id, search that session; without it, find matching sessions. " +
 				"Each hit carries a cursor for read_session_transcript's from.",
 			InputSchema: object(map[string]any{

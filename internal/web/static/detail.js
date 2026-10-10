@@ -1,4 +1,4 @@
-// usher SPA: detail view + main chat + new session.
+// usher SPA: detail view + router view + new session.
 
 import {
   esc, root, subtitle, closeES, closeTerminalES, clearListInterval,
@@ -639,6 +639,8 @@ export async function showDetail(id) {
   liveTurnDirty = false;
   hasEarlier = false;
   detailStreaming = false;
+  routedSig = '';
+  clearTimeout(routedTimer);
   subtitle.textContent = 'session detail';
 
   let sess;
@@ -1102,6 +1104,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     // gone (no broker replay) — mark the turn dirty so its end reconciles via
     // a full fetch. adoptLastTurnAsLive continues that same bubble instead of
     // starting a second one.
+    'relay.landed': () => syncRouted(id),
     'turn.active': () => {
       if (!liveTurn && adoptLastTurnAsLive()) {
         showLiveWorking(liveTurn);
@@ -1235,20 +1238,33 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   es.onerror = () => {/* SSE auto-reconnects; no user-visible noise */};
 }
 
-// ---------- Main chat view ----------
+// ---------- Router view ----------
 
-export async function showMainChat(id) {
+// showRouter opens usher's router session — an ordinary session shown through
+// showDetail — or, when there is none (or the user asked for a new one), a
+// bare composer whose first message creates it.
+export async function showRouter(fresh) {
+  let routerID = '';
+  if (!fresh) {
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) routerID = ((await res.json()).router || {}).session_id || '';
+    } catch { /* fall through to the empty view */ }
+  }
+  if (routerID) return showDetail(routerID);
+
+  ++detailEpoch;
   clearListInterval();
   setCurrentDetailId(null);
-  setCurrentDraftKey('c:' + id);
+  setCurrentDraftKey('router');
   closeES();
   subtitle.innerHTML = `<span class="subtitle-left"><strong class="session-title">Router</strong></span>`;
-
   root.innerHTML = `
     <div id="chat-scroll" class="chat-area">
+      <div class="chat-loading muted router-empty">Ask about your sessions, or hand one some work. The router finds, opens and dispatches — the sessions do the work.</div>
       <section class="send-anchor">
         <div class="composer">
-          <textarea id="prompt" rows="1" placeholder="message… (try /help)"></textarea>
+          <textarea id="prompt" rows="1" placeholder="message…"></textarea>
           <div class="composer-bar">
             <div class="composer-send"><button id="send">send</button></div>
           </div>
@@ -1256,120 +1272,35 @@ export async function showMainChat(id) {
       </section>
     </div>
   `;
-
   const promptEl = document.getElementById('prompt');
   const sendBtn = document.getElementById('send');
   restoreDraft(promptEl);
-
-  // The "thinking…" placeholder lives until this turn's `turn.done` (or an
-  // error); one placeholder even across queued sends.
-  let placeholder = null;
-  const clearPlaceholder = () => { if (placeholder) { placeholder.remove(); placeholder = null; } };
-
-  // Delivery contract: no replay, but the server registers the subscription
-  // before the SSE headers flush. So: open the stream FIRST, refetch history
-  // on EVERY open — anything after the fetch snapshot is guaranteed to
-  // arrive on the stream. Messages streaming in mid-refetch are queued and
-  // re-applied after it renders; chatMsgKeys dedups the overlap.
-  let chatLoading = false;
-  const pendingWhileLoading = [];
-
-  const applyChatMessage = (data) => {
-    const m = data.message || {};
-    if (chatSeenKey(m)) return; // already rendered (refetch overlap)
-    if (m.role === 'user') {
-      // Adopt our optimistic echo (canonical ts, drop the optimistic mark);
-      // no matching echo means another client sent it — render it.
-      const list = document.getElementById('chat-scroll');
-      const echo = list && [...list.querySelectorAll(':scope > .chat-message.user.optimistic')]
-        .find(n => { const c = n.querySelector('.content'); return c && c.dataset.raw === m.content; });
-      if (echo) {
-        updateMessageTs(echo, m.ts);
-        echo.classList.remove('optimistic');
-        markChatSeen(m);
-      } else {
-        appendChatMessage(m);
-        markChatSeen(m);
-      }
-    } else {
-      clearPlaceholder();
-      appendChatMessage(m);
-      markChatSeen(m);
-    }
-    if (data.focus) renderFocus(data.focus);
-  };
-
-  const refetchChat = async () => {
-    chatLoading = true;
-    try {
-      await loadMainChatInfo(id);
-      await loadChatMessages(id);
-    } finally {
-      chatLoading = false;
-      // Re-apply anything that streamed in mid-fetch; chatSeenKey skips what
-      // the fetched snapshot already contained.
-      while (pendingWhileLoading.length) applyChatMessage(pendingWhileLoading.shift());
-    }
-  };
-
-  const es = new EventSource('/api/mainchats/' + encodeURIComponent(id) + '/events');
-  setCurrentES(es);
-  es.onopen = () => { refetchChat(); };
-  es.onerror = () => {/* auto-reconnect; onopen refetches */};
-  es.addEventListener('message', (ev) => {
-    if (ev.data == null) return;
-    let data;
-    try { data = JSON.parse(ev.data); } catch { return; }
-    if (chatLoading) { pendingWhileLoading.push(data); return; }
-    applyChatMessage(data);
-  });
-  es.addEventListener('turn.done', () => { clearPlaceholder(); });
-
-  const submit = async () => {
-    const text = promptEl.value;
-    if (!text.trim() || sendBtn.disabled) return;
+  const start = async () => {
+    const text = promptEl.value.trim();
+    if (!text || sendBtn.disabled) return;
     sendBtn.disabled = true;
-    promptEl.value = '';
-    clearDraft();
-    growPrompt(promptEl); // shrink back; programmatic clear fires no input event
-    const userNode = appendChatMessage({ role: 'user', content: text });
-    if (userNode) userNode.classList.add('optimistic');
-    if (!placeholder) placeholder = appendChatMessage({ role: 'agent', content: 'thinking…', _placeholder: true });
     try {
-      const res = await fetch('/api/mainchats/' + encodeURIComponent(id) + '/send', {
+      const res = await fetch('/api/router', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ initial_message: text }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        clearPlaceholder();
-        // Rejected (429 queue full / 500 persist failure): the message was
-        // NOT accepted — drop the echo and restore the draft for a retry.
-        if (userNode) userNode.remove();
-        promptEl.value = text;
-        growPrompt(promptEl);
-        appendChatMessage({ role: 'error', content: err.error || 'send failed', ts: new Date().toISOString() });
-      }
-      // 202 accepted: everything else arrives over SSE.
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);
+      clearDraft();
+      loadSidebar();
+      // Same hash when this was the first conversation, so route by hand.
+      if (location.hash === '#/chat') showDetail(body.id);
+      else location.hash = '#/chat';
     } catch (e) {
-      clearPlaceholder();
-      if (userNode) userNode.remove();
-      promptEl.value = text;
-      growPrompt(promptEl);
-      appendChatMessage({ role: 'error', content: String(e), ts: new Date().toISOString() });
-    } finally {
+      const n = appendChatMessage({ role: 'error', content: String(e.message || e), ts: new Date().toISOString() });
+      if (n) n.classList.add('optimistic');
       sendBtn.disabled = false;
-      promptEl.focus();
     }
   };
-
-  sendBtn.addEventListener('click', submit);
+  sendBtn.addEventListener('click', start);
   promptEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      submit();
-    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); start(); }
   });
   promptEl.focus();
 }
@@ -1402,8 +1333,11 @@ function renderSessionSubtitle(sess) {
         `<svg class="subtitle-chevron" viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>` +
       `</button>` +
       `<span class="session-id">${esc(sess.id.slice(0, 8))}</span>` +
-      `<span class="session-cwd">${esc(sess.cwd || '')}</span>` +
-    `</span>`;
+      (sess.router
+        ? `<span class="session-cwd">router</span>`
+        : `<span class="session-cwd">${esc(sess.cwd || '')}</span>`) +
+    `</span>` +
+    (sess.router ? `<a href="#/chat/new" class="subtitle-focus">new conversation</a>` : '');
 }
 
 // refreshSubtitle re-reads the session so the header picks up a title/cwd that
@@ -1577,7 +1511,7 @@ function appendLivePart(d) {
   }
   const tmpl = document.createElement('template');
   tmpl.innerHTML = p.type === 'tool'
-    ? renderToolPart(p, new Date().toISOString())
+    ? renderToolPart(p)
     : `<div class="content" data-raw="${esc(p.content || '')}">${renderMarkdown(p.content || '')}</div>`;
   const partNode = tmpl.content.firstElementChild;
   if (enrichTool && lt.partNodes.length) {
@@ -1672,7 +1606,7 @@ async function loadTranscript(id) {
     // scroll yank when there's nothing new).
     const last = turns[turns.length - 1];
     const sig = from + ':' + turns.length + ':' + (last ? JSON.stringify(last) : '');
-    if (sig === lastTranscriptSig) { updateLoadEarlier(id); return; }
+    if (sig === lastTranscriptSig) { updateLoadEarlier(id); syncRouted(id); return; }
     const el = document.getElementById('chat-scroll');
     // Can't render now (view mid-transition): leave lastTranscriptSig untouched
     // so the next call retries this state instead of skipping it forever.
@@ -1684,7 +1618,7 @@ async function loadTranscript(id) {
     // canonical turns from this fetch.
     const hadOptimistic = !!el.querySelector(':scope > .chat-message.optimistic');
     el.querySelectorAll(':scope > .chat-loading, :scope > .chat-message.optimistic').forEach(n => n.remove());
-    const committed = () => el.querySelectorAll(':scope > .chat-message:not(.optimistic)');
+    const committed = () => el.querySelectorAll(':scope > .chat-message:not(.optimistic):not(.routed)');
     // Self-heal: if our tracked turns drifted from what's actually in the DOM
     // (an earlier early-return, a caught exception, or a race), rebuild from
     // scratch — which a catch-up response can't do, so read the newest page.
@@ -1737,13 +1671,88 @@ async function loadTranscript(id) {
     // bail-out leaves the signature stale and the next call retries.
     lastTranscriptSig = sig;
     updateLoadEarlier(id);
+    syncRouted(id);
   } catch {/* ignore — lastTranscriptSig stays put, so the next call retries */}
+}
+
+// ---------- Routed replies ----------
+
+// A session that routes work to others (usher's router) shows each reply as
+// its own message, where it landed in the conversation. The server resolves
+// which turn of the target answers which dispatch; this only places them.
+const ROUTING_TOOL = /(^|__)(send_to_session|create_session)$/;
+let routedSig = '';
+let routedTimer = null;
+
+function routedReplyNode(rr) {
+  const div = document.createElement('div');
+  const done = rr.done && rr.reply;
+  div.className = 'chat-message relay routed' + (done ? '' : ' pending');
+  const name = esc(rr.title || 'session ' + rr.session_id.slice(0, 8));
+  const source = `<a class="relay-source" href="#/s/${esc(encodeURIComponent(rr.session_id))}">${name}</a>`;
+  if (!done) {
+    div.innerHTML = `<div class="role">${source} is working…</div>`;
+    return div;
+  }
+  const ts = rr.ts ? `<span class="ts">${esc(new Date(rr.ts).toLocaleString())}</span>` : '';
+  div.innerHTML =
+    `<div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div>` +
+    `<div class="role">${source}${ts}</div>`;
+  return div;
+}
+
+async function syncRouted(id) {
+  clearTimeout(routedTimer);
+  const el = document.getElementById('chat-scroll');
+  if (!el || id !== currentDetailId) return;
+  const routes = renderedTurns.some(r => (r.parts || []).some(p => p.type === 'tool' && ROUTING_TOOL.test(p.tool_name || '')));
+  if (!routes) {
+    el.querySelectorAll(':scope > .routed').forEach(n => n.remove());
+    routedSig = '';
+    return;
+  }
+  const first = renderedTurns.find(r => r.cursor);
+  let replies;
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/routed' +
+      (first ? '?from=' + encodeURIComponent(first.cursor) : ''));
+    if (!res.ok) return;
+    replies = await res.json();
+  } catch { return; }
+  if (id !== currentDetailId) return;
+  // Placement depends on the turns around a reply, so they are part of what
+  // "unchanged" means.
+  const sig = JSON.stringify(replies) + '|' + renderedTurns.map(r => r.cursor || '').join(',');
+  if (sig !== routedSig) {
+    routedSig = sig;
+    const wasAtBottom = isNearBottom(el);
+    el.querySelectorAll(':scope > .routed').forEach(n => n.remove());
+    const anchor = el.querySelector(':scope > .send-anchor');
+    for (const rr of replies) {
+      const at = renderedTurns.findIndex(r => r.cursor === rr.turn);
+      if (at < 0) continue;
+      // A finished reply goes where it landed: ahead of the first later turn
+      // that began after it. One still in flight stays under its dispatch.
+      let before = renderedTurns[at + 1];
+      if (rr.done && rr.reply) {
+        const landed = Date.parse(rr.ts || '') || 0;
+        before = renderedTurns.slice(at + 1).find(r => (Date.parse(r.time || '') || 0) > landed);
+      }
+      el.insertBefore(routedReplyNode(rr), before ? before.node : anchor);
+    }
+    if (wasAtBottom) el.scrollTop = el.scrollHeight;
+  }
+  // No event announces a reply that was not relayed, or the moment a landed
+  // one stops being "still running" — look again while anything is pending.
+  if (replies.some(rr => !(rr.done && rr.reply))) {
+    routedTimer = setTimeout(() => syncRouted(id), 4000);
+  }
 }
 
 // turnEntry tracks a turn the server returned. parts/ts ride along for
 // adoptLastTurnAsLive on a later reconnect.
 function turnEntry(t, node) {
-  const entry = { key: turnKey(t), node, cursor: t.cursor };
+  const entry = { key: turnKey(t), node, cursor: t.cursor, time: t.ts };
   if (t.role === 'assistant') { entry.parts = t.parts; entry.ts = t.ts; }
   return entry;
 }
@@ -1880,54 +1889,6 @@ function turnKey(t) {
   return (t.role || '') + '\x00' + (t.ts || '') + '\x00' + c.length + '\x00' + c.slice(0, 48);
 }
 
-// chatMsgKeys tracks which persisted messages are rendered, across the two
-// arrival paths (history refetch + SSE stream), so their overlap renders once.
-// Reset by loadChatMessages, whose snapshot becomes the new ground truth.
-let chatMsgKeys = new Set();
-function chatKey(m) { return (m.role || '') + '\x00' + (m.ts || '') + '\x00' + (m.content || ''); }
-function chatSeenKey(m) { return chatMsgKeys.has(chatKey(m)); }
-function markChatSeen(m) { chatMsgKeys.add(chatKey(m)); }
-
-async function loadChatMessages(id) {
-  try {
-    const res = await fetch('/api/mainchats/' + encodeURIComponent(id) + '/messages');
-    if (!res.ok) return;
-    const data = (await res.json()) || [];
-    const list = document.getElementById('chat-scroll');
-    if (!list) return;
-    list.querySelectorAll(':scope > .chat-loading, :scope > .chat-message').forEach(n => n.remove());
-    chatMsgKeys = new Set();
-    setSuppressAppendScroll(true);
-    try {
-      for (const m of data) { appendChatMessage(m); markChatSeen(m); }
-    } finally {
-      setSuppressAppendScroll(false);
-    }
-    list.scrollTop = list.scrollHeight; // fresh main-chat load lands at the bottom
-  } catch { /* ignore */ }
-}
-
-async function loadMainChatInfo(id) {
-  try {
-    const res = await fetch('/api/mainchats/' + encodeURIComponent(id));
-    if (!res.ok) return;
-    const info = await res.json();
-    renderFocus(info.focus);
-  } catch {}
-}
-
-function renderFocus(focus) {
-  const left = `<span class="subtitle-left"><strong class="session-title">Router</strong></span>`;
-  if (!focus || !focus.session_id) {
-    subtitle.innerHTML = left;
-    return;
-  }
-  const sid = esc(focus.session_id.slice(0, 8));
-  subtitle.innerHTML =
-    left +
-    `<a href="#/s/${esc(focus.session_id)}" class="subtitle-focus">focus: ${sid}</a>`;
-}
-
 // Preserve the reader's place across resize / orientation change.
 let _anchorEl = null;
 let _anchorOff = 0;
@@ -2009,43 +1970,3 @@ function legacyCopy(s) {
   ta.remove();
   return ok;
 }
-
-// Routed-reply expander. usher — not the router model — puts the routed
-// session's answer in front of the user: on first open we fetch that session's
-// transcript and show the turn its dispatch produced, verbatim. Document-level
-// delegate for the same reason as .turn-fork: transcript nodes get re-rendered.
-document.addEventListener('toggle', async (e) => {
-  const box = e.target.closest?.('.routed-part');
-  if (!box || !box.open || box.dataset.loaded) return;
-  box.dataset.loaded = '1';
-  const body = box.querySelector('.routed-reply');
-  const id = box.dataset.session;
-  if (!body || !id) return;
-  body.textContent = 'loading…';
-  try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/transcript?limit=200');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const { turns } = await res.json();
-    const after = Date.parse(box.dataset.after || '') || 0;
-    // The turn this dispatch produced is the first assistant turn that landed
-    // after it. Anything else driving that session in between (the user typing
-    // into it, a second router) can make this the wrong one — the "open ↗"
-    // link is the way out, and the session's own pane is always authoritative.
-    const reply = (turns || []).find(t =>
-      t.role === 'assistant' && (Date.parse(t.ts || '') || 0) > after);
-    if (!reply) {
-      body.innerHTML = '<span class="routed-empty">no reply yet</span>';
-      return;
-    }
-    const text = (reply.parts || [])
-      .filter(p => p.type !== 'tool')
-      .map(p => p.content || '')
-      .join('\n\n')
-      .trim() || reply.content || '';
-    body.dataset.raw = text;
-    body.innerHTML = renderMarkdown(text) ||
-      '<span class="routed-empty">(no text in that turn)</span>';
-  } catch (err) {
-    body.innerHTML = '<span class="routed-empty">could not load: ' + esc(String(err)) + '</span>';
-  }
-}, true);

@@ -176,32 +176,50 @@ function parseRoutedSession(content) {
   }
 }
 
-// renderRoutedPart renders a routing tool call as the reply's own place in the
-// transcript: usher fetches the routed session's answer and shows it verbatim
-// on expand. The model is never the courier — it only dispatched.
-function renderRoutedPart(p, ts) {
+// renderRoutedPart marks where work was handed to another session. The reply
+// is not the model's to deliver: the detail view places it in the conversation
+// as its own message when it lands.
+function renderRoutedPart(p) {
   const id = parseRoutedSession(p.content);
   if (!id) return '';
-  const short = id.slice(0, 8);
-  const link = '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) +
-    '" title="Open this session">open ↗</a>';
-  return '<details class="tool-details routed-part" data-session="' + esc(id) +
-    '" data-after="' + esc(ts || '') + '">' +
-    '<summary>routed to <span class="tool-target">' + esc(short) + '</span>' + link + '</summary>' +
-    '<div class="routed-reply">…</div>' +
-    '</details>';
+  return '<div class="routed-part">routed to <a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) +
+    '" title="Open this session">' + esc(id.slice(0, 8)) + ' ↗</a></div>';
 }
 
-export function renderToolPart(p, ts) {
+// sessionLinksHTML lists the sessions a routing tool's result names, so the
+// one the user asked about is a tap away without opening the tool block.
+function sessionLinksHTML(content) {
+  const a = (content || '').indexOf('{');
+  const b = (content || '').lastIndexOf('}');
+  if (a < 0 || b <= a) return '';
+  let o;
+  try { o = JSON.parse(content.slice(a, b + 1)); } catch (_) { return ''; }
+  const found = [];
+  const add = (x) => {
+    const id = x && (x.session_id || x.id);
+    // The session doing the asking is not one it was looking for.
+    if (typeof id === 'string' && id && id !== currentDetailId && !found.some(f => f.id === id)) found.push({ id, title: x.title || '' });
+  };
+  add(o);
+  for (const key of ['results', 'sessions']) (Array.isArray(o[key]) ? o[key] : []).forEach(add);
+  if (!found.length) return '';
+  return '<div class="tool-sessions">' + found.slice(0, 8).map(f =>
+    '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(f.id)) + '">' +
+    esc(f.title || f.id.slice(0, 8)) + ' ↗</a>').join('') + '</div>';
+}
+
+export function renderToolPart(p) {
   const name = p.tool_name || 'tool';
   const target = p.tool_target || '';
   // Routing tools: usher resolves and shows the reply itself (see
   // renderRoutedPart). Falls through to the plain tool block if the result
   // carried no session id — a rejected call, or an older transcript.
   if (/(^|__)(send_to_session|create_session)$/.test(name)) {
-    const routed = renderRoutedPart(p, ts);
+    const routed = renderRoutedPart(p);
     if (routed) return routed;
   }
+  const sessions = /(^|__)(search_sessions|resolve_session)$/.test(name)
+    ? sessionLinksHTML(p.content) : '';
   // show_image renders as an inline image (not a collapsible tool block). The
   // path travels only as an encodeURIComponent'd query param, so it can't break
   // out of the attribute; /image resolves+validates it against the session cwd.
@@ -247,7 +265,7 @@ export function renderToolPart(p, ts) {
     (input ? `<pre class="${inputClass}">${esc(input)}</pre>` : '') +
     `<div class="tool-body">${toolBodyHTML(p)}</div>` +
     `</div>` +
-    `</details>`;
+    `</details>` + sessions;
 }
 
 // forkBtnHTML is the fork control at the foot of a completed assistant turn —
@@ -258,12 +276,10 @@ export function forkBtnHTML(uuid) {
   return `<button class="turn-fork" type="button" data-uuid="${esc(uuid)}" title="Fork: branch a new session from this point">⑃ fork</button>`;
 }
 
-// renderAssistantParts renders the parts array of a grouped assistant turn. ts
-// is the turn's timestamp, which routing parts need to find the reply they
-// caused among the target session's turns.
-export function renderAssistantParts(parts, ts) {
+// renderAssistantParts renders the parts array of a grouped assistant turn.
+export function renderAssistantParts(parts) {
   return (parts || []).map(p => {
-    if (p.type === 'tool') return renderToolPart(p, ts);
+    if (p.type === 'tool') return renderToolPart(p);
     return `<div class="content" data-raw="${esc(p.content || '')}">${renderMarkdown(p.content || '')}</div>`;
   }).join('');
 }
@@ -300,7 +316,7 @@ export function appendChatMessage(m, beforeNode) {
     // it (a flat .content div here would misrender the first tool part).
     // Completed turns close with the fork control at the card's bottom edge.
     div.innerHTML =
-      renderAssistantParts(m.parts, m.ts) +
+      renderAssistantParts(m.parts) +
       `<div class="turn-footer">` +
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
       (m.uuid ? forkBtnHTML(m.uuid) : '') +

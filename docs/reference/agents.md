@@ -78,7 +78,7 @@ usher has one **router session**: it holds the session-routing MCP tools
 (`list_sessions`, `send_to_session`, `create_session`, …) on top of the ordinary
 `show_image`, and every session it routes work to delivers its reply back into
 it. Which agent it is created from is an instance setting, not a property of
-the agent:
+the agent: pick it under Settings → Agents, or
 
 ```sh
 curl -sS -X PUT localhost:8080/api/router \

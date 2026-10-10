@@ -176,3 +176,23 @@ var (
 	ErrSendQueueFull = errors.New("send queue full for session")
 	ErrInvalidTitle  = errors.New("session title must not be empty")
 )
+
+// EventRelayLanded is published on the router session when a session it routed
+// work to has replied; its raw names that session.
+const EventRelayLanded = "relay.landed"
+
+// RoutedReply is what a routing tool call in a transcript led to: the reply of
+// the session the work went to.
+type RoutedReply struct {
+	// Turn and Part locate the call: its turn's cursor and its index there.
+	Turn string `json:"turn"`
+	Part int    `json:"part"`
+	// SessionID and Title are the session the work went to.
+	SessionID string `json:"session_id"`
+	Title     string `json:"title,omitempty"`
+	// Reply is empty until the session has answered; Done is false while that
+	// answer is still being written.
+	Reply string    `json:"reply,omitempty"`
+	Time  time.Time `json:"ts,omitzero"`
+	Done  bool      `json:"done"`
+}

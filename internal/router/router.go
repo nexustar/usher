@@ -23,6 +23,7 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
+	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
@@ -410,6 +411,11 @@ func (r *Router) transcriptOf(id string) (backendpkg.Transcript, string, error) 
 func wireTurns(turns []core.Turn) []core.Turn {
 	for i := range turns {
 		turns[i].Time = turns[i].DisplayTime()
+		if turns[i].Role == "user" {
+			// The notes are the router model's; the user reads those replies
+			// as messages of their own.
+			turns[i].Content = stripRelayNotes(turns[i].Content)
+		}
 	}
 	return turns
 }
@@ -840,6 +846,10 @@ func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
 	if routerID == "" {
 		return
 	}
+	// The note waits for the router's next prompt; this is for whoever has
+	// the router session open, so the reply shows up as it lands.
+	raw, _ := json.Marshal(map[string]string{"session_id": sessionID})
+	r.broker.Publish(broker.Event{SessionID: routerID, Type: core.EventRelayLanded, Raw: raw})
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
 	if r.relayIn == nil {
@@ -855,7 +865,8 @@ func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
 }
 
 // foldRelays prefixes a router's pending notes to its next prompt and takes
-// them off the queue, returning them so a failed send can put them back. Ordinary sessions never have any, so this is a map lookup for them.
+// them off the queue, returning them so a failed send can put them back.
+// Ordinary sessions never have any, so this is a map lookup for them.
 func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 	r.sendMu.Lock()
 	notes := r.relayIn[id]
@@ -869,8 +880,26 @@ func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 		b.WriteString(relayNoteText(note))
 		b.WriteString("\n\n")
 	}
+	b.WriteString(relayNotesEnd)
+	b.WriteString("\n\n")
 	b.WriteString(text)
 	return b.String(), notes
+}
+
+// relayNotesEnd closes the notes folded in front of a router prompt, so what
+// the user typed can be told apart from them again.
+const relayNotesEnd = "[end of session replies]"
+
+// stripRelayNotes returns the prompt the user typed from one that reached the
+// router with notes folded in front of it.
+func stripRelayNotes(prompt string) string {
+	if !strings.HasPrefix(prompt, imutil.RelayNoteMark) {
+		return prompt
+	}
+	if _, typed, ok := strings.Cut(prompt, "\n\n"+relayNotesEnd+"\n\n"); ok {
+		return typed
+	}
+	return prompt
 }
 
 // relayNoteText renders one note. The [session <id> replied] form is the one
@@ -1054,7 +1083,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			// transcript truth-up; no event needed.
 			continue
 		}
-		raw, mErr := json.Marshal(map[string]any{"role": "user", "content": t.Content, "ts": t.Time})
+		raw, mErr := json.Marshal(map[string]any{"role": "user", "content": stripRelayNotes(t.Content), "ts": t.Time})
 		if mErr == nil {
 			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnUser, Raw: raw})
 		}
