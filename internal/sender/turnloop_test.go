@@ -204,3 +204,71 @@ func TestMergeLoggedTurn_CancelMarkerBeforeResultSkipsQuiet(t *testing.T) {
 		t.Fatalf("no exit after abort marker: %v", types(evs))
 	}
 }
+
+// lateLogTurn starts a turn for a session whose log does not exist yet.
+func lateLogTurn(t *testing.T) (ch <-chan StreamEvent, done chan fakeResult, path string) {
+	t.Helper()
+	oldQuiet := finalDrainQuiet
+	finalDrainQuiet = 30 * time.Millisecond
+	t.Cleanup(func() { finalDrainQuiet = oldQuiet })
+	path = filepath.Join(t.TempDir(), "s.jsonl")
+	done = make(chan fakeResult, 1)
+	tail := fastCfg()
+	tail.contentOnly = true
+	ch = mergeLoggedTurn(context.Background(), loggedTurnConfig[fakeResult, fakeDelta]{
+		backend: "claude", idKey: "session_id", id: "s", poll: 5 * time.Millisecond,
+		locate: func() string {
+			if _, err := os.Stat(path); err != nil {
+				return ""
+			}
+			return path
+		},
+		tail: tail, done: done, deltas: make(chan fakeDelta),
+		delta:  func(fakeDelta) (string, string, bool) { return "text", "", false },
+		result: func(context.Context, chan<- StreamEvent, fakeResult) {},
+	})
+	return ch, done, path
+}
+
+// A backend may take any time to start on a prompt: the turn waits for the log
+// as long as the turn itself lasts, then reads it from the top.
+func TestMergeLoggedTurn_WaitsForLateLog(t *testing.T) {
+	ch, done, path := lateLogTurn(t)
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case ev := <-ch:
+		if ev.Type != backend.EventProcessStarted {
+			t.Fatalf("before the log appeared: %s %s", ev.Type, ev.Raw)
+		}
+	default:
+		t.Fatal("no start event")
+	}
+	if err := os.WriteFile(path, []byte(`{"type":"user"}`+"\n"+`{"type":"assistant"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	done <- fakeResult{}
+	evs := collect(t, ch, time.Second)
+	if hasType(evs, backend.EventError) {
+		t.Fatalf("late log reported as an error: %+v", evs)
+	}
+	lines := 0
+	for _, e := range evs {
+		if e.Type == "user" || e.Type == "assistant" {
+			lines++
+		}
+	}
+	if lines != 2 {
+		t.Fatalf("read %d log lines of 2: %+v", lines, evs)
+	}
+}
+
+// A turn that ends with no log ever written is the one case that is an error.
+func TestMergeLoggedTurn_EndsWithoutLog(t *testing.T) {
+	ch, done, _ := lateLogTurn(t)
+	done <- fakeResult{}
+	evs := collect(t, ch, time.Second)
+	if !hasType(evs, backend.EventError) {
+		t.Fatalf("no error for a turn that left no log: %+v", evs)
+	}
+}

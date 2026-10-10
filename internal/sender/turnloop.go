@@ -33,13 +33,15 @@ type loggedTurnConfig[R, D any] struct {
 	fresh   bool
 	path    string
 	offset  int64
-	locate  func() string
-	tail    tailConfig
-	done    <-chan R
-	deltas  <-chan D
-	delta   func(D) (kind, text string, emit bool)
-	result  func(context.Context, chan<- StreamEvent, R)
-	logger  *slog.Logger
+	// locate looks for the log of a session that had none when the turn began.
+	locate func() string
+	poll   time.Duration
+	tail   tailConfig
+	done   <-chan R
+	deltas <-chan D
+	delta  func(D) (kind, text string, emit bool)
+	result func(context.Context, chan<- StreamEvent, R)
+	logger *slog.Logger
 }
 
 // mergeLoggedTurn is the common Claude/Codex turn loop. Their control
@@ -56,18 +58,29 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 		if !sendEvent(ctx, out, StreamEvent{Type: backend.EventProcessStarted, Raw: started}) {
 			return
 		}
-		path := cfg.path
-		if path == "" {
-			path = cfg.locate()
-		}
-		if path == "" {
-			emitError(ctx, out, cfg.backend+" session log did not appear after prompt")
-			return
-		}
 		// Keep the tail alive until backend completion supplies final records.
 		tailCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		defer cancel()
-		events := tailTurn(tailCtx, path, cfg.offset, cfg.logger, cfg.tail)
+		// A new session's log exists only once the backend starts on the
+		// prompt, which can take it many seconds: until then events is nil and
+		// the turn runs on deltas alone.
+		var events <-chan StreamEvent
+		locate := func() bool {
+			path := cfg.path
+			if path == "" && cfg.locate != nil {
+				path = cfg.locate()
+			}
+			if path != "" {
+				events = tailTurn(tailCtx, path, cfg.offset, cfg.logger, cfg.tail)
+			}
+			return path != ""
+		}
+		wait := max(cfg.poll, 10*time.Millisecond)
+		look := time.NewTimer(wait)
+		defer look.Stop()
+		if locate() {
+			look.Stop()
+		}
 		deltas := cfg.deltas
 		// The end-of-turn marker is often forwarded here, before the protocol
 		// result arrives (the jsonl is flushed ahead of the completion signal),
@@ -76,6 +89,11 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 		terminalSeen := false
 		for {
 			select {
+			case <-look.C:
+				if !locate() {
+					wait = min(2*wait, time.Second)
+					look.Reset(wait)
+				}
 			case delta, ok := <-deltas:
 				if !ok {
 					deltas = nil
@@ -104,6 +122,10 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 				// Detach finalization from a concurrent cancellation.
 				finalCtx := context.WithoutCancel(ctx)
 				cfg.result(finalCtx, out, result)
+				if events == nil && !locate() {
+					emitError(finalCtx, out, cfg.backend+" session log did not appear after prompt")
+					return
+				}
 				drainTail(finalCtx, out, events, cancel, cfg.tail.terminalMarker, terminalSeen)
 				return
 			case <-ctx.Done():

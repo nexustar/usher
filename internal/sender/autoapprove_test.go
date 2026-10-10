@@ -43,8 +43,6 @@ done
 func TestStartRecordsAutoApprove(t *testing.T) {
 	h := interaction.New("")
 	s := New(fakeClaude(t), "", t.TempDir(), "", 1, false, h, nil)
-	// The stub writes no jsonl, so don't sit through the real confirm wait.
-	s.t.confirm = 50 * time.Millisecond
 	s.tail.appearWait = 50 * time.Millisecond
 	t.Cleanup(s.Shutdown)
 
@@ -85,8 +83,6 @@ func TestStartClearsAutoApproveWhenSessionFailsToStart(t *testing.T) {
 func TestStartWithoutAutoApproveRecordsNothing(t *testing.T) {
 	h := interaction.New("")
 	s := New(fakeClaude(t), "", t.TempDir(), "", 1, false, h, nil)
-	// The stub writes no jsonl, so don't sit through the real confirm wait.
-	s.t.confirm = 50 * time.Millisecond
 	s.tail.appearWait = 50 * time.Millisecond
 	t.Cleanup(s.Shutdown)
 

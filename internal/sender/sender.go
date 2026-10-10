@@ -33,7 +33,7 @@ type StreamEvent = backend.Event
 
 // timing groups the tunable delays for driving the TUI. Defaults are set in
 // New; tests override them for speed.
-type timing struct{ confirm, poll time.Duration }
+type timing struct{ poll time.Duration }
 
 type Sender struct {
 	app          *codex.Manager // non-nil for the headless Codex backend
@@ -118,7 +118,7 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 		mcpArgs = claudeMCPConfigArgs(hookSock, logger)
 		extra = append(extra, mcpArgs...)
 	}
-	t := timing{confirm: 8 * time.Second, poll: 150 * time.Millisecond}
+	t := timing{poll: 150 * time.Millisecond}
 	return &Sender{
 		claude:       claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, interactions, logger),
 		interactions: interactions,
@@ -211,7 +211,7 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 	if hookSock != "" {
 		env = append(env, "USHER_HOOK_SOCK="+hookSock)
 	}
-	t := timing{confirm: 8 * time.Second, poll: 150 * time.Millisecond}
+	t := timing{poll: 150 * time.Millisecond}
 	appConfig := map[string]any{}
 	if injectMCPTools {
 		appConfig = codexMCPConfig(logger)
@@ -555,7 +555,7 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendS
 	tail.skipCompletions = queuedAhead
 	return mergeLoggedTurn(ctx, loggedTurnConfig[claude.Result, claude.Delta]{
 		backend: "claude", idKey: "session_id", id: id, cwd: cwd, fresh: fresh,
-		path: path, offset: offset, locate: func() string { return s.locateWait(ctx, id, s.t.confirm) },
+		path: path, offset: offset, locate: func() string { return s.locate(id) }, poll: s.t.poll,
 		tail: tail, done: done, deltas: deltas, logger: s.logger,
 		delta: func(d claude.Delta) (string, string, bool) { return "text", d.Text, true },
 		result: func(ctx context.Context, out chan<- StreamEvent, result claude.Result) {
@@ -626,7 +626,7 @@ func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, 
 	lastKind := ""
 	return mergeLoggedTurn(ctx, loggedTurnConfig[codex.TurnResult, codex.Delta]{
 		backend: "codex", idKey: "thread_id", id: id, cwd: cwd, fresh: fresh,
-		path: path, offset: offset, locate: func() string { return s.locateWait(ctx, id, s.t.confirm) },
+		path: path, offset: offset, locate: func() string { return s.locate(id) }, poll: s.t.poll,
 		tail: s.tail, done: done, deltas: deltas, logger: s.logger,
 		delta: func(d codex.Delta) (string, string, bool) {
 			if d.Kind == "reasoning" && lastKind == "reasoning" {
@@ -747,26 +747,6 @@ func (s *Sender) locate(sessionID string) string {
 		return ""
 	}
 	return s.locateFn(sessionID)
-}
-
-// locateWait polls locate until the file appears or timeout/ctx fires.
-func (s *Sender) locateWait(ctx context.Context, sessionID string, timeout time.Duration) string {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(s.t.poll)
-	defer ticker.Stop()
-	for {
-		if p := s.locate(sessionID); p != "" {
-			return p
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-deadline.C:
-			return ""
-		case <-ticker.C:
-		}
-	}
 }
 
 // sendEvent delivers ev unless ctx is cancelled. Returns true if delivered.
