@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/pluginapi"
 )
 
@@ -133,24 +132,6 @@ func RouterTools() []Tool {
 			Name:        "list_pending_interactions",
 			Description: "List pending permission and user-question interactions across usher sessions.",
 			InputSchema: object(map[string]any{}),
-		},
-		{
-			Name: "respond_to_interaction",
-			Description: "Allow or deny one pending interaction, when the user asks you to — never on your own " +
-				"to unblock work you sent. This handles permission decisions only; question-answer payloads remain in the web UI.",
-			InputSchema: object(map[string]any{
-				"id":       map[string]any{"type": "string"},
-				"behavior": map[string]any{"type": "string", "enum": []string{"allow", "deny"}},
-				"reason":   map[string]any{"type": "string"},
-			}, "id", "behavior"),
-		},
-		{
-			Name:        "set_auto_approve",
-			Description: "Enable or disable usher's auto-approve setting for a session, when the user asks you to.",
-			InputSchema: object(map[string]any{
-				"session_id": map[string]any{"type": "string"},
-				"enabled":    map[string]any{"type": "boolean"},
-			}, "session_id", "enabled"),
 		},
 		{
 			Name:        "set_archived",
@@ -348,64 +329,6 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 	case "list_pending_interactions":
 		return api.ListPendingInteractions()
 
-	case "respond_to_interaction":
-		var args struct {
-			ID       string `json:"id"`
-			Behavior string `json:"behavior"`
-			Reason   string `json:"reason"`
-		}
-		if err := decode(raw, &args); err != nil {
-			return nil, err
-		}
-		if args.ID == "" || args.Behavior != "allow" && args.Behavior != "deny" {
-			return nil, errors.New("id and behavior (allow|deny) are required")
-		}
-		pending, err := api.ListPendingInteractions()
-		if err != nil {
-			return nil, err
-		}
-		for _, p := range pending {
-			if p.ID != args.ID {
-				continue
-			}
-			if err := notRouter(api, p.SessionID); err != nil {
-				return nil, err
-			}
-		}
-		err = api.RespondInteraction(args.ID, interaction.Response{
-			Behavior: args.Behavior, Reason: args.Reason, Scope: "once",
-		})
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"status": "ok", "id": args.ID}, nil
-
-	case "set_auto_approve":
-		var args struct {
-			SessionID string `json:"session_id"`
-			Enabled   bool   `json:"enabled"`
-		}
-		if err := decode(raw, &args); err != nil {
-			return nil, err
-		}
-		if args.SessionID == "" {
-			return nil, errors.New("session_id is required")
-		}
-		sess, err := resolveSession(api, args.SessionID)
-		if err != nil {
-			return nil, err
-		}
-		args.SessionID = sess.ID
-		if err := notRouter(api, args.SessionID); err != nil {
-			return nil, err
-		}
-		if err := api.SetAutoApprove(args.SessionID, args.Enabled); err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"status": "ok", "session_id": args.SessionID, "auto_approve": args.Enabled,
-		}, nil
-
 	case "set_archived":
 		var args struct {
 			SessionID string `json:"session_id"`
@@ -447,21 +370,6 @@ func deliveredResult(d pluginapi.Delivery) map[string]any {
 		out["note"] = "no reply will be reported back; read_session_transcript is the only way to collect it"
 	}
 	return out
-}
-
-// notRouter refuses to let the router session — the one calling these tools —
-// approve its own requests: those are the user's to answer.
-func notRouter(api *pluginapi.Client, sessionID string) error {
-	all, err := api.ListSessions()
-	if err != nil {
-		return err
-	}
-	for _, sess := range all {
-		if sess.Router && sess.ID == sessionID {
-			return errors.New("the router session's own permissions are the user's to grant")
-		}
-	}
-	return nil
 }
 
 // transcriptPage is a transcript page as the model reads it: each turn

@@ -711,7 +711,7 @@ export async function showDetail(id) {
                 <span class="t-icon">+</span><span class="t-full">upload</span>
               </button>
               <input id="upload-input" type="file" hidden multiple>
-              <button id="auto-approve-toggle" class="auto-approve-toggle" type="button"
+              <button id="auto-approve-toggle" class="auto-approve-toggle" type="button" ${sess.router ? 'hidden' : ''}
                 aria-pressed="${sess.auto_approve ? 'true' : 'false'}"
                 title="ask: confirm each tool call · auto: run them automatically">
                 <span class="t-icon">ϟ</span><span class="t-full">approve:</span><span class="toggle-val">${sess.auto_approve ? 'auto' : 'ask'}</span>
@@ -742,12 +742,9 @@ export async function showDetail(id) {
   await loadTranscript(id);
   if (epoch !== detailEpoch) return; // superseded before we wired the streams
   if (sess.router) {
-    // The router has usher's tools only: nothing to approve, no shell worth
-    // opening in its own directory.
-    for (const control of ['auto-approve-toggle', 'term-toggle']) {
-      const el = document.getElementById(control);
-      if (el) el.hidden = true;
-    }
+    // No shell worth opening in the router's own directory.
+    const term = document.getElementById('term-toggle');
+    if (term) term.hidden = true;
     // Nor is a branch of the router a router: it would inherit a session
     // with no tools at all.
     document.getElementById('chat-scroll')?.classList.add('router-view');
@@ -777,9 +774,13 @@ export async function showDetail(id) {
   if (autoBtn) {
     autoBtn.addEventListener('click', async () => {
       const next = autoBtn.getAttribute('aria-pressed') !== 'true';
+      // On the Router page the toggle is the current session's: the router
+      // itself has nothing to approve.
+      const target = sess.router ? routerFocusID : id;
+      if (!target) return;
       autoBtn.disabled = true;
       try {
-        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/auto-approve', {
+        const res = await fetch('/api/sessions/' + encodeURIComponent(target) + '/auto-approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: next }),
@@ -787,11 +788,12 @@ export async function showDetail(id) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         autoBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
         autoBtn.querySelector('.toggle-val').textContent = next ? 'auto' : 'ask';
-        loadSidebar(); // refresh sidebar marker immediately
+        await loadSidebar(); // refresh sidebar marker immediately
       } catch (e) {
         appendChatMessage({ role: 'error', content: 'auto-approve toggle failed: ' + String(e), ts: new Date().toISOString() });
       } finally {
         autoBtn.disabled = false;
+        if (sess.router) updateRouterFocus();
       }
     });
   }
@@ -1406,6 +1408,7 @@ function renderSessionSubtitle(sess) {
 // resolved — is where a message that names no session goes next. It is read
 // off the conversation, so it is there again after a reload.
 const FOCUS_TOOL = /(^|__)(send_to_session|create_session|resolve_session)$/;
+let routerFocusID = '';
 
 function updateRouterFocus() {
   const link = document.getElementById('router-focus');
@@ -1421,9 +1424,20 @@ function updateRouterFocus() {
       try { id = JSON.parse(p.content.slice(a, b + 1)).session_id || ''; } catch { /* not a result */ }
     }
   }
+  routerFocusID = id;
   link.hidden = !id;
-  if (!id) return;
   const known = getLastSessions().find(s => s.id === id);
+  // The approve toggle speaks for the current session; without one it has
+  // nothing to say.
+  const approve = document.getElementById('auto-approve-toggle');
+  if (approve) {
+    const auto = !!(known && known.auto_approve);
+    approve.hidden = !id;
+    approve.setAttribute('aria-pressed', auto ? 'true' : 'false');
+    approve.querySelector('.toggle-val').textContent = auto ? 'auto' : 'ask';
+    approve.title = 'tool calls of the current session (' + id.slice(0, 8) + ') — ask: confirm each · auto: run them automatically';
+  }
+  if (!id) return;
   link.href = '#/s/' + encodeURIComponent(id);
   link.title = (known && known.title) || '';
   link.textContent = 'focus: ' + id.slice(0, 8);

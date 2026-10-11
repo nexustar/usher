@@ -29,8 +29,8 @@ func call(t *testing.T, r *Router, name, args string) any {
 
 func TestRouterToolsCatalog(t *testing.T) {
 	tools := RouterTools()
-	if len(tools) != 10 {
-		t.Fatalf("tool count = %d, want 10", len(tools))
+	if len(tools) != 8 {
+		t.Fatalf("tool count = %d, want 8", len(tools))
 	}
 	seen := map[string]bool{}
 	for _, tool := range tools {
@@ -176,27 +176,13 @@ func TestCallFlagsAndInteractions(t *testing.T) {
 	r := start(t, f)
 
 	call(t, r, "set_archived", `{"session_id":"s1","archived":true}`)
-	call(t, r, "set_auto_approve", `{"session_id":"s1","enabled":true}`)
-	if !f.IsArchived("s1") || !f.IsAutoApprove("s1") {
+	if !f.IsArchived("s1") {
 		t.Fatal("flags did not reach the router")
 	}
 
 	pending := call(t, r, "list_pending_interactions", `{}`).([]interaction.Pending)
 	if len(pending) != 1 || pending[0].ID != "p1" {
 		t.Fatalf("pending = %+v", pending)
-	}
-	call(t, r, "respond_to_interaction", `{"id":"p1","behavior":"deny","reason":"no"}`)
-	if got := f.Response("p1"); got.Behavior != "deny" || got.Scope != "once" {
-		t.Fatalf("recorded response = %+v", got)
-	}
-	// A second answer is the router's error to report, not a silent success.
-	if _, err := r.Call("respond_to_interaction",
-		json.RawMessage(`{"id":"p1","behavior":"allow"}`)); err == nil {
-		t.Fatal("double respond succeeded")
-	}
-	if _, err := r.Call("respond_to_interaction",
-		json.RawMessage(`{"id":"p1","behavior":"maybe"}`)); err == nil {
-		t.Fatal("invalid behavior accepted")
 	}
 }
 
@@ -281,35 +267,6 @@ func TestCallRejectsUnknownToolAndNilAPI(t *testing.T) {
 	}
 }
 
-// The router's own permission requests stay with the user: the session calling
-// these tools must not be able to approve itself.
-func TestCallRouterCannotApproveItself(t *testing.T) {
-	f := pluginapitest.NewFakeRouter()
-	f.AddSession(core.Session{ID: "router-1", Title: "router"})
-	f.AddSession(core.Session{ID: "worker-1", Title: "worker"})
-	f.SetRouterSession("router-1")
-	f.SetPending(
-		interaction.Pending{ID: "own", SessionID: "router-1"},
-		interaction.Pending{ID: "other", SessionID: "worker-1"},
-	)
-	r := start(t, f)
-
-	if _, err := r.Call("set_auto_approve", json.RawMessage(`{"session_id":"router-1","enabled":true}`)); err == nil {
-		t.Fatal("the router turned on its own auto-approve")
-	}
-	if f.IsAutoApprove("router-1") {
-		t.Fatal("auto-approve reached the router session")
-	}
-	if _, err := r.Call("respond_to_interaction", json.RawMessage(`{"id":"own","behavior":"allow"}`)); err == nil {
-		t.Fatal("the router answered its own permission request")
-	}
-	call(t, r, "set_auto_approve", `{"session_id":"worker-1","enabled":true}`)
-	call(t, r, "respond_to_interaction", `{"id":"other","behavior":"allow"}`)
-	if !f.IsAutoApprove("worker-1") || f.Response("other").Behavior != "allow" {
-		t.Fatal("approving another session was refused")
-	}
-}
-
 // A session whose title mentions another session's id must not make that id
 // ambiguous.
 func TestResolvePrefersIDOverTitle(t *testing.T) {
@@ -337,8 +294,7 @@ func TestCallsAcceptAnIDPrefix(t *testing.T) {
 		t.Fatalf("search by prefix = %+v", found)
 	}
 	call(t, r, "set_archived", `{"session_id":"5b6434b5","archived":true}`)
-	call(t, r, "set_auto_approve", `{"session_id":"5b6434b5","enabled":true}`)
-	if !f.IsArchived("5b6434b5-aaaa") || !f.IsAutoApprove("5b6434b5-aaaa") {
+	if !f.IsArchived("5b6434b5-aaaa") {
 		t.Fatal("flags set by prefix did not reach the session")
 	}
 }

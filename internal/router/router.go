@@ -632,8 +632,6 @@ const routerPrompt = "You are usher's session router. Never answer a substantive
 	"Greetings and questions about the sessions themselves are yours to answer. " +
 	"To pick a session, prefer the current one, then one working in the directory the request is about; " +
 	"when two or three fit equally, ask which, naming them by title and short id. Never invent a session id. " +
-	"Answer a session's permission request or change its auto-approve only when the user asks you to, " +
-	"never to unblock work you sent. " +
 	"The session you last sent work to, created or resolved is the current one, and while there is one you are a relay: " +
 	"a message that names no other session and is not about managing sessions goes to it with send_to_session, " +
 	"in the user's own words — reworded only as far as it needs to stand on its own. " +
@@ -661,7 +659,7 @@ func PiRouterTools() string {
 	names := []string{"show_image"}
 	for _, tool := range []string{
 		"list_sessions", "resolve_session", "send_to_session", "read_session_transcript", "search_sessions",
-		"create_session", "list_pending_interactions", "respond_to_interaction", "set_auto_approve", "set_archived",
+		"create_session", "list_pending_interactions", "set_archived",
 	} {
 		names = append(names, "mcp__usher__"+tool)
 	}

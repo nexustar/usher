@@ -97,7 +97,7 @@ what the tools promise.
 
 The router cannot answer questions itself: it gets usher's tools and nothing
 else — on Claude no built-in tool and no other MCP server (`--tools ""
---strict-mcp-config`), on pi an allowlist (`--tools "mcp__usher__*,show_image"`),
+--strict-mcp-config`), on pi an allowlist of usher's tools by name (`--tools`),
 on Codex the recipe below — and its calls to them are approved without asking.
 An agent of your own — a "read-only analyst", say — is restricted through
 per-backend `extra_args`. This is supervision of the model, not a security

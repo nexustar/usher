@@ -5,8 +5,10 @@
 
 - `list_sessions`, `resolve_session`, `send_to_session`
 - `read_session_transcript`, `search_sessions`, `create_session`
-- `list_pending_interactions`, `respond_to_interaction`
-- `set_auto_approve`, `set_archived`
+- `list_pending_interactions`, `set_archived`
+
+None of them answers a permission request or changes a session's auto-approve:
+those stay with the user, on the session's page or the Router page.
 
 The flag is intentionally absent from the MCP configuration usher injects into
 ordinary coding sessions. Only the session designated as usher's router gets a
@@ -93,8 +95,7 @@ curl -sS -X POST localhost:8080/api/router \
 usher spawns it with the routing tools, makes it the router in place of any
 previous one, and relays every routed reply back into it. Its own jsonl makes
 it a session like any other, so it appears in its own `list_sessions` output;
-routing work to itself is refused, and so is approving its own permission
-requests — those stay with the user.
+routing work to itself is refused.
 
 ## Test a hand-started Claude Code
 
