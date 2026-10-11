@@ -172,7 +172,6 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("GET /api/config", s.handleConfig)
 	webMux.HandleFunc("GET /api/sessions/{id}/routed", s.handleRouted)
 	webMux.HandleFunc("POST /api/router", s.handleStartRouter)
-	webMux.HandleFunc("PUT /api/router", s.handleSetRouterModel)
 	webMux.HandleFunc("GET /theme.css", s.handleTheme)
 
 	webMux.HandleFunc("GET /api/push/vapid-key", s.handlePushVAPIDKey)
@@ -577,24 +576,19 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}{s.editorURL, s.readOnly, s.routerConfig()})
 }
 
-// routerConfig is what new router sessions run on (empty: usher's defaults)
-// and the current router session; session_id is empty until a first message
-// creates one.
+// routerConfig is the current router session — session_id is empty until a
+// first message creates one — and the cwd router sessions run in.
 type routerConfig struct {
-	Backend   string `json:"backend"`
-	Model     string `json:"model"`
 	SessionID string `json:"session_id"`
-	// Dir is the cwd router sessions run in, current and replaced alike.
-	Dir string `json:"dir"`
+	Dir       string `json:"dir"`
 }
 
 func (s *Server) routerConfig() routerConfig {
-	backend, model := s.router.RouterModel()
-	return routerConfig{backend, model, s.router.RouterSession(), s.router.RouterDir()}
+	return routerConfig{s.router.RouterSession(), s.router.RouterDir()}
 }
 
-// startRouterRequest opens a router conversation. Backend and Model, when
-// given, become the router setting first.
+// startRouterRequest opens a router conversation. An empty Backend or Model
+// leaves that choice to usher's defaults.
 type startRouterRequest struct {
 	InitialMessage string `json:"initial_message"`
 	Backend        string `json:"backend"`
@@ -608,38 +602,15 @@ func (s *Server) handleStartRouter(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	if req.Backend != "" {
-		if err := s.router.SetRouterModel(req.Backend, req.Model); err != nil {
-			api.WriteError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	if req.Model == "default" {
+		req.Model = ""
 	}
-	id, err := s.router.StartRouter(req.InitialMessage)
+	id, err := s.router.StartRouter(req.InitialMessage, req.Backend, req.Model)
 	if err != nil {
 		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	api.WriteJSON(w, http.StatusAccepted, map[string]string{"id": id})
-}
-
-type routerModelRequest struct {
-	Backend string `json:"backend"`
-	Model   string `json:"model"`
-}
-
-// handleSetRouterModel chooses the backend and model the next router session
-// runs on; the current one is left as it is.
-func (s *Server) handleSetRouterModel(w http.ResponseWriter, r *http.Request) {
-	var req routerModelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	if err := s.router.SetRouterModel(req.Backend, req.Model); err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, s.routerConfig())
 }
 
 // handleRouted resolves the replies to the work a session routed elsewhere, for

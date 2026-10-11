@@ -82,7 +82,55 @@ export function renderMarkdown(md) {
     /<a (?=[^>]*\bhref="(?!#\/))/g,
     '<a target="_blank" rel="noopener" ',
   );
-  return html;
+  return linkSessions(html);
+}
+
+// A session id, whole or as its first eight characters — how models and people
+// both refer to a session.
+const SESSION_REF = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\b/g;
+
+// linkSessions turns the session ids in rendered text into links to those
+// sessions. Only ids that name exactly one session usher knows are linked, so
+// a commit hash or any other hex string is left alone.
+function linkSessions(html) {
+  const sessions = getLastSessions();
+  if (!sessions.length || html.search(SESSION_REF) < 0) return html;
+  const resolve = (ref) => {
+    const found = sessions.filter(s => s.id === ref || (ref.length === 8 && s.id.startsWith(ref)));
+    return found.length === 1 ? found[0] : null;
+  };
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    // Not inside a link already, and not inside a code block.
+    if (!node.parentElement?.closest('a, pre')) texts.push(node);
+  }
+  let linked = false;
+  for (const node of texts) {
+    const text = node.nodeValue;
+    const out = document.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(SESSION_REF)) {
+      const sess = resolve(m[0]);
+      if (!sess) continue;
+      out.append(text.slice(last, m.index));
+      const a = document.createElement('a');
+      a.href = '#/s/' + encodeURIComponent(sess.id);
+      a.className = 'session-link';
+      if (sess.title) a.title = sess.title;
+      a.textContent = m[0];
+      out.append(a);
+      last = m.index + m[0].length;
+    }
+    if (!last) continue;
+    out.append(text.slice(last));
+    node.replaceWith(out);
+    linked = true;
+  }
+  return linked ? tpl.innerHTML : html;
 }
 
 // Re-render every element that carries a data-raw markdown source. Called
@@ -195,32 +243,6 @@ function sessionTitle(id) {
   return (known && known.title) || id.slice(0, 8);
 }
 
-// sessionLinksHTML lists the sessions a routing tool's result names, so the
-// one the user asked about is a tap away without opening the tool block.
-function sessionLinksHTML(content) {
-  const a = (content || '').indexOf('{');
-  const b = (content || '').lastIndexOf('}');
-  if (a < 0 || b <= a) return '';
-  let o;
-  try { o = JSON.parse(content.slice(a, b + 1)); } catch (_) { return ''; }
-  const found = [];
-  const add = (x) => {
-    const id = x && (x.session_id || x.id);
-    // The session doing the asking is not one it was looking for.
-    if (typeof id === 'string' && id && id !== currentDetailId && !found.some(f => f.id === id)) found.push({ id, title: x.title || '', cwd: x.cwd || '' });
-  };
-  add(o);
-  for (const key of ['results', 'sessions']) (Array.isArray(o[key]) ? o[key] : []).forEach(add);
-  if (!found.length) return '';
-  return '<div class="tool-sessions">' + found.slice(0, 8).map(f => {
-    const known = getLastSessions().find(s => s.id === f.id) || {};
-    const dot = statusDot(known.status);
-    return '<a class="tool-session" href="#/s/' + esc(encodeURIComponent(f.id)) + '">' +
-      '<span class="tool-session-title">' + (dot ? dot + ' ' : '') + esc(known.title || f.title || f.id.slice(0, 8)) + '</span>' +
-      '<span class="tool-session-cwd">' + esc(known.cwd || f.cwd) + '</span></a>';
-  }).join('') + '</div>';
-}
-
 export function renderToolPart(p) {
   const name = p.tool_name || 'tool';
   const target = p.tool_target || '';
@@ -231,8 +253,6 @@ export function renderToolPart(p) {
     const routed = renderRoutedPart(p);
     if (routed) return routed;
   }
-  const sessions = /(^|__)(search_sessions|resolve_session)$/.test(name)
-    ? sessionLinksHTML(p.content) : '';
   // show_image renders as an inline image (not a collapsible tool block). The
   // path travels only as an encodeURIComponent'd query param, so it can't break
   // out of the attribute; /image resolves+validates it against the session cwd.
@@ -278,7 +298,7 @@ export function renderToolPart(p) {
     (input ? `<pre class="${inputClass}">${esc(input)}</pre>` : '') +
     `<div class="tool-body">${toolBodyHTML(p)}</div>` +
     `</div>` +
-    `</details>` + sessions;
+    `</details>`;
 }
 
 // forkBtnHTML is the fork control at the foot of a completed assistant turn —

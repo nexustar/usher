@@ -51,8 +51,8 @@ function route() {
     showNewSession(rest.startsWith('agent/')
       ? {agent: decodeURIComponent(rest.slice('agent/'.length))}
       : {cwd: decodeURIComponent(rest)});
-  } else if (hash === '#/chat' || hash.startsWith('#/chat/')) {
-    showRouter(hash === '#/chat/new');
+  } else if (hash === '#/router' || hash.startsWith('#/router/')) {
+    showRouter(hash === '#/router/new');
   } else if (hash.startsWith('#/s/')) {
     showDetail(decodeURIComponent(hash.slice(4)));
   }

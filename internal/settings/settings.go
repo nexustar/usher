@@ -13,10 +13,6 @@ import (
 // Router is usher's one router session: the session that holds the
 // session-routing tools and receives routed replies.
 type Router struct {
-	// Backend and Model are what new router sessions run on. Empty leaves the
-	// choice to usher's default backend and that backend's default model.
-	Backend string `json:"backend,omitempty"`
-	Model   string `json:"model,omitempty"`
 	// SessionID is the current router session. It may name a session that no
 	// longer exists; readers check.
 	SessionID string `json:"session_id,omitempty"`
@@ -55,13 +51,6 @@ func (s *Store) Router() Router {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.f.Router
-}
-
-func (s *Store) SetRouterModel(backend, model string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.f.Router.Backend, s.f.Router.Model = backend, model
-	s.persist()
 }
 
 func (s *Store) SetRouterSession(id string) {

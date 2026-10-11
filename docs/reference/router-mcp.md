@@ -14,8 +14,8 @@ registration with it: for Claude a second config file — `mcp-router.json`,
 next to `mcp.json` in the data dir — passed as spawn arguments; for Codex the
 same registration as config overrides in its thread/start and thread/resume
 params; for pi a generated extension that registers it with pi's own MCP
-support, its tools declared to the model directly. What the router runs on is
-[an instance setting](agents.md#the-router-session); the flag stays available by
+support, its tools declared to the model directly. See
+[the router session](agents.md#the-router-session); the flag stays available by
 hand for driving a `claude` started outside usher.
 
 ## Replies come back asynchronously — and not through the model
@@ -74,10 +74,19 @@ Because a folded prompt is no longer byte-identical to what the user typed, the
 IM hubs match their own echo by that preamble (`imutil.SamePromptEcho`) — worth
 knowing before adding any other server-side prompt rewriting.
 
+## The current session
+
+The session the router last sent work to, created or resolved is its current
+one — the old main chat's "focus". The router is told to pass a message that
+names no session on to it in the user's own words, so a conversation with one
+session can go on from the Router page; the page header names that session and
+links to it. usher keeps no state for this: it is read off the router's
+transcript.
+
 ## Test through usher
 
-Start a router session, on the backend and model chosen with `PUT /api/router`
-(or usher's defaults):
+Start a router session — `backend` and `model` are optional, and default to
+usher's default backend and its default model:
 
 ```sh
 curl -sS -X POST localhost:8080/api/router \

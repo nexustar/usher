@@ -203,7 +203,7 @@ export function renderSidebarSessions(allSessions) {
 
 export function updateSidebarActive() {
   const hash = location.hash || '#/';
-  const inRouter = hash === '#/chat' || hash.startsWith('#/chat/') ||
+  const inRouter = hash === '#/router' || hash.startsWith('#/router/') ||
     getLastSessions().some(s => s.router && hash === '#/s/' + encodeURIComponent(s.id));
   document.querySelectorAll('.sidebar-router').forEach(a => {
     a.classList.toggle('active', inRouter);

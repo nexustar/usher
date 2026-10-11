@@ -134,53 +134,18 @@ function renderGeneralPane(host) {
       <h2>Router</h2>
       <div class="settings-row">
         <div class="settings-row-text">
-          <span class="settings-row-label">Backend and model</span>
-          <p class="settings-row-hint">What new Router conversations run on.
-            The current one keeps what it started with.</p>
+          <span class="settings-row-label">New conversation</span>
+          <p class="settings-row-hint">Start the Router over with nothing in mind,
+            on a backend and model of your choice. The current conversation
+            stays in the session list.</p>
         </div>
-        <span class="settings-row-selects">
-          <select id="router-backend" aria-label="Router backend"></select>
-          <select id="router-model" aria-label="Router model"></select>
-        </span>
+        <button id="router-new" class="settings-row-action" type="button">Start new</button>
       </div>
     </div>`;
-  loadRouterModel();
+  document.getElementById('router-new').addEventListener('click', () => { location.hash = '#/router/new'; });
   // push.js owns the label, the disabled state, and the gesture-sensitive
   // click path; it keeps this button and the sidebar item in step.
   bindPushToggle(document.getElementById('general-notif'));
-}
-
-// The router is a fixed product — a session that can only route — so the one
-// thing to choose is what it runs on. Unset means usher's default backend and
-// that backend's default model.
-async function loadRouterModel() {
-  const backendEl = document.getElementById('router-backend');
-  const modelEl = document.getElementById('router-model');
-  if (!backendEl || !modelEl) return;
-  let current = {};
-  try {
-    await loadCatalogs();
-    const response = await fetch('/api/config');
-    if (response.ok) current = (await response.json()).router || {};
-  } catch { return; }
-  const fill = (backend, model) => {
-    backendEl.innerHTML = optionsHTML([{value: '', label: 'Default'}], backend) + backendOptions(backend);
-    const models = backend ? (catalogs[backend] || []).map(m => ({value: m.id, label: m.display_name || m.id})) : [];
-    if (model && !models.some(m => m.value === model)) models.push({value: model, label: model + ' (unavailable)'});
-    modelEl.innerHTML = optionsHTML([{value: '', label: 'Default'}, ...models], model);
-    modelEl.disabled = !backend;
-  };
-  const save = async () => {
-    const res = await fetch('/api/router', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({backend: backendEl.value, model: backendEl.value ? modelEl.value : ''}),
-    });
-    if (!res.ok) loadRouterModel(); // put the selection back to what the server holds
-  };
-  fill(current.backend || '', current.model || '');
-  backendEl.onchange = () => { fill(backendEl.value, ''); save(); };
-  modelEl.onchange = save;
 }
 
 // ----- agents pane ---------------------------------------------------------

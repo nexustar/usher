@@ -13,7 +13,7 @@
   --bg-chrome: #ffffff;       /* sidebar, header, modal, inputs */
   --bg-subtle: #f6f8fa;         /* table hover, render-mode hover, modal tool-input */
   --bg-faint: #fcfcfc;          /* raw-markdown container */
-  --bg-mainchat: #f0f2f5;        /* sidebar Router entry fill */
+  --bg-router: #f0f2f5;        /* sidebar Router entry fill */
   --bg-hover: #eef0f3;          /* sidebar item hover, sidebar-new hover */
   --bg-accent: #e3edf9;         /* sidebar router/list/new active */
 
@@ -166,7 +166,7 @@ body {
   margin-left: 1.15rem;
   margin-right: 1.15rem;
   border: none;
-  background: var(--bg-mainchat);
+  background: var(--bg-router);
   border-radius: var(--radius);
   margin-bottom: 0.5rem;
   color: var(--accent);
@@ -644,7 +644,7 @@ body.sidebar-collapsed .mobile-toggle {
    * box instead so it sits on the title's optical midline. */
   align-self: center;
 }
-.subtitle-menu:active, .subtitle-menu.open { background: var(--bg-mainchat); }
+.subtitle-menu:active, .subtitle-menu.open { background: var(--bg-router); }
 @media (hover: hover) {
   .subtitle-menu:hover .subtitle-chevron { color: var(--text); }
 }
@@ -694,8 +694,8 @@ td.id { color: var(--text-disabled); }
   font-size: var(--font-meta);
 }
 
-/* Rendered markdown — used for transcripts, current-send response, and
-   main-chat messages. marked emits the usual GFM HTML: <em>, <strong>,
+/* Rendered markdown — used for transcripts and the current-send response.
+   marked emits the usual GFM HTML: <em>, <strong>,
    <code>, <a>, <pre><code>, <ul>/<ol>, <li>, <blockquote>, <h1..6>,
    <hr>, <img>, <table>/<thead>/<tbody>/<tr>/<th>/<td>, <del>. */
 .content { line-height: 1.45; overflow-wrap: anywhere; }
@@ -945,7 +945,7 @@ button.session-usage.unknown {
 }
 .render-pill {
   display: inline-flex;
-  background: var(--bg-mainchat);
+  background: var(--bg-router);
   border-radius: var(--radius);
   padding: 2px;
   margin-left: 0.25rem;
@@ -2034,30 +2034,6 @@ pre.raw-markdown {
 }
 .routed-part:hover { background: var(--bg-hover); }
 .routed-arrow { color: var(--text-faint); }
-.tool-sessions { display: flex; flex-direction: column; margin: 0.25rem 0 0.5rem; }
-.tool-session {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  padding: 0.3rem 0.6rem;
-  border-radius: 8px;
-  color: var(--text);
-  text-decoration: none;
-  min-width: 0;
-}
-.tool-session:hover { background: var(--bg-hover); }
-.tool-session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.tool-session-cwd {
-  margin-left: auto;
-  flex-shrink: 0;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-faint);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: var(--font-meta);
-}
 .chat-message.routed {
   width: fit-content;
   max-width: min(92%, 760px);
@@ -2086,26 +2062,15 @@ pre.raw-markdown {
 }
 .routed-head .relay-source:hover { text-decoration: underline; }
 .routed-head .ts { flex-shrink: 0; }
-.routed-body { margin-top: 0.3rem; max-height: 14rem; overflow: hidden; }
-.chat-message.routed.open .routed-body { max-height: none; }
-.chat-message.routed.clipped:not(.open) .routed-body {
-  -webkit-mask-image: linear-gradient(#000 75%, transparent);
-  mask-image: linear-gradient(#000 75%, transparent);
-}
-.routed-more {
-  margin-top: 0.3rem;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font-size: var(--font-meta);
-  cursor: pointer;
-}
+.routed-body { margin-top: 0.3rem; }
 .routed-state { margin-top: 0.3rem; color: var(--text-faint); font-size: var(--font-meta); }
 .router-empty { padding: 0.5rem; }
-.settings-row-selects { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
-.settings-row-selects select, .router-model select { font-size: 16px; max-width: 12rem; }
-.router-model { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* The router's backend and model, as two ghost segments split by a short
+ * divider. They are <select>s, so their text stays at 16px (iOS focus-zoom);
+ * the backend segment reserves the longest name so switching moves nothing. */
+.router-pickers .composer-picker { font-size: 16px; max-width: 14rem; text-overflow: ellipsis; }
+.router-backend { min-width: 5rem; }
+.picker-divider { width: 1px; height: 1.05em; background: var(--border); }
 .cfg-field-hint {
   color: var(--text-faint);
   line-height: 1.5;
@@ -2317,7 +2282,7 @@ pre.raw-markdown {
     --bg-chrome: #0d1117;
     --bg-subtle: #21262d;
     --bg-faint: #1c2128;
-    --bg-mainchat: #1c2128;
+    --bg-router: #1c2128;
     --bg-hover: #21262d;
     --bg-accent: rgba(56, 139, 253, 0.15);
 

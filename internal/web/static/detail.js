@@ -3,7 +3,7 @@
 import {
   esc, root, subtitle, closeES, closeTerminalES, clearListInterval,
   currentDetailId, setCurrentDetailId, setCurrentDraftKey,
-  setSuppressAppendScroll, setRoutedTargets,
+  setSuppressAppendScroll, setRoutedTargets, getLastSessions,
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
   registerRefreshSubtitle,
@@ -736,6 +736,9 @@ export async function showDetail(id) {
     </div>
   `;
 
+  // Session ids in the transcript are linked against the sessions the sidebar
+  // knows; on a cold load that list may not have arrived yet.
+  if (!getLastSessions().length) await loadSidebar();
   await loadTranscript(id);
   if (epoch !== detailEpoch) return; // superseded before we wired the streams
 
@@ -1251,14 +1254,14 @@ export async function showRouter(fresh) {
     if (res.ok) router = (await res.json()).router || {};
   } catch { /* fall through to the empty view */ }
   if (!fresh && router.session_id) return showDetail(router.session_id);
-  // Until a backend is chosen for the router, the first conversation picks it.
+  // A new conversation picks what it runs on, starting from this browser's
+  // last choice.
+  const saved = (key) => { try { return localStorage.getItem(key) || ''; } catch { return ''; } };
   let catalog = null;
-  if (!router.backend) {
-    try {
-      const res = await fetch('/api/models');
-      if (res.ok) catalog = await res.json();
-    } catch { /* no picker: usher's defaults apply */ }
-  }
+  try {
+    const res = await fetch('/api/models');
+    if (res.ok) catalog = await res.json();
+  } catch { /* no picker: the last choice, or usher's defaults, apply */ }
 
   ++detailEpoch;
   clearListInterval();
@@ -1273,9 +1276,12 @@ export async function showRouter(fresh) {
         <div class="composer">
           <textarea id="prompt" rows="1" placeholder="message…"></textarea>
           <div class="composer-bar">
-            <div class="composer-tools router-model" id="router-model-picker" hidden>
-              <select id="router-backend" aria-label="Router backend"></select>
-              <select id="router-model" aria-label="Router model"></select>
+            <div class="composer-tools">
+              <div class="composer-config-wrap router-pickers" id="router-model-picker" hidden>
+                <select id="router-backend" class="composer-picker router-backend" aria-label="backend"></select>
+                <span class="picker-divider" aria-hidden="true"></span>
+                <select id="router-model" class="composer-picker" aria-label="model"></select>
+              </div>
             </div>
             <div class="composer-send"><button id="send">send</button></div>
           </div>
@@ -1288,17 +1294,23 @@ export async function showRouter(fresh) {
   const backendEl = document.getElementById('router-backend');
   const modelEl = document.getElementById('router-model');
   if (catalog && (catalog.backends || []).length) {
-    const option = (value, label) => `<option value="${esc(value)}">${esc(label)}</option>`;
-    const fillModels = () => {
+    const option = (value, label, selected) =>
+      `<option value="${esc(value)}"${value === selected ? ' selected' : ''}>${esc(label)}</option>`;
+    const fillModels = (selected) => {
       const models = (catalog.models || {})[backendEl.value] || [];
       modelEl.innerHTML = models.length
-        ? models.map(m => option(m.id, m.display_name || m.id)).join('')
+        ? models.map(m => option(m.id, m.display_name || m.id, selected)).join('')
         : option('default', 'Default');
     };
-    backendEl.innerHTML = catalog.backends.map(b => option(b, b.charAt(0).toUpperCase() + b.slice(1))).join('');
-    fillModels();
-    backendEl.addEventListener('change', fillModels);
-    document.getElementById('router-model-picker').hidden = false;
+    backendEl.innerHTML = catalog.backends
+      .map(b => option(b, b.charAt(0).toUpperCase() + b.slice(1), saved('usher.routerBackend'))).join('');
+    fillModels(saved('usher.routerModel.' + backendEl.value));
+    // Both segments wear the backend's colour, as the new-session picker does.
+    const picker = document.getElementById('router-model-picker');
+    const tint = () => { picker.dataset.backend = backendEl.value; };
+    backendEl.addEventListener('change', () => { fillModels(saved('usher.routerModel.' + backendEl.value)); tint(); });
+    tint();
+    picker.hidden = false;
   }
   restoreDraft(promptEl);
   const start = async () => {
@@ -1309,18 +1321,23 @@ export async function showRouter(fresh) {
       const res = await fetch('/api/router', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // A choice made here becomes the router setting.
         body: JSON.stringify(catalog && backendEl.value
           ? { initial_message: text, backend: backendEl.value, model: modelEl.value }
           : { initial_message: text }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);
+      if (catalog && backendEl.value) {
+        try {
+          localStorage.setItem('usher.routerBackend', backendEl.value);
+          localStorage.setItem('usher.routerModel.' + backendEl.value, modelEl.value);
+        } catch { /* private mode: the next conversation starts from the first choice */ }
+      }
       clearDraft();
       loadSidebar();
       // Same hash when this was the first conversation, so route by hand.
-      if (location.hash === '#/chat') showDetail(body.id);
-      else location.hash = '#/chat';
+      if (location.hash === '#/router') showDetail(body.id);
+      else location.hash = '#/router';
     } catch (e) {
       const n = appendChatMessage({ role: 'error', content: String(e.message || e), ts: new Date().toISOString() });
       if (n) n.classList.add('optimistic');
@@ -1358,15 +1375,43 @@ function renderSessionSubtitle(sess) {
         ` data-id="${esc(sess.id)}" data-archived="${sess.archived ? '1' : '0'}"` +
         ` data-pinned="${sess.pinned ? '1' : '0'}" data-status="${esc(sess.status || '')}"` +
         ` data-cwd="${esc(sess.cwd || '')}" aria-label="session actions" aria-haspopup="menu">` +
-        `<strong class="session-title">${esc(sess.title || '(untitled)')}</strong>` +
+        // The router is the Router, whatever its first message was.
+        `<strong class="session-title">${sess.router ? 'Router' : esc(sess.title || '(untitled)')}</strong>` +
         `<svg class="subtitle-chevron" viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>` +
       `</button>` +
-      `<span class="session-id">${esc(sess.id.slice(0, 8))}</span>` +
-      (sess.router
-        ? `<span class="session-cwd">router</span>`
-        : `<span class="session-cwd">${esc(sess.cwd || '')}</span>`) +
+      (sess.router ? '' :
+        `<span class="session-id">${esc(sess.id.slice(0, 8))}</span>` +
+        `<span class="session-cwd">${esc(sess.cwd || '')}</span>`) +
     `</span>` +
-    (sess.router ? `<a href="#/chat/new" class="subtitle-focus">new conversation</a>` : '');
+    (sess.router ? `<a id="router-focus" class="subtitle-focus" hidden></a>` : '');
+  updateRouterFocus();
+}
+
+// The router's current session — the one it last sent work to, created or
+// resolved — is where a message that names no session goes next. It is read
+// off the conversation, so it is there again after a reload.
+const FOCUS_TOOL = /(^|__)(send_to_session|create_session|resolve_session)$/;
+
+function updateRouterFocus() {
+  const link = document.getElementById('router-focus');
+  if (!link) return;
+  let id = '';
+  for (let i = renderedTurns.length - 1; i >= 0 && !id; i--) {
+    const parts = renderedTurns[i].parts || [];
+    for (let j = parts.length - 1; j >= 0 && !id; j--) {
+      const p = parts[j];
+      if (p.type !== 'tool' || p.tool_error || !FOCUS_TOOL.test(p.tool_name || '')) continue;
+      const a = (p.content || '').indexOf('{');
+      const b = (p.content || '').lastIndexOf('}');
+      try { id = JSON.parse(p.content.slice(a, b + 1)).session_id || ''; } catch { /* not a result */ }
+    }
+  }
+  link.hidden = !id;
+  if (!id) return;
+  const known = getLastSessions().find(s => s.id === id);
+  link.href = '#/s/' + encodeURIComponent(id);
+  link.title = (known && known.title) || '';
+  link.textContent = 'focus: ' + id.slice(0, 8);
 }
 
 // refreshSubtitle re-reads the session so the header picks up a title/cwd that
@@ -1713,9 +1758,6 @@ const ROUTING_TOOL = /(^|__)(send_to_session|create_session)$/;
 let routedSig = '';
 let routedTimer = null;
 
-// Replies the reader expanded, so re-placing them does not fold them again.
-const routedOpen = new Set();
-
 function routedReplyNode(rr) {
   const div = document.createElement('div');
   const done = rr.done && rr.reply;
@@ -1729,27 +1771,14 @@ function routedReplyNode(rr) {
     div.innerHTML = head + `<div class="routed-state">${statusDot('running')} ${state}</div>`;
     return div;
   }
-  const key = rr.turn + ':' + rr.part;
-  div.dataset.key = key;
-  if (routedOpen.has(key)) div.classList.add('open');
   div.innerHTML = head +
-    `<div class="routed-body"><div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div></div>` +
-    `<button class="routed-more" type="button" hidden>show more</button>`;
+    `<div class="routed-body"><div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div></div>`;
   return div;
 }
 
-// A long reply is folded; the control appears only when there is more to see.
-document.addEventListener('click', (e) => {
-  const more = e.target.closest?.('.routed-more');
-  if (!more) return;
-  const card = more.closest('.routed');
-  const open = card.classList.toggle('open');
-  more.textContent = open ? 'show less' : 'show more';
-  if (open) routedOpen.add(card.dataset.key); else routedOpen.delete(card.dataset.key);
-});
-
 async function syncRouted(id) {
   clearTimeout(routedTimer);
+  updateRouterFocus();
   const el = document.getElementById('chat-scroll');
   if (!el || id !== currentDetailId) return;
   const routes = renderedTurns.some(r => (r.parts || []).some(p => p.type === 'tool' && ROUTING_TOOL.test(p.tool_name || '')));
@@ -1787,15 +1816,7 @@ async function syncRouted(id) {
         const landed = Date.parse(rr.ts || '') || 0;
         before = renderedTurns.slice(at + 1).find(r => (Date.parse(r.time || '') || 0) > landed);
       }
-      const node = routedReplyNode(rr);
-      el.insertBefore(node, before ? before.node : anchor);
-      const body = node.querySelector('.routed-body');
-      const more = node.querySelector('.routed-more');
-      if (body && more) {
-        more.hidden = !node.classList.contains('open') && body.scrollHeight <= body.clientHeight + 1;
-        node.classList.toggle('clipped', !more.hidden);
-        if (node.classList.contains('open')) more.textContent = 'show less';
-      }
+      el.insertBefore(routedReplyNode(rr), before ? before.node : anchor);
     }
     if (wasAtBottom) el.scrollTop = el.scrollHeight;
   }

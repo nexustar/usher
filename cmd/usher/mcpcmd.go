@@ -209,7 +209,8 @@ func writeToolCall(out *bufio.Writer, id json.RawMessage, params json.RawMessage
 }
 
 func writeToolResult(out *bufio.Writer, id json.RawMessage, value any, isErr bool) error {
-	raw, err := json.Marshal(value)
+	// Indented: the text is what a person reads in the tool card.
+	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		raw = []byte(`{"error":"failed to encode tool result"}`)
 		isErr = true

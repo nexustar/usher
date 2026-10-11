@@ -1046,15 +1046,12 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 	routerDir := filepath.Join(t.TempDir(), "router")
 	r.SetSettings(settings.New(settingsPath), routerDir)
 
-	// The router runs in usher's own directory, on the configured model, with
-	// its routing persona and without the backend's local tools.
-	if err := r.SetRouterModel("codex", "default"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.SetRouterModel("nope", ""); err == nil {
+	// The router runs in usher's own directory, on the backend asked for,
+	// with its routing persona and without the backend's local tools.
+	if _, err := r.StartRouter("hi", "nope", ""); err == nil {
 		t.Fatal("an unavailable router backend was accepted")
 	}
-	id, err := r.StartRouter("hi")
+	id, err := r.StartRouter("hi", "codex", "")
 	if err != nil {
 		t.Fatal(err)
 	}

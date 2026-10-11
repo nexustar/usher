@@ -79,22 +79,15 @@ usher has one **router session**: it holds the session-routing MCP tools
 `show_image`, and every session it routes work to delivers its reply back into
 it. It is not created from an agent. usher gives it a routing persona and takes
 its backend's local tools away (the recipes below), so it can only route; what
-is left to choose is the backend and model it runs on, under Settings → General
-or
-
-```sh
-curl -sS -X PUT localhost:8080/api/router \
-  -H 'Content-Type: application/json' -d '{"backend":"claude","model":"haiku"}'
-```
-
-Unset, it runs on the default backend and that backend's default model. It runs
-in `router/` under the data directory, which the session lists show last; a
+is left to choose is the backend and model it runs on, picked when a new
+Router conversation is started (Settings → General → Start new). It runs in
+`router/` under the data directory, which the session lists show last; a
 session it creates without naming a directory runs in the system temp
 directory instead.
 
 Starting a router session replaces the current one, which becomes an ordinary
-session from its next cold start. The setting and the current router session
-are kept in `settings.json`, so both survive a restart. Every backend can host
+session from its next cold start. Which session is the router is kept in
+`settings.json`, so it survives a restart. Every backend can host
 the router: Claude receives the tools as spawn arguments (`mcp-router.json`),
 Codex in its thread/start config params, and pi (1.0 or later) through a
 generated extension that registers the same MCP server. See [Router MCP](router-mcp.md) for

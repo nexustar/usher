@@ -597,6 +597,11 @@ func (r *Router) RouterSession() string {
 // away.
 const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
 	"route it to a session with the usher tools, creating one when none fits. " +
+	"The session you last sent work to, created or resolved is the current one, and while there is one you are a relay: " +
+	"a message that names no other session and is not about managing sessions goes to it with send_to_session, " +
+	"in the user's own words — reworded only as far as it needs to stand on its own. " +
+	"Do not answer such a message yourself, and do not read the session's transcript to answer for it: " +
+	"read_session_transcript is for when the user asks what a session has said or done. " +
 	"Your own working directory is not a workspace: never pass it as a cwd or mention it in what you send. " +
 	"When the user names no directory and the work belongs to no existing session's project, create the session without a cwd."
 
@@ -610,12 +615,12 @@ var routerArgs = map[string][]string{
 
 // StartRouter creates the router session with prompt as its first message,
 // replacing the current one: the previous router is an ordinary session from
-// its next cold start. It runs on the configured router backend and model.
-func (r *Router) StartRouter(prompt string) (string, error) {
+// its next cold start. An empty backend or model means usher's default
+// backend and that backend's default model.
+func (r *Router) StartRouter(prompt, backend, model string) (string, error) {
 	if r.settings == nil {
 		return "", errors.New("router sessions are not configured")
 	}
-	backend, model := r.RouterModel()
 	if backend == "" {
 		backend = r.defaultBackend
 	}
@@ -638,32 +643,6 @@ func (r *Router) StartRouter(prompt string) (string, error) {
 // RouterDir is the cwd router sessions run in.
 func (r *Router) RouterDir() string {
 	return r.routerDir
-}
-
-// RouterModel is the backend and model new router sessions run on; empty
-// means usher's default backend and the backend's default model.
-func (r *Router) RouterModel() (backend, model string) {
-	if r.settings == nil {
-		return "", ""
-	}
-	s := r.settings.Router()
-	return s.Backend, s.Model
-}
-
-// SetRouterModel chooses what new router sessions run on. The current router
-// session keeps what it started with.
-func (r *Router) SetRouterModel(backend, model string) error {
-	if r.settings == nil {
-		return errors.New("router sessions are not configured")
-	}
-	if _, ok := r.backends[backend]; backend != "" && !ok {
-		return fmt.Errorf("backend %q is not available", backend)
-	}
-	if model == "default" {
-		model = ""
-	}
-	r.settings.SetRouterModel(backend, model)
-	return nil
 }
 
 func (r *Router) Archive(sessionID string)       { r.meta.Archive(sessionID) }
