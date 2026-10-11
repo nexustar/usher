@@ -1232,6 +1232,7 @@ pre.raw-markdown {
 }
 .chat-message .turn-fork:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
 .chat-message .turn-fork:disabled { opacity: 0.5; cursor: default; }
+.router-view .turn-fork { display: none; }
 
 /* Session status dot. "live" (warm process, idle) is a DIM solid green dot —
    present but quiet, so a row of idle sessions doesn't shout and full
@@ -2016,24 +2017,17 @@ pre.raw-markdown {
 }
 .cfg-form-advanced[open] summary { margin-bottom: 1.15rem; }
 .cfg-form-advanced label + label { margin-top: 1.15rem; }
-/* Work handed to another session. The marker is a row in the tool-block
- * family; the reply is a card that names its speaker first, as the user's
+/* Work handed to another session. The marker is a tool block that unfolds
+ * to what was sent; the reply is a card that names its speaker first, as the user's
  * bubble does by sitting on the right. */
-.routed-part {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  margin: 0.4rem 0;
-  padding: 0.3rem 0.6rem;
-  border: 1px solid var(--border-muted);
-  border-radius: 12px;
+.chat-message.assistant .tool-details.routed-part summary {
   color: var(--text-muted);
-  font-size: var(--font-meta);
-  text-decoration: none;
-  overflow-wrap: anywhere;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
 }
-.routed-part:hover { background: var(--bg-hover); }
 .routed-arrow { color: var(--text-faint); }
+.routed-open { margin-left: 0.6rem; color: var(--text-faint); font-weight: 400; }
 .chat-message.routed {
   width: fit-content;
   max-width: min(92%, 760px);

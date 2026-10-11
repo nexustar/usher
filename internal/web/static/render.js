@@ -76,8 +76,7 @@ export function renderMarkdown(md) {
     '$1#unsafe"',
   );
   // Markdown links open away from the SPA, except hash routes: those are
-  // internal navigation (for example the server-generated "Switching to"
-  // banner) and stay consistent with the header/sidebar focus links.
+  // internal navigation, like the links to sessions.
   html = html.replace(
     /<a (?=[^>]*\bhref="(?!#\/))/g,
     '<a target="_blank" rel="noopener" ',
@@ -211,7 +210,7 @@ function toolBodyHTML(p) {
 // result (the same "first {…} span" trick parseImageDims uses). The id is only
 // in the result, never the arguments: create_session doesn't know it yet when
 // it is called.
-function parseRoutedSession(content) {
+export function parseRoutedSession(content) {
   if (!content) return '';
   const a = content.indexOf('{');
   const b = content.lastIndexOf('}');
@@ -224,16 +223,25 @@ function parseRoutedSession(content) {
   }
 }
 
-// renderRoutedPart marks where work was handed to another session. The reply
-// is not the model's to deliver: the detail view places it in the conversation
-// as its own message when it lands.
+// renderRoutedPart marks where work was handed to another session, and
+// unfolds to what was sent — the one thing about a dispatch that cannot be
+// taken back. The reply is not the model's to deliver: the detail view places
+// it in the conversation as its own message when it lands.
 function renderRoutedPart(p) {
   const id = parseRoutedSession(p.content);
   if (!id) return '';
+  let sent = '';
+  try {
+    const input = JSON.parse(p.tool_input || '{}');
+    sent = input.text || input.initial_message || '';
+  } catch (_) { /* no input recorded */ }
   // The title is filled in once the detail view knows the session's name.
-  return '<a class="routed-part" href="#/s/' + esc(encodeURIComponent(id)) + '" data-session="' + esc(id) +
-    '" title="Open this session"><span class="routed-arrow" aria-hidden="true">→</span>' +
-    '<span class="routed-title">' + esc(sessionTitle(id)) + '</span></a>';
+  return '<details class="tool-details routed-part" data-session="' + esc(id) + '">' +
+    '<summary><span class="routed-arrow" aria-hidden="true">→</span> ' +
+    '<span class="routed-title">' + esc(sessionTitle(id)) + '</span>' +
+    '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) + '" title="Open this session">open ↗</a></summary>' +
+    (sent ? '<div class="tool-scroll"><pre class="tool-input">' + esc(sent) + '</pre></div>' : '') +
+    '</details>';
 }
 
 // sessionTitle is a session's title as the sidebar last saw it, else its

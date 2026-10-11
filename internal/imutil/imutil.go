@@ -9,26 +9,12 @@ import (
 	"time"
 )
 
-// RelayNoteMark opens the notes usher folds into a router session's next
-// prompt (router.relayNoteText). It is what lets an echo check recognize a
-// prompt that grew a preamble on its way to the backend.
-const RelayNoteMark = "[session "
-
 // SamePromptEcho reports whether an observed canonical prompt is the input an
 // IM frontend just sent. usher rewrites the /skill compatibility form to Codex's
 // native $skill form before starting the turn (sender.codexSlashSkillPrompt),
 // so only the sigil may differ — the name itself is matched exactly there.
-//
-// A router session's prompt may also arrive with relay notes folded in front
-// of it, so the echo is the tail rather than the whole text. Matching the note
-// marker as well as the suffix keeps that from degenerating into "any prompt
-// ending in what we sent".
 func SamePromptEcho(sent, observed string) bool {
 	if sent == observed {
-		return true
-	}
-	if sent != "" && strings.HasPrefix(observed, RelayNoteMark) &&
-		strings.HasSuffix(observed, "\n\n"+sent) {
 		return true
 	}
 	return len(sent) > 1 && sent[0] == '/' && strings.HasPrefix(observed, "$") &&

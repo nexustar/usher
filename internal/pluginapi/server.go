@@ -129,7 +129,7 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	relayed, err := s.router.RouteToSession(id, req.Text)
 	if err != nil {
-		api.WriteError(w, http.StatusConflict, err.Error())
+		api.WriteError(w, api.ErrStatus(err), err.Error())
 		return
 	}
 	api.WriteJSON(w, http.StatusAccepted, Delivery{SessionID: id, Relayed: relayed})
@@ -175,7 +175,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if id := r.URL.Query().Get("session_id"); id != "" {
 		hits, truncated, err := s.router.SearchSessionTranscript(id, query, queryInt(r, "limit", 20, 100), contextChars)
 		if err != nil {
-			api.WriteError(w, http.StatusBadRequest, err.Error())
+			api.WriteError(w, api.ErrStatus(err), err.Error())
 			return
 		}
 		api.WriteJSON(w, http.StatusOK, SearchResult{

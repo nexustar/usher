@@ -240,7 +240,7 @@ func TestRelayReportsFailure(t *testing.T) {
 }
 
 // TestSendWithoutInboxStaysFireAndForget keeps the IM sidecars' contract: no
-// relay_to means 204 and nothing delivered anywhere else.
+// A plain send relays nothing anywhere.
 func TestSendWithoutInboxStaysFireAndForget(t *testing.T) {
 	f := pluginapitest.NewFakeRouter()
 	f.AddSession(core.Session{ID: "s1"})

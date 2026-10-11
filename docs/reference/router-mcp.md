@@ -61,7 +61,7 @@ router:
   copy neither sees nor tolerates. With no router session designated, sends
   still land and every ack reports `relayed: false`, which the tool result
   turns into "collect it with read_session_transcript".
-- A session created from a router agent is reachable: usher minted its id,
+- The router session usher starts is reachable: usher minted its id,
   spawned it with the routing tools, and recorded the designation, so the relay
   closes the loop with no polling anywhere.
 
@@ -69,10 +69,6 @@ The control socket serves the same session routes as the web API, under
 `/v1`. Routed work has two routes of its own, used only by these tools:
 `POST /v1/sessions/{id}/route` and `POST /v1/route` take the body of a send and
 of a create, and answer `{"id", "relayed"}`.
-
-Because a folded prompt is no longer byte-identical to what the user typed, the
-IM hubs match their own echo by that preamble (`imutil.SamePromptEcho`) — worth
-knowing before adding any other server-side prompt rewriting.
 
 ## The current session
 
@@ -137,6 +133,7 @@ The MCP process derives `plugin.sock` from the directory containing
 
 Start it from a plain terminal. Inside an usher-managed session it would
 inherit that session's `CLAUDE*` environment. usher cannot deliver into a
-session it does not run, so this router has no inbox: every ack reports
-`relayed: false` and results have to be collected with
+session it does not run, so this Claude never receives a reply itself: with no
+router session every ack reports `relayed: false`, with one the notes go to
+that session, and either way results are collected with
 `read_session_transcript`.

@@ -35,7 +35,6 @@ import (
 	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
-	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
@@ -616,14 +615,7 @@ func (s *Server) handleStartRouter(w http.ResponseWriter, r *http.Request) {
 // handleRouted resolves the replies to the work a session routed elsewhere, for
 // the turns from ?from= on (the newest page without it).
 func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var turns []core.Turn
-	var err error
-	if from := r.URL.Query().Get("from"); from != "" {
-		turns, err = s.router.ReadTurnsFrom(id, from)
-	} else {
-		turns, _, err = s.router.ReadTurns(id, "", 50)
-	}
+	replies, err := s.router.RoutedRepliesFrom(r.PathValue("id"), r.URL.Query().Get("from"))
 	switch {
 	case errors.Is(err, router.ErrSessionNotFound):
 		api.WriteError(w, http.StatusNotFound, err.Error())
@@ -632,7 +624,7 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, s.router.RoutedReplies(turns))
+	api.WriteJSON(w, http.StatusOK, replies)
 }
 
 func (s *Server) handleSessionCommands(w http.ResponseWriter, r *http.Request) {

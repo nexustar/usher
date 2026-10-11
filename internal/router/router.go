@@ -1,8 +1,6 @@
 // Package router glues discovery, sender, broker, and hook together. It is
-// the central coordinator that the web layer and the Usher Agent both go
-// through, and serves as the type that satisfies the agent's AgentAPI
-// contract — keeping the agent's surface a strict subset of usher's
-// internals.
+// the central coordinator the web layer, the control socket and the IM hubs
+// all go through.
 package router
 
 import (
@@ -24,7 +22,6 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
-	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
@@ -141,8 +138,25 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 // this hands the routing tools back before the router session is resumed.
 func (r *Router) SetSettings(s *settings.Store, routerDir string) {
 	r.settings = s
+	if abs, err := filepath.Abs(routerDir); err == nil {
+		routerDir = abs
+	}
 	r.routerDir = routerDir
 	r.designateRouter(s.Router().SessionID)
+}
+
+// retireRouter makes a replaced router an ordinary session: what made it a
+// router — the prompt, the missing local tools, the blanket approval — goes,
+// and its process stops so the next message starts it as any other session.
+func (r *Router) retireRouter(id string) {
+	if r.meta != nil {
+		r.meta.SetAppendSystemPrompt(id, "")
+		r.meta.SetExtraArgs(id, nil)
+	}
+	if r.interactions != nil {
+		r.interactions.SetAutoApprove(id, false)
+	}
+	r.stopLive(id)
 }
 
 // designateRouter tells every runtime which session is the router; each keeps
@@ -383,7 +397,7 @@ func (r *Router) ReadTurns(id, before string, limit int) (turns []core.Turn, mor
 		return nil, false, err
 	}
 	turns, more, err = format.ReadBefore(path, before, limit)
-	return wireTurns(turns), more, err
+	return r.wireTurnsOf(id, turns), more, err
 }
 
 // ReadTurnsFrom returns the turn at cursor from and every turn after it, or
@@ -394,7 +408,7 @@ func (r *Router) ReadTurnsFrom(id, from string) ([]core.Turn, error) {
 		return nil, err
 	}
 	turns, err := format.ReadFrom(path, from)
-	return wireTurns(turns), err
+	return r.wireTurnsOf(id, turns), err
 }
 
 func (r *Router) transcriptOf(id string) (backendpkg.Transcript, string, error) {
@@ -412,10 +426,28 @@ func (r *Router) transcriptOf(id string) (backendpkg.Transcript, string, error) 
 func wireTurns(turns []core.Turn) []core.Turn {
 	for i := range turns {
 		turns[i].Time = turns[i].DisplayTime()
+	}
+	return turns
+}
+
+// userText is what the user typed in a prompt of session id. A router
+// session's prompt may carry relay notes in front: those are the model's, and
+// the user reads the replies as messages of their own.
+func (r *Router) userText(id, prompt string) string {
+	if r.routerDir == "" {
+		return prompt
+	}
+	if sess, ok := r.GetSession(id); !ok || sess.Cwd != r.RouterDir() {
+		return prompt
+	}
+	return stripRelayNotes(prompt)
+}
+
+func (r *Router) wireTurnsOf(id string, turns []core.Turn) []core.Turn {
+	turns = wireTurns(turns)
+	for i := range turns {
 		if turns[i].Role == "user" {
-			// The notes are the router model's; the user reads those replies
-			// as messages of their own.
-			turns[i].Content = stripRelayNotes(turns[i].Content)
+			turns[i].Content = r.userText(id, turns[i].Content)
 		}
 	}
 	return turns
@@ -597,6 +629,11 @@ func (r *Router) RouterSession() string {
 // away.
 const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
 	"route it to a session with the usher tools, creating one when none fits. " +
+	"Greetings and questions about the sessions themselves are yours to answer. " +
+	"To pick a session, prefer the current one, then one working in the directory the request is about; " +
+	"when two or three fit equally, ask which, naming them by title and short id. Never invent a session id. " +
+	"Answer a session's permission request or change its auto-approve only when the user asks you to, " +
+	"never to unblock work you sent. " +
 	"The session you last sent work to, created or resolved is the current one, and while there is one you are a relay: " +
 	"a message that names no other session and is not about managing sessions goes to it with send_to_session, " +
 	"in the user's own words — reworded only as far as it needs to stand on its own. " +
@@ -608,9 +645,27 @@ const routerPrompt = "You are usher's session router. Never answer a substantive
 var routerArgs = map[string][]string{
 	// No built-in tool at all, and no MCP server but usher's own.
 	"claude": {"--tools", "", "--strict-mcp-config"},
-	"codex":  {"--sandbox", "read-only", "--ask-for-approval", "never"},
+	// No shell, image viewer or web search; what is left cannot write.
+	"codex": {
+		"--sandbox", "read-only", "--ask-for-approval", "never",
+		"-c", "features.shell_tool=false", "-c", "features.view_image=false", "-c", `web_search="disabled"`,
+	},
 	// An allowlist: without it a user-level MCP server switches codemode on.
-	"pi": {"--tools", "mcp__usher__*,show_image"},
+	"pi": {"--tools", PiRouterTools()},
+}
+
+// PiRouterTools names usher's tools one by one: pi matches a pattern in --tools
+// only from 1.0.4 on. The names are the routing tools' as pi's MCP support
+// registers them.
+func PiRouterTools() string {
+	names := []string{"show_image"}
+	for _, tool := range []string{
+		"list_sessions", "resolve_session", "send_to_session", "read_session_transcript", "search_sessions",
+		"create_session", "list_pending_interactions", "respond_to_interaction", "set_auto_approve", "set_archived",
+	} {
+		names = append(names, "mcp__usher__"+tool)
+	}
+	return strings.Join(names, ",")
 }
 
 // StartRouter creates the router session with prompt as its first message,
@@ -640,8 +695,12 @@ func (r *Router) StartRouter(prompt, backend, model string) (string, error) {
 	})
 }
 
-// RouterDir is the cwd router sessions run in.
+// RouterDir is the cwd router sessions run in, as a session reports it: with
+// symlinks resolved.
 func (r *Router) RouterDir() string {
+	if resolved, err := filepath.EvalSymlinks(r.routerDir); err == nil {
+		return resolved
+	}
 	return r.routerDir
 }
 
@@ -898,10 +957,13 @@ func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 // the user typed can be told apart from them again.
 const relayNotesEnd = "[end of session replies]"
 
+// relayNoteMark opens every relay note.
+const relayNoteMark = "[session "
+
 // stripRelayNotes returns the prompt the user typed from one that reached the
 // router with notes folded in front of it.
 func stripRelayNotes(prompt string) string {
-	if !strings.HasPrefix(prompt, imutil.RelayNoteMark) {
+	if !strings.HasPrefix(prompt, relayNoteMark) {
 		return prompt
 	}
 	if _, typed, ok := strings.Cut(prompt, "\n\n"+relayNotesEnd+"\n\n"); ok {
@@ -1090,7 +1152,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			// transcript truth-up; no event needed.
 			continue
 		}
-		raw, mErr := json.Marshal(map[string]any{"role": "user", "content": stripRelayNotes(t.Content), "ts": t.Time})
+		raw, mErr := json.Marshal(map[string]any{"role": "user", "content": r.userText(sessionID, t.Content), "ts": t.Time})
 		if mErr == nil {
 			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnUser, Raw: raw})
 		}
@@ -1806,6 +1868,11 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 		ExtraArgs: o.ExtraArgs, AutoApprove: o.AutoApprove, Router: o.Router,
 	})
 	if err != nil {
+		if o.Router {
+			// A runtime may already have pointed its routing tools at the id
+			// that never came to be: point them back at the router there is.
+			r.designateRouter(r.routerInbox())
+		}
 		return "", nil, nil, err
 	}
 	if r.meta != nil {
@@ -1818,6 +1885,7 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 		// what survives a restart.
 		if prev := r.settings.Router().SessionID; prev != "" && prev != id {
 			slog.Info("router session replaced", "session", id, "previous", prev)
+			r.retireRouter(prev)
 		}
 		r.settings.SetRouterSession(id)
 		r.designateRouter(id)

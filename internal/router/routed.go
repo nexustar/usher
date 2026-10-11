@@ -13,10 +13,32 @@ import (
 // backend's MCP naming.
 var routingTool = regexp.MustCompile(`(^|__)(send_to_session|create_session)$`)
 
+// RoutedRepliesFrom resolves the replies to the work session id routed
+// elsewhere, in its turns from cursor from on (its newest page without one).
+func (r *Router) RoutedRepliesFrom(id, from string) ([]core.RoutedReply, error) {
+	format, path, err := r.transcriptOf(id)
+	if err != nil {
+		return nil, err
+	}
+	// Read unwired: a turn's Time must be when it began, which is when it
+	// could first have dispatched anything — not when it ended.
+	var turns []core.Turn
+	if from != "" {
+		turns, err = format.ReadFrom(path, from)
+	} else {
+		turns, _, err = format.ReadBefore(path, "", 50)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r.RoutedReplies(turns), nil
+}
+
 // RoutedReplies resolves, for each routing tool call in turns, the reply it
 // led to in the target session. Nothing records that link: the call's prompt is
 // in the caller's transcript and the target's transcript holds the same text
-// as a user turn, so the reply is the turn that answers it.
+// as a user turn, so the reply is the turn that answers it. A turn's Time is
+// taken as when it began.
 func (r *Router) RoutedReplies(turns []core.Turn) []core.RoutedReply {
 	out := []core.RoutedReply{}
 	for _, t := range turns {
@@ -52,47 +74,44 @@ func (r *Router) RoutedReplies(turns []core.Turn) []core.RoutedReply {
 const routedSearchPages = 8
 
 // replyTo finds the turn that answered prompt in session id: the one after the
-// first user turn carrying that text since the dispatching turn began. done is
-// false while that reply is still being written.
+// first user turn carrying that text since the dispatching turn began — the
+// first, because the same text may have been sent again later. done is false
+// while an answer is still to come or still being written.
 func (r *Router) replyTo(id, prompt string, since time.Time) (reply string, at time.Time, done bool) {
 	prompt = strings.TrimSpace(prompt)
 	// The dispatching turn's clock and the target's are the same machine's, but
 	// allow for a turn stamped as it was queued.
 	since = since.Add(-5 * time.Second)
-	var newer []core.Turn // turns after the page being scanned, oldest first
+	var all []core.Turn // the target's turns back to since, oldest first
 	before := ""
 	for page := 0; page < routedSearchPages; page++ {
 		turns, more, err := r.ReadTurns(id, before, 50)
 		if err != nil || len(turns) == 0 {
-			return "", time.Time{}, false
+			break
 		}
-		all := append(turns, newer...)
-		match := -1
-		for i := range turns {
-			t := turns[i]
-			if t.Role == "user" && !t.Time.Before(since) && strings.TrimSpace(t.Content) == prompt {
-				match = i
-				break
-			}
+		all = append(turns, all...)
+		if !more || turns[0].Time.Before(since) {
+			break
 		}
-		if match >= 0 && match+1 < len(all) {
-			next := all[match+1]
-			last := match+1 == len(all)-1
-			switch next.Role {
-			case "assistant":
-				done = !last || !r.running(id)
-				return turnText(next), next.DisplayTime(), done
-			case "error":
-				return next.Content, next.Time, true
-			}
-			return "", time.Time{}, false
-		}
-		if match >= 0 || !more || turns[0].Time.Before(since) {
-			return "", time.Time{}, false
-		}
-		newer, before = all, turns[0].Cursor
+		before = turns[0].Cursor
 	}
-	return "", time.Time{}, false
+	for i, t := range all {
+		if t.Role != "user" || t.Time.Before(since) || strings.TrimSpace(t.Content) != prompt {
+			continue
+		}
+		if i+1 == len(all) {
+			break
+		}
+		switch next := all[i+1]; next.Role {
+		case "assistant":
+			return turnText(next), next.DisplayTime(), i+1 < len(all)-1 || !r.running(id)
+		case "error":
+			return next.Content, next.Time, true
+		}
+		break
+	}
+	// No answer yet; once the session has stopped there never will be one.
+	return "", time.Time{}, !r.running(id)
 }
 
 func (r *Router) running(id string) bool {

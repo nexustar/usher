@@ -36,12 +36,6 @@ func TestSamePromptEchoAllowsCodexSlashSkillNormalization(t *testing.T) {
 		// The rewrite matches names exactly, so a cased echo is a real
 		// mismatch, not the rewrite — do not swallow it.
 		{"/ImageGen draw", "$imagegen draw", false},
-		// A router's prompt carries usher's relay notes in front of it.
-		{"what happened?", "[session abc replied] built it\n\nwhat happened?", true},
-		// Without the note marker it is a different prompt that merely ends
-		// the same way, and the topic should still echo it.
-		{"what happened?", "and now, what happened?", false},
-		{"", "[session abc replied] built it\n\n", false},
 	}
 	for _, tt := range tests {
 		if got := SamePromptEcho(tt.sent, tt.observed); got != tt.want {

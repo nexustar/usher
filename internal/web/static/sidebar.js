@@ -96,10 +96,9 @@ export function renderSidebarSessions(allSessions) {
   const recencyKey = s => Date.parse(s.last_input_at) || Date.parse(s.last_event_at) || 0;
   const recencyOf = arr => Math.max(...arr.map(recencyKey));
   const byRecent = (a, b) => recencyKey(b) - recencyKey(a);
-  // Sort cwd groups by their most-recent visible activity, not absolute —
-  // after which comes the router's own directory, whatever its activity.
-  //
+  // Sort cwd groups by their most-recent visible activity, not absolute
   // — stale cwds with one expanded archived row shouldn't jump to the top.
+  // The router's own directory comes last, whatever its activity.
   cwds.sort((a, b) => {
     if ((a === routerDir) !== (b === routerDir)) return a === routerDir ? 1 : -1;
     const av = groups.get(a).filter(s => !s.archived);

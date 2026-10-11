@@ -18,7 +18,6 @@ import (
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/discovery"
-	"github.com/nexustar/usher/internal/imutil"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
@@ -1152,8 +1151,8 @@ func TestFoldedRelayExcerptsLongReplies(t *testing.T) {
 	}
 	// The IM hubs recognize a folded prompt by this marker (imutil.SamePromptEcho),
 	// so that their own echo suppression survives the preamble.
-	if !strings.HasPrefix(folded, imutil.RelayNoteMark) {
-		t.Fatalf("folded prompt does not open with %q: %q", imutil.RelayNoteMark, folded)
+	if !strings.HasPrefix(folded, relayNoteMark) {
+		t.Fatalf("folded prompt does not open with %q: %q", relayNoteMark, folded)
 	}
 }
 
@@ -1236,7 +1235,8 @@ func TestRoutedRepliesMatchByContent(t *testing.T) {
 	if got[1].Reply != "second run: red" || !got[1].Done {
 		t.Errorf("second dispatch = %+v", got[1])
 	}
-	if got[2].Reply != "" || got[2].Done {
+	// The session is idle and never took this up: settled, with nothing to show.
+	if got[2].Reply != "" || !got[2].Done {
 		t.Errorf("unanswered dispatch = %+v", got[2])
 	}
 }
@@ -1266,5 +1266,63 @@ func TestRouteNewSessionDefaultsToTheTempDir(t *testing.T) {
 	}
 	if want, _ := filepath.EvalSymlinks(project); rt.req.Cwd != want {
 		t.Fatalf("a named cwd ran in %q, want %q", rt.req.Cwd, want)
+	}
+}
+
+// The dispatching turn usually runs on after the call — more tools, closing
+// text — so its end is no measure of when the work was sent; and work whose
+// session has stopped without answering is settled, not pending.
+func TestRoutedRepliesFromReadsTurnStarts(t *testing.T) {
+	tmp := t.TempDir()
+	line := func(sid, typ, ts, uuid, content string) string {
+		return `{"type":"` + typ + `","sessionId":"` + sid + `","cwd":"/tmp/x","timestamp":"` + ts + `","uuid":"` + uuid +
+			`","message":{"role":"` + typ + `","content":` + content + `}}` + "\n"
+	}
+	write := func(sid, log string) {
+		p := filepath.Join(tmp, "-tmp-x", sid+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(log), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	toolUse := func(id, text string) string {
+		return `[{"type":"tool_use","id":"` + id + `","name":"mcp__usher__send_to_session","input":{"session_id":"worker01","text":"` + text + `"}}]`
+	}
+	toolResult := func(id string) string {
+		return `[{"type":"tool_result","tool_use_id":"` + id + `","content":[{"type":"text","text":"{\"status\":\"delivered\",\"session_id\":\"worker01\"}"}]}]`
+	}
+	// The router's turn starts at :00, dispatches, and only ends at :40.
+	write("router01", line("router01", "user", "2026-07-01T12:00:00.000Z", "r1", `"run the tests, then tell me a joke"`)+
+		line("router01", "assistant", "2026-07-01T12:00:01.000Z", "r2", toolUse("t1", "run the tests"))+
+		line("router01", "user", "2026-07-01T12:00:02.000Z", "r3", toolResult("t1"))+
+		line("router01", "assistant", "2026-07-01T12:00:03.000Z", "r4", toolUse("t2", "never answered"))+
+		line("router01", "user", "2026-07-01T12:00:04.000Z", "r5", toolResult("t2"))+
+		line("router01", "assistant", "2026-07-01T12:00:40.000Z", "r6", `[{"type":"text","text":"sent"}]`))
+	write("worker01", line("worker01", "user", "2026-07-01T12:00:01.500Z", "w1", `"run the tests"`)+
+		line("worker01", "assistant", "2026-07-01T12:00:09.000Z", "w2", `[{"type":"text","text":"all green"}]`))
+
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := d.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := New(d, map[string]backend.Backend{"claude": {Runtime: &routerDesignationRuntime{}, Transcript: transcript.Claude{}}}, "claude",
+		broker.New(), nil, sessionmeta.New("", 0), nil)
+
+	got, err := r.RoutedRepliesFrom("router01", "")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("replies = %+v, %v", got, err)
+	}
+	if got[0].Reply != "all green" || !got[0].Done {
+		t.Errorf("reply to a dispatch early in a long turn = %+v", got[0])
+	}
+	if got[1].Reply != "" || !got[1].Done {
+		t.Errorf("work the idle session never took up = %+v, want settled with no reply", got[1])
 	}
 }

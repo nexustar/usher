@@ -11,7 +11,7 @@ import {
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
   forkBtnHTML, updateMessageTs,
-  backendMark, statusDot,
+  backendMark, statusDot, parseRoutedSession,
 } from './render.js';
 import { openTerminalScreen, wireTerminalControls, measureCols } from './terminal.js';
 import { loadSidebar } from './sidebar.js';
@@ -741,6 +741,17 @@ export async function showDetail(id) {
   if (!getLastSessions().length) await loadSidebar();
   await loadTranscript(id);
   if (epoch !== detailEpoch) return; // superseded before we wired the streams
+  if (sess.router) {
+    // The router has usher's tools only: nothing to approve, no shell worth
+    // opening in its own directory.
+    for (const control of ['auto-approve-toggle', 'term-toggle']) {
+      const el = document.getElementById(control);
+      if (el) el.hidden = true;
+    }
+    // Nor is a branch of the router a router: it would inherit a session
+    // with no tools at all.
+    document.getElementById('chat-scroll')?.classList.add('router-view');
+  }
 
   const chatEl = document.getElementById('chat-scroll');
   const promptEl = document.getElementById('prompt');
@@ -1101,6 +1112,9 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   };
 
   const handlers = {
+    // Mid-turn the dispatching turn is still a live bubble with no cursor to
+    // hang a reply on; its end fetches the transcript, which places it.
+    'relay.landed': () => { if (detailStreaming) liveTurnDirty = true; else syncRouted(id); },
     // Sent by the server on connect when the session is already mid-turn (the
     // started event predates this subscribe). beginTurn is idempotent, so if a
     // real subprocess.started also lands (connect raced the turn starting) it
@@ -1108,7 +1122,6 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     // gone (no broker replay) — mark the turn dirty so its end reconciles via
     // a full fetch. adoptLastTurnAsLive continues that same bubble instead of
     // starting a second one.
-    'relay.landed': () => syncRouted(id),
     'turn.active': () => {
       if (!liveTurn && adoptLastTurnAsLive()) {
         showLiveWorking(liveTurn);
@@ -1168,7 +1181,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       if (echo) {
         updateMessageTs(echo, d.ts);
         echo.classList.remove('optimistic');
-        renderedTurns.push({ key: turnKey(t), node: echo });
+        renderedTurns.push({ key: turnKey(t), node: echo, time: t.ts });
         return;
       }
       const node = appendChatMessage(t);
@@ -1176,7 +1189,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
         if (liveTurn && liveTurn.node && liveTurn.node.parentNode === el) {
           el.insertBefore(node, liveTurn.node);
         }
-        renderedTurns.push({ key: turnKey(t), node });
+        renderedTurns.push({ key: turnKey(t), node, time: t.ts });
       }
       liveTurnDirty = true;
     },
@@ -1248,11 +1261,13 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
 // showDetail — or, when there is none (or the user asked for a new one), a
 // bare composer whose first message creates it.
 export async function showRouter(fresh) {
+  const epoch = ++detailEpoch;
   let router = {};
   try {
     const res = await fetch('/api/config');
     if (res.ok) router = (await res.json()).router || {};
   } catch { /* fall through to the empty view */ }
+  if (epoch !== detailEpoch) return; // the user went elsewhere meanwhile
   if (!fresh && router.session_id) return showDetail(router.session_id);
   // A new conversation picks what it runs on, starting from this browser's
   // last choice.
@@ -1262,8 +1277,8 @@ export async function showRouter(fresh) {
     const res = await fetch('/api/models');
     if (res.ok) catalog = await res.json();
   } catch { /* no picker: the last choice, or usher's defaults, apply */ }
+  if (epoch !== detailEpoch) return;
 
-  ++detailEpoch;
   clearListInterval();
   setCurrentDetailId(null);
   setCurrentDraftKey('router');
@@ -1541,6 +1556,13 @@ function appendLivePart(d) {
   const lt = ensureLiveTurn();
   if (!lt) return;
   lt.node.classList.remove('awaiting-output');
+  // A turn that routed work, or changed the current session, ends with a
+  // transcript fetch: replies and the focus hang on the turn's cursor and
+  // parts, which a promoted live bubble does not have.
+  if (p.type === 'tool' && FOCUS_TOOL.test(p.tool_name || '')) {
+    liveTurnDirty = true;
+    setRoutedTargets([...routedTargetIds(), parseRoutedSession(p.content)].filter(Boolean));
+  }
   // Pi emits pending tool cards before results; enrich the matching card even
   // when parallel calls finish out of order instead of rendering a duplicate.
   let enrichIndex = -1;
@@ -1640,7 +1662,7 @@ function finalizeTurn(id, d) {
     else lt.node.insertAdjacentHTML('beforeend', forkBtnHTML(d.assistant_uuid));
   }
   lt.node.classList.remove('optimistic');
-  renderedTurns.push({ key: turnKey({ role: 'assistant', ts, parts: lt.parts }), node: lt.node });
+  renderedTurns.push({ key: turnKey({ role: 'assistant', ts, parts: lt.parts }), node: lt.node, parts: lt.parts, ts, time: ts });
   updateLoadEarlier(id);
 }
 
@@ -1721,8 +1743,9 @@ async function loadTranscript(id) {
     const newKeys = turns.map(turnKey);
     let same = 0;
     while (base + same < renderedTurns.length && same < newKeys.length && renderedTurns[base + same].key === newKeys[same]) {
-      // A turn rendered from the live stream learns its cursor here.
-      renderedTurns[base + same].cursor = turns[same].cursor;
+      // A turn rendered from the live stream learns here what only the
+      // transcript knows: its cursor, and what routed replies hang on.
+      Object.assign(renderedTurns[base + same], turnEntry(turns[same], renderedTurns[base + same].node));
       same++;
     }
     for (let i = base + same; i < renderedTurns.length; i++) renderedTurns[i].node.remove();
@@ -1760,32 +1783,50 @@ let routedTimer = null;
 
 function routedReplyNode(rr) {
   const div = document.createElement('div');
-  const done = rr.done && rr.reply;
-  div.className = 'chat-message routed' + (done ? '' : ' pending');
+  div.className = 'chat-message routed' + (rr.done ? '' : ' pending');
   const name = esc(rr.title || 'session ' + rr.session_id.slice(0, 8));
   const href = '#/s/' + esc(encodeURIComponent(rr.session_id));
-  const ts = done && rr.ts ? `<span class="ts">${esc(new Date(rr.ts).toLocaleString())}</span>` : '';
+  const ts = rr.done && rr.ts ? `<span class="ts">${esc(new Date(rr.ts).toLocaleString())}</span>` : '';
   const head = `<div class="routed-head">${backendMark(rr.backend)}<a class="relay-source" href="${href}">${name}</a>${ts}</div>`;
-  if (!done) {
+  if (!rr.done) {
     const state = rr.status === 'awaiting_permission' ? 'waiting for approval' : 'working…';
     div.innerHTML = head + `<div class="routed-state">${statusDot('running')} ${state}</div>`;
-    return div;
+  } else if (!rr.reply) {
+    // Stopped without an answer to show: interrupted, tools only, or the
+    // prompt never reached it.
+    div.innerHTML = head + `<div class="routed-state">no reply</div>`;
+  } else {
+    div.innerHTML = head +
+      `<div class="routed-body"><div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div></div>`;
   }
-  div.innerHTML = head +
-    `<div class="routed-body"><div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div></div>`;
   return div;
+}
+
+// routedTargetIds are the sessions the rendered conversation routed work to.
+// Read off the turns rather than a fetch, so a worker's permission request
+// shows here the moment the dispatch is on screen.
+function routedTargetIds() {
+  const ids = [];
+  for (const r of renderedTurns) {
+    for (const p of r.parts || []) {
+      if (p.type !== 'tool' || !ROUTING_TOOL.test(p.tool_name || '')) continue;
+      const id = parseRoutedSession(p.content);
+      if (id) ids.push(id);
+    }
+  }
+  return ids;
 }
 
 async function syncRouted(id) {
   clearTimeout(routedTimer);
   updateRouterFocus();
+  if (id === currentDetailId) setRoutedTargets(routedTargetIds());
   const el = document.getElementById('chat-scroll');
   if (!el || id !== currentDetailId) return;
   const routes = renderedTurns.some(r => (r.parts || []).some(p => p.type === 'tool' && ROUTING_TOOL.test(p.tool_name || '')));
   if (!routes) {
     el.querySelectorAll(':scope > .routed').forEach(n => n.remove());
     routedSig = '';
-    setRoutedTargets([]);
     return;
   }
   const first = renderedTurns.find(r => r.cursor);
@@ -1797,7 +1838,6 @@ async function syncRouted(id) {
     replies = await res.json();
   } catch { return; }
   if (id !== currentDetailId) return;
-  setRoutedTargets(replies.map(rr => rr.session_id));
   // Placement depends on the turns around a reply, so they are part of what
   // "unchanged" means.
   const sig = JSON.stringify(replies) + '|' + renderedTurns.map(r => r.cursor || '').join(',');
@@ -1812,7 +1852,7 @@ async function syncRouted(id) {
       // A finished reply goes where it landed: ahead of the first later turn
       // that began after it. One still in flight stays under its dispatch.
       let before = renderedTurns[at + 1];
-      if (rr.done && rr.reply) {
+      if (rr.done && rr.ts) {
         const landed = Date.parse(rr.ts || '') || 0;
         before = renderedTurns.slice(at + 1).find(r => (Date.parse(r.time || '') || 0) > landed);
       }
@@ -1829,7 +1869,7 @@ async function syncRouted(id) {
   }
   // No event announces a reply that was not relayed, or the moment a landed
   // one stops being "still running" — look again while anything is pending.
-  if (replies.some(rr => !(rr.done && rr.reply))) {
+  if (replies.some(rr => !rr.done)) {
     routedTimer = setTimeout(() => syncRouted(id), 4000);
   }
 }
@@ -1959,6 +1999,7 @@ async function loadEarlier(id) {
     hasEarlier = page.more && page.turns.length > 0;
     el.scrollTop = anchorTop + (el.scrollHeight - anchorHeight);
     updateLoadEarlier(id);
+    syncRouted(id);
   } catch {/* window unchanged — the button stays for a retry */}
   finally { loadingEarlier = false; }
 }

@@ -153,8 +153,8 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 // claudeHookSettings builds the inline --settings JSON. With allowUsherTools
 // it pre-allows the usher MCP server's tools: they are usher's own control
 // surface, so gating them behind usher's own permission UI is circular — and
-// without this, a session-tools grant means approving each of the ten routing
-// tools separately (permission scope is per tool name). Parity with codex's
+// without this, the router's ten routing tools are each approved separately
+// (permission scope is per tool name). Parity with codex's
 // default_tools_approval_mode "approve"; local tools stay supervised.
 func claudeHookSettings(hookSock string, allowUsherTools bool, logger *slog.Logger) string {
 	exe, err := os.Executable()
@@ -210,14 +210,26 @@ func codexMCPConfig(routerTools bool, logger *slog.Logger) map[string]any {
 	if routerTools {
 		args = append(args, "--router-tools")
 	}
+	// Codex's default callable MCP namespace keeps the legacy mcp__ prefix;
+	// the unprefixed form covers installations with that feature enabled.
+	direct := []string{"mcp__usher", "usher"}
+	if routerTools {
+		// The whole table, not keys under it: it replaces the user's own
+		// servers, so the router sees usher's and no other.
+		return map[string]any{
+			"mcp_servers": map[string]any{"usher": map[string]any{
+				"command": exe, "args": args, "env_vars": []string{"USHER_HOOK_SOCK"},
+				"default_tools_approval_mode": "approve",
+			}},
+			"features.code_mode.direct_only_tool_namespaces": direct,
+		}
+	}
 	return map[string]any{
-		"mcp_servers.usher.command":                     exe,
-		"mcp_servers.usher.args":                        args,
-		"mcp_servers.usher.env_vars":                    []string{"USHER_HOOK_SOCK"},
-		"mcp_servers.usher.default_tools_approval_mode": "approve",
-		// Codex's default callable MCP namespace keeps the legacy mcp__ prefix;
-		// the unprefixed form covers installations with that feature enabled.
-		"features.code_mode.direct_only_tool_namespaces": []string{"mcp__usher", "usher"},
+		"mcp_servers.usher.command":                      exe,
+		"mcp_servers.usher.args":                         args,
+		"mcp_servers.usher.env_vars":                     []string{"USHER_HOOK_SOCK"},
+		"mcp_servers.usher.default_tools_approval_mode":  "approve",
+		"features.code_mode.direct_only_tool_namespaces": direct,
 	}
 }
 

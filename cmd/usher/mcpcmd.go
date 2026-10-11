@@ -24,8 +24,8 @@ import (
 // backend as a child of a usher-spawned session, so it inherits USHER_HOOK_SOCK
 // — the managed-session marker. By default it exposes only show_image. The
 // explicit --router-tools flag adds session-management tools backed by usher's
-// Unix control socket; generated backend configs deliberately omit that flag.
-// Unmanaged sessions get no tools.
+// Unix control socket; generated backend configs carry it for the router
+// session only. Unmanaged sessions get no tools.
 func runMCPStdio(args []string) error {
 	fs := flag.NewFlagSet("mcp-stdio", flag.ContinueOnError)
 	routerTools := fs.Bool("router-tools", false,
@@ -215,11 +215,15 @@ func writeToolResult(out *bufio.Writer, id json.RawMessage, value any, isErr boo
 		raw = []byte(`{"error":"failed to encode tool result"}`)
 		isErr = true
 	}
-	return writeResult(out, id, map[string]any{
-		"content":           []map[string]any{{"type": "text", "text": string(raw)}},
-		"structuredContent": value,
-		"isError":           isErr,
-	})
+	result := map[string]any{
+		"content": []map[string]any{{"type": "text", "text": string(raw)}},
+		"isError": isErr,
+	}
+	// structuredContent is defined as an object; a list goes as text only.
+	if len(raw) > 0 && raw[0] == '{' {
+		result["structuredContent"] = value
+	}
+	return writeResult(out, id, result)
 }
 
 // validateImage resolves the path against the process cwd (= the session cwd on

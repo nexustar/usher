@@ -75,11 +75,10 @@ func RouterTools() []Tool {
 		},
 		{
 			Name: "resolve_session",
-			Description: "Resolve a loose session reference — full id, unique id prefix, or unique title " +
-				"substring — to an exact session id, without sending it anything. Use it for a pure " +
-				"navigation request such as \"jump to X\", and never invent message text just to satisfy " +
-				"send_to_session. It cannot move the dashboard's focus, so do not tell the user the view " +
-				"switched.",
+			Description: "Resolve a loose session reference — full id, the first eight or more characters of " +
+				"one, or a unique title substring — to an exact session id, without sending it anything. " +
+				"Use it when the user turns to a session (\"focus X\", \"switch to X\"): it becomes the " +
+				"current session. Never invent message text just to satisfy send_to_session.",
 			InputSchema: object(map[string]any{
 				"session_id": map[string]any{"type": "string"},
 			}, "session_id"),
@@ -98,7 +97,7 @@ func RouterTools() []Tool {
 			Name: "read_session_transcript",
 			Description: "Read a page of a session transcript, oldest turn first. With neither cursor, the latest page. " +
 				"before pages backward: pass the returned before value while more is true. " +
-				"from starts at a turn found by search_sessions: pass a hit's cursor.",
+				"from starts at a turn found by search_sessions: pass a hit's cursor, and pass the returned from value to read on.",
 			InputSchema: object(map[string]any{
 				"session_id": map[string]any{"type": "string"},
 				"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
@@ -121,7 +120,7 @@ func RouterTools() []Tool {
 			Name: "create_session",
 			Description: "Create a coding-agent session and send its initial instruction. " +
 				"Use when the work fits no existing session. Pass cwd when the user names a directory or the work " +
-				"belongs to a project — it must already exist; leave it out for work tied to no project, which then " +
+				"belongs to a project — never a path you made up; leave it out for work tied to no project, which then " +
 				"runs in the system temp directory. Returns the new session id immediately. " + deliver,
 			InputSchema: object(map[string]any{
 				"cwd":             map[string]any{"type": "string"},
@@ -136,8 +135,9 @@ func RouterTools() []Tool {
 			InputSchema: object(map[string]any{}),
 		},
 		{
-			Name:        "respond_to_interaction",
-			Description: "Allow or deny one pending interaction. This handles permission decisions only; question-answer payloads remain in the web UI.",
+			Name: "respond_to_interaction",
+			Description: "Allow or deny one pending interaction, when the user asks you to — never on your own " +
+				"to unblock work you sent. This handles permission decisions only; question-answer payloads remain in the web UI.",
 			InputSchema: object(map[string]any{
 				"id":       map[string]any{"type": "string"},
 				"behavior": map[string]any{"type": "string", "enum": []string{"allow", "deny"}},
@@ -146,7 +146,7 @@ func RouterTools() []Tool {
 		},
 		{
 			Name:        "set_auto_approve",
-			Description: "Enable or disable usher's auto-approve setting for a session.",
+			Description: "Enable or disable usher's auto-approve setting for a session, when the user asks you to.",
 			InputSchema: object(map[string]any{
 				"session_id": map[string]any{"type": "string"},
 				"enabled":    map[string]any{"type": "boolean"},
@@ -281,10 +281,12 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		// from has no server-side limit: it returns everything after the cursor.
+		next := ""
 		if len(page.Turns) > limit {
+			next = page.Turns[limit].Cursor
 			page.Turns = page.Turns[:limit]
 		}
-		out := transcriptPage{Turns: make([]transcriptTurn, len(page.Turns)), More: page.More}
+		out := transcriptPage{Turns: make([]transcriptTurn, len(page.Turns)), More: page.More, From: next}
 		for i, t := range page.Turns {
 			out.Turns[i] = transcriptTurn{Role: t.Role, Content: turnText(t), Time: t.DisplayTime()}
 		}
@@ -469,6 +471,9 @@ type transcriptPage struct {
 	More  bool             `json:"more"`
 	// Before is the cursor for the page of older turns, set while More.
 	Before string `json:"before,omitempty"`
+	// From is the cursor to continue from when a read from a cursor was cut
+	// short at limit.
+	From string `json:"from,omitempty"`
 }
 
 type transcriptTurn struct {
@@ -540,7 +545,7 @@ func resolveSession(api *pluginapi.Client, query string) (pluginapi.SessionView,
 		if sess.ID == query {
 			return sess, nil
 		}
-		if strings.HasPrefix(sess.ID, query) {
+		if len(query) >= 8 && strings.HasPrefix(sess.ID, query) {
 			byID = append(byID, sess)
 		} else if strings.Contains(strings.ToLower(sess.Title), lower) {
 			matches = append(matches, sess)

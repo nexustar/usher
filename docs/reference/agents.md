@@ -113,7 +113,7 @@ boundary against the authenticated user:
   read files.
 - **pi**: `["--tools", "read,grep,find,ls"]` whitelists built-ins (this set is
   pi's own read-only preset); `["--no-builtin-tools"]` removes them all, which
-  for a router agent leaves exactly usher's tools — the strictest
+  on its own leaves no tools at all — the strictest
   router shape any backend offers. Note pi's default active set is only
   `read,bash,edit,write`, so prefer the whitelist form over `--exclude-tools`.
 

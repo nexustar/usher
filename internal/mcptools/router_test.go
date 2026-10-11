@@ -78,20 +78,25 @@ func TestCallListFiltersAndCaps(t *testing.T) {
 
 func TestCallResolveAndSendAck(t *testing.T) {
 	f := pluginapitest.NewFakeRouter()
-	f.AddSession(core.Session{ID: "abc123-full", Title: "deploy work"})
+	f.AddSession(core.Session{ID: "abc12345-full", Title: "deploy work"})
 	r := start(t, f)
 
 	resolved := call(t, r, "resolve_session", `{"session_id":"deploy"}`).(map[string]any)
-	if resolved["session_id"] != "abc123-full" {
+	if resolved["session_id"] != "abc12345-full" {
 		t.Fatalf("resolve by title = %#v", resolved)
 	}
-	resolved = call(t, r, "resolve_session", `{"session_id":"abc123"}`).(map[string]any)
-	if resolved["session_id"] != "abc123-full" {
+	resolved = call(t, r, "resolve_session", `{"session_id":"abc12345"}`).(map[string]any)
+	if resolved["session_id"] != "abc12345-full" {
 		t.Fatalf("resolve by id prefix = %#v", resolved)
 	}
 	if _, err := r.Call("resolve_session",
 		json.RawMessage(`{"session_id":"nope"}`)); err == nil {
 		t.Fatal("unknown session resolved")
+	}
+	// Shorter than the ids usher shows, a reference is a title, not an id:
+	// "abc" must not land on whichever session's id happens to start so.
+	if _, err := r.Call("resolve_session", json.RawMessage(`{"session_id":"abc"}`)); err == nil {
+		t.Fatal("a three-character id prefix resolved")
 	}
 
 	// send accepts the same loose reference resolve does, and acks without
@@ -99,17 +104,17 @@ func TestCallResolveAndSendAck(t *testing.T) {
 	f.AddSession(core.Session{ID: "router"})
 	f.SetRouterSession("router")
 	ack := call(t, r, "send_to_session", `{"session_id":"deploy","text":"ship it"}`).(map[string]any)
-	if ack["status"] != "delivered" || ack["session_id"] != "abc123-full" || ack["relayed"] != true {
+	if ack["status"] != "delivered" || ack["session_id"] != "abc12345-full" || ack["relayed"] != true {
 		t.Fatalf("send ack = %#v", ack)
 	}
-	if sent := f.Sent("abc123-full"); len(sent) != 1 || sent[0] != "ship it" {
+	if sent := f.Sent("abc12345-full"); len(sent) != 1 || sent[0] != "ship it" {
 		t.Fatalf("routed sends = %v", sent)
 	}
 	// The reply is reported to the router without prompting it: the note waits
 	// for the router's next turn, and the user reads the reply in the
 	// transcript rather than in a restatement.
 	got := f.WaitForRelay(t, "router", 1)
-	if got[0].SessionID != "abc123-full" || got[0].Reply != "reply: ship it" || got[0].Err != nil {
+	if got[0].SessionID != "abc12345-full" || got[0].Reply != "reply: ship it" || got[0].Err != nil {
 		t.Fatalf("relayed reply = %+v", got[0])
 	}
 	if sent := f.Sent("router"); len(sent) != 0 {

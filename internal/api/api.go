@@ -103,9 +103,9 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
 }
 
-// errStatus maps a router error onto the status a caller can branch on: the
+// ErrStatus maps a router error onto the status a caller can branch on: the
 // session is not there, it cannot take the request now, or it never can.
-func errStatus(err error) int {
+func ErrStatus(err error) int {
 	switch {
 	case errors.Is(err, core.ErrSessionNotFound):
 		return http.StatusNotFound
@@ -232,7 +232,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.router.DeleteSession(r.PathValue("id")); err != nil {
-		WriteError(w, errStatus(err), err.Error())
+		WriteError(w, ErrStatus(err), err.Error())
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]bool{"deleted": true})
@@ -261,11 +261,14 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 	}
 	title := strings.TrimSpace(req.Title)
 	if err := s.router.Rename(r.Context(), id, title); err != nil {
-		if errors.Is(err, core.ErrInvalidTitle) {
+		switch {
+		case errors.Is(err, core.ErrInvalidTitle):
 			WriteError(w, http.StatusBadRequest, err.Error())
-			return
+		case errors.Is(err, core.ErrSessionNotFound):
+			WriteError(w, http.StatusNotFound, err.Error())
+		default:
+			WriteError(w, http.StatusInternalServerError, err.Error())
 		}
-		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]string{"title": title})
@@ -339,7 +342,7 @@ func (s *Server) handleFork(w http.ResponseWriter, r *http.Request) {
 	}
 	newID, err := s.router.ForkSession(r.PathValue("id"), req.AfterUUID)
 	if err != nil {
-		WriteError(w, errStatus(err), err.Error())
+		WriteError(w, ErrStatus(err), err.Error())
 		return
 	}
 	WriteJSON(w, http.StatusCreated, map[string]string{"id": newID})
@@ -363,7 +366,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.router.SendToSession(r.PathValue("id"), req.Text); err != nil {
-		WriteError(w, errStatus(err), err.Error())
+		WriteError(w, ErrStatus(err), err.Error())
 		return
 	}
 	WriteJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})

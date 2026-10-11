@@ -9,9 +9,11 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nexustar/usher/internal/mcptools"
+	"github.com/nexustar/usher/internal/router"
 )
 
 func writeTestPNG(t *testing.T, path string, w, h int) {
@@ -111,5 +113,16 @@ func TestMCPToolsListDefaultsToImageOnly(t *testing.T) {
 	}
 	if len(resp.Result.Tools) != 1 || resp.Result.Tools[0]["name"] != "show_image" {
 		t.Fatalf("tools = %#v", resp.Result.Tools)
+	}
+}
+
+// The pi router's allowlist names the routing tools one by one; a tool added
+// to the catalog must be added there too, or pi's router never sees it.
+func TestPiRouterAllowlistCoversTheCatalog(t *testing.T) {
+	allowed := "," + router.PiRouterTools() + ","
+	for _, tool := range mcptools.RouterTools() {
+		if !strings.Contains(allowed, ",mcp__usher__"+tool.Name+",") {
+			t.Errorf("pi allowlist is missing %s", tool.Name)
+		}
 	}
 }
