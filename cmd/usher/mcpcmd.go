@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -13,15 +14,37 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nexustar/usher/internal/mcptools"
+	"github.com/nexustar/usher/internal/pluginapi"
 )
 
 // runMCPStdio is the worker for `usher mcp-stdio`: a minimal, dependency-free
 // MCP server (newline-delimited JSON-RPC 2.0 over stdin/stdout) launched by the
 // backend as a child of a usher-spawned session, so it inherits USHER_HOOK_SOCK
-// — the managed-session marker. It exposes one tool, show_image, which only
-// validates the path and acks (never returns bytes — rendering rides the jsonl
-// transcript, not the tool result). Unmanaged sessions get no tools.
-func runMCPStdio(_ []string) error {
+// — the managed-session marker. By default it exposes only show_image. The
+// explicit --router-tools flag adds session-management tools backed by usher's
+// Unix control socket; generated backend configs carry it for the router
+// session only. Unmanaged sessions get no tools.
+func runMCPStdio(args []string) error {
+	fs := flag.NewFlagSet("mcp-stdio", flag.ContinueOnError)
+	routerTools := fs.Bool("router-tools", false,
+		"expose usher session-routing tools in addition to show_image")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// A nil Router turns the routing tools off.
+	var router *mcptools.Router
+	if *routerTools {
+		hookSock := os.Getenv("USHER_HOOK_SOCK")
+		if hookSock == "" {
+			return errors.New("--router-tools requires USHER_HOOK_SOCK from a running usher instance")
+		}
+		router = &mcptools.Router{
+			API: pluginapi.NewClient(pluginapi.SocketPath(filepath.Dir(hookSock)), nil),
+		}
+	}
+
 	in := bufio.NewReader(os.Stdin)
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
@@ -29,7 +52,7 @@ func runMCPStdio(_ []string) error {
 	for {
 		line, err := in.ReadBytes('\n')
 		if len(line) > 0 {
-			if respErr := handleMCPLine(line, out); respErr != nil {
+			if respErr := handleMCPLine(line, out, router); respErr != nil {
 				return respErr
 			}
 			out.Flush()
@@ -54,8 +77,9 @@ type rpcRequest struct {
 	Params  json.RawMessage `json:"params"`
 }
 
-// handleMCPLine parses one JSON-RPC message and writes its reply (if any).
-func handleMCPLine(line []byte, out *bufio.Writer) error {
+// handleMCPLine parses one JSON-RPC message and writes its reply (if any). A
+// nil router leaves the session-routing tools out entirely.
+func handleMCPLine(line []byte, out *bufio.Writer, router *mcptools.Router) error {
 	line = []byte(strings.TrimSpace(string(line)))
 	if len(line) == 0 {
 		return nil
@@ -83,9 +107,9 @@ func handleMCPLine(line []byte, out *bufio.Writer) error {
 		}
 		return writeResult(out, req.ID, map[string]any{})
 	case "tools/list":
-		return writeResult(out, req.ID, map[string]any{"tools": mcpTools()})
+		return writeResult(out, req.ID, map[string]any{"tools": mcpTools(router)})
 	case "tools/call":
-		return writeToolCall(out, req.ID, req.Params)
+		return writeToolCall(out, req.ID, req.Params, router)
 	default:
 		if isNotification {
 			return nil
@@ -109,11 +133,11 @@ func mcpProtocolVersion(params json.RawMessage) string {
 	return "2024-11-05"
 }
 
-func mcpTools() []map[string]any {
+func mcpTools(router *mcptools.Router) []map[string]any {
 	if !mcpManaged() {
 		return []map[string]any{}
 	}
-	return []map[string]any{{
+	tools := []map[string]any{{
 		// Exempt from Tool Search deferral so the model always sees it (paired
 		// with the server-level alwaysLoad in the spawned config).
 		"_meta": map[string]any{"anthropic/alwaysLoad": true},
@@ -134,6 +158,15 @@ func mcpTools() []map[string]any {
 			"required": []string{"file_path"},
 		},
 	}}
+	if router != nil {
+		for _, tool := range mcptools.RouterTools() {
+			b, _ := json.Marshal(tool)
+			var generic map[string]any
+			_ = json.Unmarshal(b, &generic)
+			tools = append(tools, generic)
+		}
+	}
+	return tools
 }
 
 // mcpImageExts mirrors the /image allowlist (raster only; see imageContentTypes
@@ -142,26 +175,54 @@ var mcpImageExts = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
 }
 
-// writeToolCall validates a show_image call and acks. It never returns bytes.
-func writeToolCall(out *bufio.Writer, id json.RawMessage, params json.RawMessage) error {
+// writeToolCall dispatches one tool call. show_image is only validated and
+// acked (it never returns bytes — rendering rides the jsonl transcript);
+// everything else is a routing tool, available only when router is non-nil.
+func writeToolCall(out *bufio.Writer, id json.RawMessage, params json.RawMessage, router *mcptools.Router) error {
 	var p struct {
-		Name      string `json:"name"`
-		Arguments struct {
-			FilePath string `json:"file_path"`
-		} `json:"arguments"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
 	}
 	if len(params) > 0 {
 		_ = json.Unmarshal(params, &p)
 	}
-	if p.Name != "show_image" {
+	if p.Name == "show_image" {
+		var args struct {
+			FilePath string `json:"file_path"`
+		}
+		_ = json.Unmarshal(p.Arguments, &args)
+		text, isErr := validateImage(args.FilePath)
+		return writeResult(out, id, map[string]any{
+			"content": []map[string]any{{"type": "text", "text": text}},
+			"isError": isErr,
+		})
+	}
+	if router == nil {
 		return writeError(out, id, -32602, "unknown tool: "+p.Name)
 	}
+	value, err := router.Call(p.Name, p.Arguments)
+	if err != nil {
+		return writeToolResult(out, id, map[string]string{"error": err.Error()}, true)
+	}
+	return writeToolResult(out, id, value, false)
+}
 
-	text, isErr := validateImage(p.Arguments.FilePath)
-	return writeResult(out, id, map[string]any{
-		"content": []map[string]any{{"type": "text", "text": text}},
+func writeToolResult(out *bufio.Writer, id json.RawMessage, value any, isErr bool) error {
+	// Indented: the text is what a person reads in the tool card.
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		raw = []byte(`{"error":"failed to encode tool result"}`)
+		isErr = true
+	}
+	result := map[string]any{
+		"content": []map[string]any{{"type": "text", "text": string(raw)}},
 		"isError": isErr,
-	})
+	}
+	// structuredContent is defined as an object; a list goes as text only.
+	if len(raw) > 0 && raw[0] == '{' {
+		result["structuredContent"] = value
+	}
+	return writeResult(out, id, result)
 }
 
 // validateImage resolves the path against the process cwd (= the session cwd on

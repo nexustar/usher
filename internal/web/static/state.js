@@ -64,6 +64,15 @@ export function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.cl
 // multi-round turn never flickers mid-flight. In-memory, clean on every load;
 // the app-away case is push's job.
 let viewingId = null;          // session whose detail is open
+// Router sessions all run in one directory; lists show it last.
+export let routerDir = '';
+export function setRouterDir(v) { routerDir = v || ''; }
+
+// Sessions the open conversation routed work to. Their permission requests
+// and questions are answered from here too.
+export let routedTargets = new Set();
+export function setRoutedTargets(ids) { routedTargets = new Set(ids); }
+
 let lastSessions = [];         // latest /api/sessions payload — written by sidebar
 export function getLastSessions() { return lastSessions; }
 export function setLastSessions(v) { lastSessions = v; }

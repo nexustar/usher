@@ -83,9 +83,9 @@ first understanding the authentication guidance there.
   Telegram or Lark/Feishu integration.
 - **Per-session tools:** one tmux shell per conversation and an optional deep
   link into an editor such as code-server.
-- **Router:** a main chat can list, search, create, and route work to sessions.
-  It uses deterministic commands by default and can optionally accept natural
-  language through an OpenAI-compatible model.
+- **Router:** one session holds usher's routing tools: it can list, search,
+  create, and hand work to the other sessions, and shows their replies as they
+  land.
 
 ## Architecture
 
@@ -110,7 +110,7 @@ flowchart LR
   conversations into its own session store or take ownership of them.
 - Backend protocols run turns and report lifecycle, streaming, model, and
   permission events. usher normalizes those events for the UI.
-- The main-chat agent manages sessions and routes messages. It does not answer
+- The router session manages sessions and routes messages. It does not answer
   substantive questions itself; the full-context coding-agent session does.
 - usher does not browse the machine. File uploads, transcript image references,
   editor links, and the deliberately limited tmux shell are explicit paths, not
@@ -130,6 +130,7 @@ command-line help:
 
 - [Security and trust model](docs/reference/security.md)
 - [Session agents](docs/reference/agents.md)
+- [Router MCP](docs/reference/router-mcp.md)
 - Complete CLI options: `usher serve -h`
 
 ## Project boundaries

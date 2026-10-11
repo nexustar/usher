@@ -21,8 +21,8 @@ import (
 
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/imutil"
+	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
 	"github.com/nexustar/usher/internal/textutil"
@@ -36,7 +36,7 @@ import (
 // the plugin socket.
 type RouterAPI interface {
 	GetSession(id string) (core.Session, bool)
-	StartSession(req pluginapi.CreateRequest) (string, error)
+	CreateSession(req pluginapi.CreateRequest) (pluginapi.Delivery, error)
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	SendToSession(id, text string) error
 	UploadAttachment(id, filename string, src io.Reader) (string, error)
@@ -469,7 +469,7 @@ func (h *Hub) coalesceGuestText(sessionID string, texts []string) string {
 	return strings.Join(texts, "\n\n")
 }
 
-// mirrorPrompt echoes a web/main-chat-originated prompt into its thread.
+// mirrorPrompt echoes a web-originated prompt into its thread.
 // Prompts typed in Lark are recorded by HandleMessage and skipped.
 func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {
 	text := strings.TrimSpace(imutil.TurnUserText(ev.Raw))
@@ -866,7 +866,7 @@ func (h *Hub) handleGuest(event *larkim.P2MessageReceiveV1) {
 func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text string) {
 	// The creation mention cannot materialize Lark resources into usher's
 	// per-session attachment directory: that directory needs the session ID,
-	// while StartSession sends this initial prompt as part of creating it.
+	// while CreateSession sends this initial prompt as part of creating it.
 	// Keep resource placeholders in the prompt; attachment transfer is only a
 	// supported future path for later turns on an already-bound session.
 	agent, cwd, backendName, model, instruction, err := parseGuestFlags(text, h.defaultCwd, h.defaultAgent)
@@ -887,10 +887,11 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	}
 	initial := buildGuestPrompt(transcript, instruction, truncated)
 	h.createMu.Lock()
-	sessionID, err := h.router.StartSession(pluginapi.CreateRequest{
+	created, err := h.router.CreateSession(pluginapi.CreateRequest{
 		Agent: agent, Backend: backendName, Cwd: cwd,
 		InitialMessage: initial, Model: model,
 	})
+	sessionID := created.SessionID
 	if err == nil {
 		err = h.store.putGuest(sessionID, binding{
 			Root:   msg.id,

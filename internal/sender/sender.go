@@ -68,7 +68,10 @@ func (s *Sender) Rename(ctx context.Context, id, path, title string) error {
 // the hook socket and returns the `--mcp-config` flags to load it. Returns nil
 // (disabling the feature, not erroring) if the executable can't be resolved, so
 // a write hiccup never blocks spawns.
-func claudeMCPConfigArgs(hookSock string, logger *slog.Logger) []string {
+//
+// With routerTools the registration adds usher's session-routing tools and is
+// written to its own file, because only the router session may load it.
+func claudeMCPConfigArgs(hookSock string, routerTools bool, logger *slog.Logger) []string {
 	if hookSock == "" {
 		return nil
 	}
@@ -80,16 +83,20 @@ func claudeMCPConfigArgs(hookSock string, logger *slog.Logger) []string {
 		logger.Warn("mcp config: cannot resolve usher executable; show_image disabled", "err", err)
 		return nil
 	}
+	args, name := []string{"mcp-stdio"}, "mcp.json"
+	if routerTools {
+		args, name = append(args, "--router-tools"), "mcp-router.json"
+	}
 	// alwaysLoad exempts the server from Claude Code's Tool Search deferral so the
 	// tool is always loaded, not hidden behind a ToolSearch step.
 	cfg := map[string]any{"mcpServers": map[string]any{
-		"usher": map[string]any{"command": exe, "args": []string{"mcp-stdio"}, "alwaysLoad": true},
+		"usher": map[string]any{"command": exe, "args": args, "alwaysLoad": true},
 	}}
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return nil
 	}
-	path := filepath.Join(filepath.Dir(hookSock), "mcp.json")
+	path := filepath.Join(filepath.Dir(hookSock), name)
 	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
 		logger.Warn("mcp config: write failed; show_image disabled", "path", path, "err", err)
 		return nil
@@ -107,20 +114,30 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 		logger = slog.Default()
 	}
 	logger = logger.With("backend", "claude")
-	var extra []string
+	var base []string
 	if permissionMode != "" {
-		extra = []string{"--permission-mode", permissionMode}
+		base = []string{"--permission-mode", permissionMode}
+	}
+	spawnArgs := func(mcpArgs []string) []string {
+		return append(append([]string(nil), base...), mcpArgs...)
 	}
 	// Register the show_image MCP server (unless --disable-usher-tools). Additive
 	// — no --strict-mcp-config — so the user's own MCP servers are untouched.
-	var mcpArgs []string
+	// The router variant reaches only the session designated as usher's router.
+	var mcpArgs, routerMCPArgs []string
 	if injectMCPTools {
-		mcpArgs = claudeMCPConfigArgs(hookSock, logger)
-		extra = append(extra, mcpArgs...)
+		mcpArgs = claudeMCPConfigArgs(hookSock, false, logger)
+		routerMCPArgs = claudeMCPConfigArgs(hookSock, true, logger)
 	}
 	t := timing{poll: 150 * time.Millisecond}
+	// mgr, not claude: the package of the same name is right there.
+	mgr := claude.New(claudeCmd, claudeHookSettings(hookSock, injectMCPTools, logger), hookSock,
+		spawnArgs(mcpArgs), maxLive, interactions, logger)
+	if len(routerMCPArgs) > 0 {
+		mgr.SetRouterArgs(spawnArgs(routerMCPArgs))
+	}
 	return &Sender{
-		claude:       claude.New(claudeCmd, claudeHookSettings(hookSock, logger), hookSock, extra, maxLive, interactions, logger),
+		claude:       mgr,
 		interactions: interactions,
 		locateFn:     func(id string) string { return locateClaude(projectsDir, id) },
 		logger:       logger,
@@ -132,7 +149,10 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	}
 }
 
-func claudeHookSettings(hookSock string, logger *slog.Logger) string {
+// claudeHookSettings builds the inline --settings JSON. With allowUsherTools
+// it pre-allows the usher MCP server's tools; permission scope is per tool
+// name, so each would otherwise be approved separately.
+func claudeHookSettings(hookSock string, allowUsherTools bool, logger *slog.Logger) string {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.Abs(exe)
@@ -161,11 +181,17 @@ func claudeHookSettings(hookSock string, logger *slog.Logger) string {
 			"PreToolUse": []any{map[string]any{"matcher": "AskUserQuestion", "hooks": handler("PreToolUse")}},
 		},
 	}
+	if allowUsherTools {
+		settings["permissions"] = map[string]any{"allow": []string{"mcp__usher"}}
+	}
 	b, _ := json.Marshal(settings)
 	return string(b)
 }
 
-func codexMCPConfig(logger *slog.Logger) map[string]any {
+// codexMCPConfig is the usher MCP registration as codex config overrides,
+// passed per thread in thread/start and thread/resume params. With
+// routerTools it is the router-session variant with the routing tools on.
+func codexMCPConfig(routerTools bool, logger *slog.Logger) map[string]any {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.Abs(exe)
@@ -174,14 +200,30 @@ func codexMCPConfig(logger *slog.Logger) map[string]any {
 		logger.Warn("mcp: cannot resolve usher executable; show_image disabled", "err", err)
 		return nil
 	}
+	args := []string{"mcp-stdio"}
+	if routerTools {
+		args = append(args, "--router-tools")
+	}
+	// Codex's default callable MCP namespace keeps the legacy mcp__ prefix;
+	// the unprefixed form covers installations with that feature enabled.
+	direct := []string{"mcp__usher", "usher"}
+	if routerTools {
+		// The whole table, not keys under it: it replaces the user's own
+		// servers.
+		return map[string]any{
+			"mcp_servers": map[string]any{"usher": map[string]any{
+				"command": exe, "args": args, "env_vars": []string{"USHER_HOOK_SOCK"},
+				"default_tools_approval_mode": "approve",
+			}},
+			"features.code_mode.direct_only_tool_namespaces": direct,
+		}
+	}
 	return map[string]any{
-		"mcp_servers.usher.command":                     exe,
-		"mcp_servers.usher.args":                        []string{"mcp-stdio"},
-		"mcp_servers.usher.env_vars":                    []string{"USHER_HOOK_SOCK"},
-		"mcp_servers.usher.default_tools_approval_mode": "approve",
-		// Codex's default callable MCP namespace keeps the legacy mcp__ prefix;
-		// the unprefixed form covers installations with that feature enabled.
-		"features.code_mode.direct_only_tool_namespaces": []string{"mcp__usher", "usher"},
+		"mcp_servers.usher.command":                      exe,
+		"mcp_servers.usher.args":                         args,
+		"mcp_servers.usher.env_vars":                     []string{"USHER_HOOK_SOCK"},
+		"mcp_servers.usher.default_tools_approval_mode":  "approve",
+		"features.code_mode.direct_only_tool_namespaces": direct,
 	}
 }
 
@@ -212,16 +254,28 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 		env = append(env, "USHER_HOOK_SOCK="+hookSock)
 	}
 	t := timing{poll: 150 * time.Millisecond}
-	appConfig := map[string]any{}
-	if injectMCPTools {
-		appConfig = codexMCPConfig(logger)
-	}
 	sandbox, config := codex.ParseHeadlessArgs(sandboxArgs, logger)
-	for k, v := range appConfig {
-		config[k] = v
+	// The manager applies the router variant to the thread designated as
+	// usher's router.
+	var routerConfig map[string]any
+	if mcp := codexMCPConfig(false, logger); injectMCPTools && mcp != nil {
+		routerConfig = make(map[string]any, len(config)+len(mcp))
+		for k, v := range config {
+			routerConfig[k] = v
+		}
+		for k, v := range codexMCPConfig(true, logger) {
+			routerConfig[k] = v
+		}
+		for k, v := range mcp {
+			config[k] = v
+		}
+	}
+	mgr := codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger)
+	if routerConfig != nil {
+		mgr.SetRouterConfig(routerConfig)
 	}
 	return &Sender{
-		app:          codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger),
+		app:          mgr,
 		interactions: interactions,
 		locateFn:     func(id string) string { return locateCodex(sessionsDir, id) },
 		indexPath:    filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
@@ -323,6 +377,11 @@ func codexSlashSkillPrompt(command, args string, skills []codex.Skill) (string, 
 func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <-chan StreamEvent, error) {
 	if s.claude != nil {
 		id := newSessionID()
+		if req.Router {
+			// Before the turn: the routing tools are spawn arguments, and this
+			// is the first moment the id exists.
+			s.claude.SetRouterSession(id)
+		}
 		s.setAutoApprove(id, req.AutoApprove)
 		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, false)
 		if err != nil {
@@ -331,7 +390,7 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 		return id, ch, err
 	}
 	if s.app != nil {
-		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs)
+		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, req.Router)
 		if err != nil {
 			return "", nil, err
 		}
@@ -396,6 +455,19 @@ func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
 		return s.claude.Resume(ctx, sessionID, cwd, s.promptFor(sessionID), s.argsFor(sessionID))
 	}
 	return errors.New("sender has no headless backend")
+}
+
+var _ backend.RouterDesignator = (*Sender)(nil)
+
+// SetRouterSession restores the routing tools onto usher's designated router
+// after a restart: its next cold worker spawns with them.
+func (s *Sender) SetRouterSession(sessionID string) {
+	if s.claude != nil {
+		s.claude.SetRouterSession(sessionID)
+	}
+	if s.app != nil {
+		s.app.SetRouterSession(sessionID)
+	}
 }
 
 var _ backend.SystemPrompter = (*Sender)(nil)

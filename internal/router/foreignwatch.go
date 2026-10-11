@@ -132,7 +132,7 @@ func (r *Router) checkForeignTurn(id string) {
 
 	// Subagents are read-only transcript children, not independent foreign
 	// conversations. The exit above only wakes their open detail view; never
-	// replay their parts or relay their answer into the main chat.
+	// replay their parts or hand their answer to the foreign-turn handler.
 	if sess.IsSubagent {
 		return
 	}

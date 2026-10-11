@@ -131,6 +131,34 @@ func TestExtraArgsPassedOnSpawn(t *testing.T) {
 	}
 }
 
+// Only the designated router session loads the routing MCP config, and it keeps
+// loading it on the cold resumes that follow a restart.
+func TestRouterSessionSpawnsWithRoutingTools(t *testing.T) {
+	bin, log := fakeClaude(t)
+	m := New(bin, `{"hooks":{}}`, "/tmp/h.sock", []string{"--mcp-config", "/tmp/mcp.json"}, 4, nil, nil)
+	m.SetRouterArgs([]string{"--mcp-config", "/tmp/mcp-router.json"})
+	m.SetRouterSession("router-sid")
+	t.Setenv("FAKE_CLAUDE_LOG", log)
+	t.Cleanup(m.Shutdown)
+
+	if err := m.Resume(context.Background(), "other-sid", "/tmp", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Resume(context.Background(), "router-sid", "/tmp", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		wantRouter := strings.Contains(line, "--resume router-sid")
+		if got := strings.Contains(line, "/tmp/mcp-router.json"); got != wantRouter {
+			t.Fatalf("router config in %q = %v, want %v", line, got, wantRouter)
+		}
+	}
+}
+
 func TestResumePassesPersistedSystemPrompt(t *testing.T) {
 	bin, log := fakeClaude(t)
 	m := New(bin, `{"hooks":{}}`, "/tmp/h.sock", nil, 4, nil, nil)

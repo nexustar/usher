@@ -7,8 +7,15 @@ import (
 )
 
 // ParseHeadlessArgs maps codex CLI-style flags onto app-server thread params:
-// --sandbox becomes the sandbox thread param, -c key=value a config override.
-// Anything else has no headless equivalent and is dropped with a warning.
+// --sandbox and --ask-for-approval become thread params, -c key=value a
+// config override. Anything else has no headless equivalent and is dropped
+// with a warning.
+//
+// --ask-for-approval matters for restricted profiles: threadParams hardcodes
+// approvalPolicy "on-request", under which a read-only sandbox is only as
+// strong as the approval gate — the model can request escalation and an
+// auto-approve profile would grant it. "never" closes that; a -c override
+// cannot, because thread params take precedence over config.
 func ParseHeadlessArgs(args []string, logger *slog.Logger) (sandbox, config map[string]any) {
 	if logger == nil {
 		logger = slog.Default()
@@ -21,6 +28,11 @@ func ParseHeadlessArgs(args []string, logger *slog.Logger) (sandbox, config map[
 			i++
 		case strings.HasPrefix(args[i], "--sandbox="):
 			sandbox["sandbox"] = strings.TrimPrefix(args[i], "--sandbox=")
+		case (args[i] == "--ask-for-approval" || args[i] == "-a") && i+1 < len(args):
+			sandbox["approvalPolicy"] = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--ask-for-approval="):
+			sandbox["approvalPolicy"] = strings.TrimPrefix(args[i], "--ask-for-approval=")
 		case args[i] == "-c" && i+1 < len(args):
 			kv := strings.SplitN(args[i+1], "=", 2)
 			if len(kv) == 2 {

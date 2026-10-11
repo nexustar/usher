@@ -1,4 +1,4 @@
-package web
+package api
 
 import (
 	"encoding/json"
@@ -11,7 +11,7 @@ import (
 func TestCreateSessionAutoApproveDistinguishesOmittedFromFalse(t *testing.T) {
 	decode := func(body string) *bool {
 		t.Helper()
-		var req createSessionRequest
+		var req CreateRequest
 		if err := json.NewDecoder(strings.NewReader(body)).Decode(&req); err != nil {
 			t.Fatal(err)
 		}

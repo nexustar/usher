@@ -23,8 +23,7 @@ import (
 	"github.com/nexustar/usher/internal/textutil"
 )
 
-// RouterAPI is the strict subset of router.Router the hub consumes — the same
-// boundary discipline as the main-chat agent's AgentAPI.
+// RouterAPI is the strict subset of router.Router the hub consumes.
 type RouterAPI interface {
 	GetSession(id string) (core.Session, bool)
 	SubscribeAllSessions() (<-chan broker.Event, func())
@@ -439,7 +438,7 @@ func (h *Hub) handleEvent(ctx context.Context, ev broker.Event) {
 	}
 }
 
-// mirrorPrompt echoes a web/main-chat-originated prompt into its topic (so the
+// mirrorPrompt echoes a web-originated prompt into its topic (so the
 // topic shows the question). Prompts typed in Telegram are recorded by
 // handleInbound and skipped; tool_result "user" events have no prompt text.
 func (h *Hub) mirrorPrompt(ctx context.Context, ev broker.Event) {

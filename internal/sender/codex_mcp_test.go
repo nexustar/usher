@@ -2,13 +2,14 @@ package sender
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/nexustar/usher/internal/codex"
 )
 
 func TestCodexMCPConfigUsesNativeValues(t *testing.T) {
-	cfg := codexMCPConfig(slog.Default())
+	cfg := codexMCPConfig(false, slog.Default())
 	if _, ok := cfg["mcp_servers.usher.command"].(string); !ok {
 		t.Fatalf("command: %#v", cfg)
 	}
@@ -24,9 +25,29 @@ func TestCodexMCPConfigUsesNativeValues(t *testing.T) {
 	}
 }
 
+// The router variant turns the routing tools on, and is the whole
+// mcp_servers table so that it replaces the user's own servers.
+func TestCodexMCPConfigRouterTools(t *testing.T) {
+	cfg := codexMCPConfig(true, slog.Default())
+	servers, ok := cfg["mcp_servers"].(map[string]any)
+	if !ok || len(servers) != 1 {
+		t.Fatalf("router mcp_servers = %#v", cfg["mcp_servers"])
+	}
+	args, ok := servers["usher"].(map[string]any)["args"].([]string)
+	if !ok || len(args) != 2 || args[0] != "mcp-stdio" || args[1] != "--router-tools" {
+		t.Fatalf("router args = %#v", servers["usher"])
+	}
+	for key := range cfg {
+		if strings.HasPrefix(key, "mcp_servers.") {
+			t.Fatalf("a key under mcp_servers would merge into the user's table: %s", key)
+		}
+	}
+}
+
 func TestCodexHeadlessParams(t *testing.T) {
-	sandbox, cfg := codex.ParseHeadlessArgs([]string{"--sandbox=read-only", "-c", "model_reasoning_effort=high", "-c", "features.foo=true"}, slog.Default())
-	if sandbox["sandbox"] != "read-only" || cfg["model_reasoning_effort"] != "high" || cfg["features.foo"] != true {
+	sandbox, cfg := codex.ParseHeadlessArgs([]string{"--sandbox=read-only", "-a", "never", "-c", "model_reasoning_effort=high", "-c", "features.foo=true"}, slog.Default())
+	if sandbox["sandbox"] != "read-only" || sandbox["approvalPolicy"] != "never" ||
+		cfg["model_reasoning_effort"] != "high" || cfg["features.foo"] != true {
 		t.Fatalf("sandbox=%#v config=%#v", sandbox, cfg)
 	}
 }

@@ -1,8 +1,6 @@
 // Package router glues discovery, sender, broker, and hook together. It is
-// the central coordinator that the web layer and the Usher Agent both go
-// through, and serves as the type that satisfies the agent's AgentAPI
-// contract — keeping the agent's surface a strict subset of usher's
-// internals.
+// the central coordinator the web layer, the control socket and the IM hubs
+// all go through.
 package router
 
 import (
@@ -13,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -26,15 +25,18 @@ import (
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
+	"github.com/nexustar/usher/internal/settings"
 	"github.com/nexustar/usher/internal/terminal"
 	"github.com/nexustar/usher/internal/textutil"
 )
 
-// ErrSessionNotFound is returned when an operation targets a session with no
-// log on disk (so its path/backend can't be resolved).
-var ErrSessionNotFound = errors.New("session not found")
-var ErrBackendUnavailable = errors.New("backend capability unavailable")
-var ErrInvalidTitle = errors.New("session title must not be empty")
+var (
+	ErrSessionNotFound    = core.ErrSessionNotFound
+	ErrReadOnlySession    = core.ErrReadOnlySession
+	ErrSendQueueFull      = core.ErrSendQueueFull
+	ErrInvalidTitle       = core.ErrInvalidTitle
+	ErrBackendUnavailable = errors.New("backend capability unavailable")
+)
 
 type Router struct {
 	discovery *discovery.Discovery
@@ -47,6 +49,8 @@ type Router struct {
 	broker         *broker.Broker
 	interactions   *interaction.Manager
 	meta           *sessionmeta.Store
+	settings       *settings.Store
+	routerDir      string
 	terminal       *terminal.Manager
 	composerMu     sync.Mutex
 	composerCache  map[composerCacheKey][]backendpkg.ComposerItem
@@ -55,6 +59,7 @@ type Router struct {
 	activeSend map[string]*sendToken    // sessionID -> in-flight turn's cancel handle
 	sendQueue  map[string][]pendingSend // sessionID -> sends waiting for the turn to end
 	creating   map[string]core.Session  // sessions usher is spawning, not yet on disk
+	relayIn    map[string][]relayNote   // router sessionID -> replies to fold into its next prompt
 
 	// Foreign-turn watcher state (see foreignwatch.go): per-session log-size
 	// baseline (guarded by sendMu) and the completion handler.
@@ -126,6 +131,39 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 		}
 	}
 	return r
+}
+
+// SetSettings attaches the instance settings and hands the routing tools back
+// to the stored router; routerDir is the cwd router sessions run in.
+func (r *Router) SetSettings(s *settings.Store, routerDir string) {
+	r.settings = s
+	if abs, err := filepath.Abs(routerDir); err == nil {
+		routerDir = abs
+	}
+	r.routerDir = routerDir
+	r.designateRouter(s.Router().SessionID)
+}
+
+// retireRouter makes a replaced router an ordinary session: its prompt, tool
+// restrictions and blanket approval go, and its process stops.
+func (r *Router) retireRouter(id string) {
+	if r.meta != nil {
+		r.meta.SetAppendSystemPrompt(id, "")
+		r.meta.SetExtraArgs(id, nil)
+	}
+	if r.interactions != nil {
+		r.interactions.SetAutoApprove(id, false)
+	}
+	r.stopLive(id)
+}
+
+// designateRouter tells every runtime which session keeps the routing tools.
+func (r *Router) designateRouter(id string) {
+	for _, backend := range r.backends {
+		if setter, ok := backend.Runtime.(backendpkg.RouterDesignator); ok {
+			setter.SetRouterSession(id)
+		}
+	}
 }
 
 type composerCacheKey struct {
@@ -356,7 +394,7 @@ func (r *Router) ReadTurns(id, before string, limit int) (turns []core.Turn, mor
 		return nil, false, err
 	}
 	turns, more, err = format.ReadBefore(path, before, limit)
-	return wireTurns(turns), more, err
+	return r.wireTurnsOf(id, turns), more, err
 }
 
 // ReadTurnsFrom returns the turn at cursor from and every turn after it, or
@@ -367,7 +405,7 @@ func (r *Router) ReadTurnsFrom(id, from string) ([]core.Turn, error) {
 		return nil, err
 	}
 	turns, err := format.ReadFrom(path, from)
-	return wireTurns(turns), err
+	return r.wireTurnsOf(id, turns), err
 }
 
 func (r *Router) transcriptOf(id string) (backendpkg.Transcript, string, error) {
@@ -385,6 +423,28 @@ func (r *Router) transcriptOf(id string) (backendpkg.Transcript, string, error) 
 func wireTurns(turns []core.Turn) []core.Turn {
 	for i := range turns {
 		turns[i].Time = turns[i].DisplayTime()
+	}
+	return turns
+}
+
+// userText is prompt without the relay notes folded in front of a router
+// session's prompt.
+func (r *Router) userText(id, prompt string) string {
+	if r.routerDir == "" {
+		return prompt
+	}
+	if sess, ok := r.GetSession(id); !ok || sess.Cwd != r.RouterDir() {
+		return prompt
+	}
+	return stripRelayNotes(prompt)
+}
+
+func (r *Router) wireTurnsOf(id string, turns []core.Turn) []core.Turn {
+	turns = wireTurns(turns)
+	for i := range turns {
+		if turns[i].Role == "user" {
+			turns[i].Content = r.userText(id, turns[i].Content)
+		}
 	}
 	return turns
 }
@@ -497,7 +557,7 @@ func (r *Router) SessionPath(id string) (string, bool) {
 // turn containing afterUUID and returns the new session id.
 func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 	if sess, ok := r.discovery.Get(srcID); ok && sess.IsSubagent {
-		return "", errors.New("subagent transcripts are read-only")
+		return "", ErrReadOnlySession
 	}
 	path, ok := r.discovery.Path(srcID)
 	if !ok {
@@ -539,6 +599,95 @@ func (r *Router) IsArchived(sessionID string) bool {
 		return false
 	}
 	return r.meta.IsArchived(sessionID, staleClock(sess), time.Now())
+}
+
+// routerInbox is the designated router session, or "".
+func (r *Router) routerInbox() string {
+	if r.settings == nil {
+		return ""
+	}
+	return r.settings.Router().SessionID
+}
+
+// RouterSession is the router session, or "" when none is designated or the
+// designated one is gone.
+func (r *Router) RouterSession() string {
+	id := r.routerInbox()
+	if _, ok := r.GetSession(id); !ok {
+		return ""
+	}
+	return id
+}
+
+// routerPrompt and routerArgs leave the router session able only to route.
+const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
+	"route it to a session with the usher tools, creating one when none fits. " +
+	"Greetings and questions about the sessions themselves are yours to answer. " +
+	"To pick a session, prefer the current one, then one working in the directory the request is about; " +
+	"when two or three fit equally, ask which, naming them by title and short id. Never invent a session id. " +
+	"The session you last sent work to, created or resolved is the current one, and while there is one you are a relay: " +
+	"a message that names no other session and is not about managing sessions goes to it with send_to_session, " +
+	"in the user's own words — reworded only as far as it needs to stand on its own. " +
+	"Do not answer such a message yourself, and do not read the session's transcript to answer for it: " +
+	"read_session_transcript is for when the user asks what a session has said or done. " +
+	"Your own working directory is not a workspace: never pass it as a cwd or mention it in what you send. " +
+	"When the user names no directory and the work belongs to no existing session's project, create the session without a cwd."
+
+var routerArgs = map[string][]string{
+	// No built-in tool at all, and no MCP server but usher's own.
+	"claude": {"--tools", "", "--strict-mcp-config"},
+	// No shell, image viewer or web search; what is left cannot write.
+	"codex": {
+		"--sandbox", "read-only", "--ask-for-approval", "never",
+		"-c", "features.shell_tool=false", "-c", "features.view_image=false", "-c", `web_search="disabled"`,
+	},
+	// An allowlist: without it a user-level MCP server switches codemode on.
+	"pi": {"--tools", PiRouterTools()},
+}
+
+// PiRouterTools names usher's tools one by one: pi matches a pattern in
+// --tools only from 1.0.4 on.
+func PiRouterTools() string {
+	names := []string{"show_image"}
+	for _, tool := range []string{
+		"list_sessions", "resolve_session", "send_to_session", "read_session_transcript", "search_sessions",
+		"create_session", "list_pending_interactions", "set_archived",
+	} {
+		names = append(names, "mcp__usher__"+tool)
+	}
+	return strings.Join(names, ",")
+}
+
+// StartRouter creates the router session with prompt as its first message,
+// replacing the current one. An empty backend or model means the default.
+func (r *Router) StartRouter(prompt, backend, model string) (string, error) {
+	if r.settings == nil {
+		return "", errors.New("router sessions are not configured")
+	}
+	if backend == "" {
+		backend = r.defaultBackend
+	}
+	if _, ok := r.backends[backend]; !ok {
+		return "", fmt.Errorf("backend %q is not available", backend)
+	}
+	if err := os.MkdirAll(r.routerDir, 0o700); err != nil {
+		return "", err
+	}
+	return r.StartSession(core.CreateOptions{
+		Backend: backend, Model: model, Cwd: r.routerDir, InitialMessage: prompt,
+		AppendSystemPrompt: routerPrompt, ExtraArgs: slices.Clone(routerArgs[backend]),
+		AutoApprove: true,
+		Router:      true,
+	})
+}
+
+// RouterDir is the cwd router sessions run in, as a session reports it: with
+// symlinks resolved.
+func (r *Router) RouterDir() string {
+	if resolved, err := filepath.EvalSymlinks(r.routerDir); err == nil {
+		return resolved
+	}
+	return r.routerDir
 }
 
 func (r *Router) Archive(sessionID string)       { r.meta.Archive(sessionID) }
@@ -593,11 +742,11 @@ func (r *Router) Unarchive(sessionID string) {
 // hide), this is destructive.
 func (r *Router) DeleteSession(id string) error {
 	if sess, ok := r.discovery.Get(id); ok && sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	path, ok := r.discovery.Path(id)
 	if !ok {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 	// Release any in-flight turn first so its tail goroutine stops before the
 	// file is pulled out from under it.
@@ -664,9 +813,9 @@ func (r *Router) deleteSubagentTranscripts(parentID, rootPath string) {
 // It is the manual equivalent of LRU eviction.
 func (r *Router) PauseSession(id string) error {
 	if sess, ok := r.discovery.Get(id); !ok {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	} else if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	r.stopLive(id)
 	return nil
@@ -680,7 +829,7 @@ func (r *Router) ResumeSession(ctx context.Context, id string) error {
 		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	return r.senderFor(id).Resume(ctx, id, sess.Cwd)
 }
@@ -708,8 +857,108 @@ func (r *Router) stopLive(id string) {
 // broker subscribers); if a turn is in flight the send waits in the session's
 // FIFO queue and is injected when that turn ends. Returns an error only if
 // the session is unknown or the queue is full.
+//
+// A router session's prompt carries any replies that landed since it last
+// spoke — see queueRelay.
 func (r *Router) SendToSession(id, text string) error {
-	return r.enqueueSend(id, text, nil, nil)
+	folded, notes := r.foldRelays(id, text)
+	err := r.enqueueSend(id, folded, nil, nil)
+	if err != nil && len(notes) > 0 {
+		// The prompt never left, so its notes go back to the front of the queue.
+		r.sendMu.Lock()
+		r.relayIn[id] = append(notes, r.relayIn[id]...)
+		r.sendMu.Unlock()
+	}
+	return err
+}
+
+// relayNote is one finished turn a router dispatched, waiting to be told to it.
+type relayNote struct {
+	sessionID string
+	reply     string
+	err       error
+}
+
+// maxQueuedRelays bounds one router's pending notes; beyond it the oldest go.
+const maxQueuedRelays = 32
+
+// relayExcerptRunes caps one folded reply: the user already has the full text,
+// and the model has read_session_transcript.
+const relayExcerptRunes = 600
+
+// queueRelay records that a session the router dispatched has finished. The
+// reply is not sent as a prompt: it waits for the router's next one.
+func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
+	if routerID == "" {
+		return
+	}
+	// For whoever has the router session open, so the reply shows as it lands.
+	raw, _ := json.Marshal(map[string]string{"session_id": sessionID})
+	r.broker.Publish(broker.Event{SessionID: routerID, Type: core.EventRelayLanded, Raw: raw})
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
+	if r.relayIn == nil {
+		r.relayIn = map[string][]relayNote{}
+	}
+	notes := append(r.relayIn[routerID], relayNote{sessionID: sessionID, reply: reply, err: err})
+	if len(notes) > maxQueuedRelays {
+		notes = notes[len(notes)-maxQueuedRelays:]
+	}
+	r.relayIn[routerID] = notes
+}
+
+// foldRelays prefixes a router's pending notes to its next prompt and takes
+// them off the queue, returning them so a failed send can put them back.
+func (r *Router) foldRelays(id, text string) (string, []relayNote) {
+	r.sendMu.Lock()
+	notes := r.relayIn[id]
+	delete(r.relayIn, id)
+	r.sendMu.Unlock()
+	if len(notes) == 0 {
+		return text, nil
+	}
+	var b strings.Builder
+	for _, note := range notes {
+		b.WriteString(relayNoteText(note))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(relayNotesEnd)
+	b.WriteString("\n\n")
+	b.WriteString(text)
+	return b.String(), notes
+}
+
+// relayNotesEnd closes the notes folded in front of a router prompt.
+const relayNotesEnd = "[end of session replies]"
+
+// relayNoteMark opens every relay note.
+const relayNoteMark = "[session "
+
+// stripRelayNotes removes the notes folded in front of a router prompt.
+func stripRelayNotes(prompt string) string {
+	if !strings.HasPrefix(prompt, relayNoteMark) {
+		return prompt
+	}
+	if _, typed, ok := strings.Cut(prompt, "\n\n"+relayNotesEnd+"\n\n"); ok {
+		return typed
+	}
+	return prompt
+}
+
+// relayNoteText renders one note; a failed turn is reported like a reply.
+func relayNoteText(note relayNote) string {
+	if note.err != nil {
+		return fmt.Sprintf("[session %s failed] %s", note.sessionID, note.err.Error())
+	}
+	reply := strings.TrimSpace(note.reply)
+	if reply == "" {
+		return fmt.Sprintf("[session %s replied] (empty reply)", note.sessionID)
+	}
+	if runes := []rune(reply); len(runes) > relayExcerptRunes {
+		reply = string(runes[:relayExcerptRunes]) +
+			"\n[… truncated; the user has the full reply, read_session_transcript for the rest]"
+	}
+	return fmt.Sprintf("[session %s replied] %s", note.sessionID, reply)
 }
 
 // enqueueSend is the single entry point for turn-tracked sends: run now if
@@ -721,10 +970,10 @@ func (r *Router) SendToSession(id, text string) error {
 func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) error {
 	sess, ok := r.discovery.Get(id)
 	if !ok {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	// Reorder the sidebar the instant the user sends, without waiting for the
 	// prompt to land in the jsonl (see discovery.MarkInput).
@@ -737,7 +986,7 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 	if _, busy := r.activeSend[id]; busy || len(r.sendQueue[id]) > 0 {
 		if len(r.sendQueue[id]) >= maxQueuedSends {
 			r.sendMu.Unlock()
-			return errors.New("send queue full for session")
+			return ErrSendQueueFull
 		}
 		r.sendQueue[id] = append(r.sendQueue[id], pendingSend{text: text, pre: pre, abort: abort})
 		queued := len(r.sendQueue[id])
@@ -874,7 +1123,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			// transcript truth-up; no event needed.
 			continue
 		}
-		raw, mErr := json.Marshal(map[string]any{"role": "user", "content": t.Content, "ts": t.Time})
+		raw, mErr := json.Marshal(map[string]any{"role": "user", "content": r.userText(sessionID, t.Content), "ts": t.Time})
 		if mErr == nil {
 			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnUser, Raw: raw})
 		}
@@ -1114,7 +1363,7 @@ func (r *Router) OpenTerminal(id string, cols, rows int) error {
 		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	if r.terminal == nil {
 		return terminal.ErrUnavailable
@@ -1145,7 +1394,7 @@ func (r *Router) SubmitTerminal(id, requestID, text string) error {
 		return ErrSessionNotFound
 	}
 	if sess.IsSubagent {
-		return errors.New("subagent transcripts are read-only")
+		return ErrReadOnlySession
 	}
 	if r.terminal == nil {
 		return terminal.ErrUnavailable
@@ -1202,80 +1451,6 @@ func (r *Router) SetAutoApprove(sessionID string, enabled bool) {
 
 func (r *Router) IsAutoApprove(sessionID string) bool {
 	return r.interactions.IsAutoApprove(sessionID)
-}
-
-// --- transcript / blocking send (v0.2 LLM agent helpers) ----------------
-
-// ReadSessionTranscript projects the most recent N user/assistant turns of
-// a session's jsonl into core.TranscriptTurn. limit ≤ 0 returns everything.
-func (r *Router) ReadSessionTranscript(id string, limit int) ([]core.TranscriptTurn, error) {
-	path, ok := r.discovery.Path(id)
-	if !ok {
-		return nil, ErrSessionNotFound
-	}
-	turns, err := r.readTurnsForBackend(path, r.backendOf(id), limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]core.TranscriptTurn, len(turns))
-	for i, t := range turns {
-		out[i] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.DisplayTime()}
-	}
-	return out, nil
-}
-
-// ReadSessionTranscriptPage returns one page of the transcript: up to limit
-// turns starting at absolute index offset (0-based from the start of the
-// session). A negative offset means "the most recent page". It also returns
-// the resolved start offset and the total turn count, so a caller can page in
-// either direction and know when it has reached an end. Because the jsonl is
-// append-only, an absolute index is a stable cursor even as the session grows.
-//
-// This is the primitive behind read_session_transcript's paging: the per-call
-// limit bounds how much enters the agent's context, while offset + total keep
-// any depth reachable — there is no hard wall, only a page boundary.
-func (r *Router) ReadSessionTranscriptPage(id string, offset, limit int) ([]core.TranscriptTurn, int, int, error) {
-	path, ok := r.discovery.Path(id)
-	if !ok {
-		return nil, 0, 0, ErrSessionNotFound
-	}
-	turns, err := r.readTurnsForBackend(path, r.backendOf(id), 0)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	total := len(turns)
-	start, end := pageBounds(offset, limit, total)
-	out := make([]core.TranscriptTurn, end-start)
-	for i := start; i < end; i++ {
-		t := turns[i]
-		out[i-start] = core.TranscriptTurn{Role: t.Role, Content: flattenTurnText(t, true), Time: t.DisplayTime()}
-	}
-	return out, start, total, nil
-}
-
-// pageBounds resolves [start, end) into a slice of length total for a page of
-// up to limit items beginning at offset. A negative offset selects the last
-// page (start = total-limit). Everything is clamped to [0, total], so an
-// offset past the end yields an empty page rather than a panic.
-func pageBounds(offset, limit, total int) (start, end int) {
-	if limit <= 0 {
-		limit = 1
-	}
-	start = offset
-	if start < 0 {
-		start = total - limit
-	}
-	if start < 0 {
-		start = 0
-	}
-	if start > total {
-		start = total
-	}
-	end = start + limit
-	if end > total {
-		end = total
-	}
-	return start, end
 }
 
 // flattenTurnText renders a core.Turn to plain text. User turns carry their
@@ -1354,9 +1529,11 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 	}
 	q := []rune(query)
 	var results []core.SessionSearchResult
+	// The router's own conversation repeats every query it was given.
+	asking := r.routerInbox()
 	for _, s := range r.ListSessions() {
 		path, ok := r.discovery.Path(s.ID)
-		if !ok {
+		if !ok || s.ID == asking {
 			continue
 		}
 		turns, err := r.readTurnsForBackend(path, r.backendOf(s.ID), 0)
@@ -1374,7 +1551,7 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 			HitCount:  matched,
 		}
 		if len(hits) > 0 {
-			res.TurnIndex = hits[0].TurnIndex
+			res.Cursor = hits[0].Cursor
 			res.Snippet = hits[0].Snippet
 		}
 		results = append(results, res)
@@ -1395,7 +1572,7 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 // maxHits located snippets and the total count of matching turns. Shared by
 // the single-session and cross-session searches.
 func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (hits []core.TranscriptSearchHit, matched int) {
-	for i, t := range turns {
+	for _, t := range turns {
 		text := []rune(flattenTurnText(t, false))
 		first, count := foldFindAll(text, q)
 		if first < 0 {
@@ -1408,7 +1585,7 @@ func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (
 		hits = append(hits, core.TranscriptSearchHit{
 			Role:        t.Role,
 			Time:        t.Time,
-			TurnIndex:   i,
+			Cursor:      t.Cursor,
 			Occurrences: count,
 			Snippet:     snippetAround(text, first, len(q), contextChars),
 		})
@@ -1482,6 +1659,22 @@ const relayWaitCeiling = 24 * time.Hour
 // errNoResponse marks a collect that ended with no assistant text at all
 // (ceiling/timeout expiry before any part arrived).
 var errNoResponse = errors.New("timeout (no response received)")
+
+// RouteToSession sends text like SendToSession and queues the finished turn as
+// a note for the router session. The bool reports whether there is one.
+func (r *Router) RouteToSession(id, text string) (bool, error) {
+	inbox := r.routerInbox()
+	if inbox == "" {
+		return false, r.SendToSession(id, text)
+	}
+	if id == inbox {
+		return false, errors.New("the router session cannot route work to itself")
+	}
+	err := r.SendToSessionRelayed(id, text, func(sessionID, reply string, err error) {
+		r.queueRelay(inbox, sessionID, reply, err)
+	})
+	return err == nil, err
+}
 
 // SendToSessionRelayed delivers text like SendToSession and collects the
 // turn's assistant text in the background, handing it to onDone (at most
@@ -1639,14 +1832,28 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 	}
 	id, ch, err := r.senderForBackend(o.Backend).Start(ctx, backendpkg.StartRequest{
 		Cwd: o.Cwd, Prompt: o.InitialMessage, Model: o.Model, AppendSystemPrompt: o.AppendSystemPrompt,
-		ExtraArgs: o.ExtraArgs, AutoApprove: o.AutoApprove,
+		ExtraArgs: o.ExtraArgs, AutoApprove: o.AutoApprove, Router: o.Router,
 	})
 	if err != nil {
+		if o.Router {
+			// A runtime may have pointed its routing tools at the id that never came
+			// to be.
+			r.designateRouter(r.routerInbox())
+		}
 		return "", nil, nil, err
 	}
 	if r.meta != nil {
 		r.meta.SetAppendSystemPrompt(id, o.AppendSystemPrompt)
 		r.meta.SetExtraArgs(id, o.ExtraArgs)
+	}
+	if o.Router && r.settings != nil {
+		// Persisting the designation is what makes it the relay inbox.
+		if prev := r.settings.Router().SessionID; prev != "" && prev != id {
+			slog.Info("router session replaced", "session", id, "previous", prev)
+			r.retireRouter(prev)
+		}
+		r.settings.SetRouterSession(id)
+		r.designateRouter(id)
 	}
 	slog.Info("session created", "session", id, "backend", o.Backend, "cwd", o.Cwd)
 	tok := &sendToken{cancel: cancel, started: time.Now()}
@@ -1696,42 +1903,30 @@ func validateCreateInputs(cwd, initialMsg string) (string, error) {
 	return cwd, nil
 }
 
-// CreateSession spawns a brand-new session on the default backend and waits for
-// the assistant's first response (subject to timeout). Returns the
-// generated session id and the accumulated assistant text. The session
-// will appear in discovery via fsnotify shortly after the subprocess
-// starts writing its jsonl.
-func (r *Router) CreateSession(ctx context.Context, o core.CreateOptions, timeout time.Duration) (string, string, error) {
-	o, err := r.prepare(ctx, o)
-	if err != nil {
-		return "", "", err
+// RouteNewSession starts a session like RouteToSession sends.
+func (r *Router) RouteNewSession(o core.CreateOptions) (string, bool, error) {
+	// Work tied to no project runs in the temp directory.
+	if o.Cwd == "" {
+		o.Cwd = os.TempDir()
 	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	sessionID, ch, tok, err := r.beginNewSession(waitCtx, cancel, o)
-	if err != nil {
-		return "", "", err
+	inbox := r.routerInbox()
+	if inbox == "" {
+		id, err := r.StartSession(o)
+		return id, false, err
 	}
-
-	reply := r.collectNewSessionText(sessionID, o.Backend, ch)
-	expired := waitCtx.Err() != nil // before releaseSend, which cancels waitCtx
-	r.releaseSend(sessionID, tok)
-
-	if expired && reply == "" {
-		return sessionID, "", fmt.Errorf("create_session timeout (no response received within %s)", timeout)
-	}
-	return sessionID, reply, nil
+	id, err := r.CreateSessionRelayed(o, func(sessionID, reply string, err error) {
+		r.queueRelay(inbox, sessionID, reply, err)
+	})
+	return id, err == nil, err
 }
 
 // CreateSessionRelayed starts a new session like CreateSession but returns as
 // soon as the session id is known; the first assistant reply is collected in
-// the background and handed to onDone (same contract as SendToSessionRelayed;
-// onDone also receives the new session id so callers don't have to close over
-// the not-yet-assigned return value). For Claude the id is pre-assigned so
-// this returns almost immediately; for Codex it returns once the rollout file
-// is discovered.
+// the background and handed to onDone (same contract as SendToSessionRelayed,
+// including the drop on ceiling expiry with no response; onDone also receives
+// the new session id so callers don't have to close over the not-yet-assigned
+// return value). For Claude the id is pre-assigned so this returns almost
+// immediately; for Codex it returns once the rollout file is discovered.
 func (r *Router) CreateSessionRelayed(o core.CreateOptions, onDone func(sessionID, reply string, err error)) (string, error) {
 	o, err := r.prepare(context.Background(), o)
 	if err != nil {
@@ -1751,7 +1946,9 @@ func (r *Router) CreateSessionRelayed(o core.CreateOptions, onDone func(sessionI
 		expired := waitCtx.Err() != nil // before releaseSend, which cancels waitCtx
 		r.releaseSend(sessionID, tok)
 		if expired && reply == "" {
-			onDone(sessionID, "", errors.New("no response received (send expired)"))
+			// Same policy as SendToSessionRelayed: a ceiling-late "no
+			// response" note is noise, and the transcript is the record.
+			slog.Warn("relay collector expired with no response; dropping", "session", sessionID)
 			return
 		}
 		onDone(sessionID, reply, nil)

@@ -78,8 +78,8 @@ func TestFoldFindAll(t *testing.T) {
 
 func TestScanTurnsForQuery(t *testing.T) {
 	turns := []core.Turn{
-		{Role: "user", Content: "deploy the auth service"},
-		{Role: "assistant", Parts: []core.TurnPart{{Type: "text", Content: "AUTH done"}}},
+		{Role: "user", Cursor: "c0", Content: "deploy the auth service"},
+		{Role: "assistant", Cursor: "c1", Parts: []core.TurnPart{{Type: "text", Content: "AUTH done"}}},
 		{Role: "user", Content: "unrelated"},
 		{Role: "assistant", Parts: []core.TurnPart{
 			{Type: "tool", ToolName: "Bash", ToolTarget: "auth.sh"}, // tool part must NOT match
@@ -90,34 +90,13 @@ func TestScanTurnsForQuery(t *testing.T) {
 	if matched != 2 {
 		t.Fatalf("matched = %d, want 2 (tool part excluded)", matched)
 	}
-	if len(hits) != 2 || hits[0].TurnIndex != 0 || hits[1].TurnIndex != 1 {
+	if len(hits) != 2 || hits[0].Cursor != turns[0].Cursor || hits[1].Cursor != turns[1].Cursor {
 		t.Fatalf("hits = %+v", hits)
 	}
 	// maxHits caps returned snippets but not the matched count.
 	hits, matched = scanTurnsForQuery(turns, []rune("auth"), 1, 40)
 	if matched != 2 || len(hits) != 1 {
 		t.Fatalf("capped: matched=%d hits=%d, want 2 and 1", matched, len(hits))
-	}
-}
-
-func TestPageBounds(t *testing.T) {
-	cases := []struct {
-		offset, limit, total int
-		wantStart, wantEnd   int
-	}{
-		{offset: -1, limit: 20, total: 100, wantStart: 80, wantEnd: 100},   // recent page
-		{offset: 10, limit: 20, total: 100, wantStart: 10, wantEnd: 30},    // absolute page
-		{offset: 95, limit: 20, total: 100, wantStart: 95, wantEnd: 100},   // last page shorter
-		{offset: 200, limit: 20, total: 100, wantStart: 100, wantEnd: 100}, // past end → empty
-		{offset: -1, limit: 50, total: 10, wantStart: 0, wantEnd: 10},      // page larger than total
-		{offset: -1, limit: 20, total: 0, wantStart: 0, wantEnd: 0},        // empty transcript
-	}
-	for _, c := range cases {
-		start, end := pageBounds(c.offset, c.limit, c.total)
-		if start != c.wantStart || end != c.wantEnd {
-			t.Errorf("pageBounds(%d,%d,%d) = (%d,%d), want (%d,%d)",
-				c.offset, c.limit, c.total, start, end, c.wantStart, c.wantEnd)
-		}
 	}
 }
 

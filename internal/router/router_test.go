@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/sender"
 	"github.com/nexustar/usher/internal/sessionmeta"
+	"github.com/nexustar/usher/internal/settings"
 	"github.com/nexustar/usher/internal/transcript"
 	"github.com/nexustar/usher/internal/window"
 )
@@ -409,21 +412,6 @@ func TestReadTurnsAssistantEndTime(t *testing.T) {
 		t.Errorf("assistant ts = %v, want %v (turn end)", turns[1].Time, want)
 	}
 
-	// Same projection through the agent-facing transcript readers.
-	tt, err := r.ReadSessionTranscript("end", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tt) != 2 || !tt[1].Time.Equal(turns[1].Time) {
-		t.Errorf("ReadSessionTranscript ts = %v, want %v", tt, turns[1].Time)
-	}
-	page, _, _, err := r.ReadSessionTranscriptPage("end", 0, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page) != 2 || !page[1].Time.Equal(turns[1].Time) {
-		t.Errorf("ReadSessionTranscriptPage ts = %v, want %v", page, turns[1].Time)
-	}
 }
 
 func TestBackendForModel(t *testing.T) {
@@ -676,13 +664,13 @@ func TestCollectTurnTextTimeout(t *testing.T) {
 	}
 }
 
-func TestSendToSessionRelayedUnknownSession(t *testing.T) {
+func TestRouteToSessionUnknownSession(t *testing.T) {
 	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := &Router{discovery: d, broker: broker.New()}
-	if err := r.SendToSessionRelayed("nope", "hi", func(string, string, error) {}); err == nil {
+	if _, err := r.RouteToSession("nope", "hi"); err == nil {
 		t.Error("expected error for unknown session")
 	}
 }
@@ -883,36 +871,44 @@ func TestEnrichExitSkipsConsecutiveUsersAndZeroEndTime(t *testing.T) {
 }
 
 // TestSendQueueSerializesAndAttributesReplies: three rapid relayed sends into
-// one session must run as three ordered turns, each collector receiving ITS
-// OWN turn's reply — not the previous turn's tail (the busy-session
-// misattribution bug).
+// one session must run as three serialized turns, each collector queueing ITS
+// OWN turn's reply exactly once — not the previous turn's tail (the
+// busy-session misattribution bug). Queue order is not asserted: collectors
+// run on their own goroutines and near-instant synthetic turns can queue out
+// of order; notes are self-describing either way.
 func TestSendQueueSerializesAndAttributesReplies(t *testing.T) {
 	r := newQueueTestRouter(t)
+	r.settings = settings.New("")
+	r.settings.SetRouterSession("inbox-1")
 
-	type got struct{ prompt, reply string }
-	results := make(chan got, 3)
 	for _, prompt := range []string{"one", "two", "three"} {
-		p := prompt
-		err := r.SendToSessionRelayed("abc12345", p, func(_, reply string, err error) {
-			if err != nil {
-				t.Errorf("send %q relay err: %v", p, err)
-			}
-			results <- got{p, reply}
-		})
-		if err != nil {
-			t.Fatalf("send %q: %v", p, err)
+		relayed, err := r.RouteToSession("abc12345", prompt)
+		if err != nil || !relayed {
+			t.Fatalf("send %q: relayed=%v err=%v", prompt, relayed, err)
 		}
 	}
 
-	for i := 0; i < 3; i++ {
-		select {
-		case g := <-results:
-			if g.reply != "re: "+g.prompt {
-				t.Errorf("prompt %q got reply %q — misattributed turn", g.prompt, g.reply)
-			}
-		case <-time.After(3 * time.Second):
-			t.Fatal("timed out waiting for relayed replies")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		r.sendMu.Lock()
+		n := len(r.relayIn["inbox-1"])
+		r.sendMu.Unlock()
+		if n == 3 {
+			break
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queued notes = %d, want 3", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	folded, _ := r.foldRelays("inbox-1", "next")
+	for _, reply := range []string{"re: one", "re: two", "re: three"} {
+		if strings.Count(folded, "[session abc12345 replied] "+reply+"\n") != 1 {
+			t.Errorf("folded notes = %q — %q not attributed exactly once", folded, reply)
+		}
+	}
+	if !strings.HasSuffix(folded, "\n\nnext") {
+		t.Errorf("user text lost: %q", folded)
 	}
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
@@ -1007,5 +1003,326 @@ func TestValidateCreateInputsResolvesSymlinks(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("cwd = %q, want %q", got, want)
+	}
+}
+
+// routerDesignationRuntime records the spawn request and the designation that
+// must precede it: the routing tools are process arguments, so a designation
+// that lands after Start would spawn a router with no tools.
+type routerDesignationRuntime struct {
+	backend.Runtime
+	newID        string
+	req          backend.StartRequest
+	designated   string
+	designatedAt int // number of Start calls before the designation
+	starts       int
+}
+
+func (r *routerDesignationRuntime) SetRouterSession(id string) {
+	r.designated, r.designatedAt = id, r.starts
+}
+
+func (r *routerDesignationRuntime) Start(_ context.Context, req backend.StartRequest) (string, <-chan sender.StreamEvent, error) {
+	r.starts++
+	r.req = req
+	ch := make(chan sender.StreamEvent)
+	close(ch)
+	return r.newID, ch, nil
+}
+
+func TestStartSessionDesignatesRouter(t *testing.T) {
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	rt := &routerDesignationRuntime{newID: "router-1"}
+	r := New(d, map[string]backend.Backend{
+		"claude": {Runtime: rt, Transcript: transcript.Claude{}},
+		"codex":  {Runtime: rt, Transcript: transcript.Claude{}},
+		"pi":     {Runtime: rt, Transcript: transcript.Claude{}},
+	}, "claude", broker.New(), nil, sessionmeta.New("", 0), nil)
+	routerDir := filepath.Join(t.TempDir(), "router")
+	r.SetSettings(settings.New(settingsPath), routerDir)
+
+	// The router runs in usher's own directory, on the backend asked for,
+	// with its routing persona and without the backend's local tools.
+	if _, err := r.StartRouter("hi", "nope", ""); err == nil {
+		t.Fatal("an unavailable router backend was accepted")
+	}
+	id, err := r.StartRouter("hi", "codex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rt.req.Router {
+		t.Fatal("StartRequest.Router was not passed to the backend")
+	}
+	if rt.req.Cwd != routerDir || rt.req.Model != "" || rt.req.AppendSystemPrompt == "" ||
+		!slices.Equal(rt.req.ExtraArgs, routerArgs["codex"]) {
+		t.Fatalf("router start request = %+v", rt.req)
+	}
+	if got := r.RouterSession(); got != id {
+		t.Fatalf("designated router = %q, want %q", got, id)
+	}
+	if got := settings.New(settingsPath).Router().SessionID; got != id {
+		t.Fatalf("persisted router = %q, want %q", got, id)
+	}
+	if rt.designated != id {
+		t.Fatalf("runtimes were told %q, want %q", rt.designated, id)
+	}
+
+	// A restart hands the designation back before anything resumes.
+	rt2 := &routerDesignationRuntime{newID: "router-2"}
+	New(d, map[string]backend.Backend{
+		"claude": {Runtime: rt2, Transcript: transcript.Claude{}},
+	}, "claude", broker.New(), nil, nil, nil).SetSettings(settings.New(settingsPath), routerDir)
+	if rt2.designated != id || rt2.designatedAt != 0 {
+		t.Fatalf("restored designation = %q after %d starts, want %q before any", rt2.designated, rt2.designatedAt, id)
+	}
+}
+
+// TestQueuedRelaysRideTheNextPrompt: a finished turn must reach the router
+// without prompting it — the user already reads the reply in the transcript,
+// and a prompt would only buy a turn spent restating it.
+func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
+	r := newQueueTestRouter(t)
+	var prompts []string
+	var mu sync.Mutex
+	inner := r.runTurn
+	r.runTurn = func(ctx context.Context, sessionID, prompt, cwd string, tok *sendToken) {
+		mu.Lock()
+		prompts = append(prompts, prompt)
+		mu.Unlock()
+		inner(ctx, sessionID, prompt, cwd, tok)
+	}
+
+	r.queueRelay("abc12345", "worker-1", "built it", nil)
+	r.queueRelay("abc12345", "worker-2", "", errors.New("backend died"))
+	if err := r.SendToSession("abc12345", "what happened?"); err != nil {
+		t.Fatal(err)
+	}
+
+	// startTurn runs the executor on its own goroutine.
+	var got []string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		got = append([]string(nil), prompts...)
+		mu.Unlock()
+		if len(got) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("prompts = %v", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	want := "[session worker-1 replied] built it\n\n" +
+		"[session worker-2 failed] backend died\n\n" +
+		"[end of session replies]\n\n" +
+		"what happened?"
+	if got[0] != want {
+		t.Fatalf("folded prompt = %q, want %q", got[0], want)
+	}
+	// The notes are the model's: what a client reads back is what was typed.
+	if typed := stripRelayNotes(want); typed != "what happened?" {
+		t.Fatalf("stripRelayNotes = %q", typed)
+	}
+	if plain := "[session x] is how my own message starts"; stripRelayNotes(plain) != plain {
+		t.Fatal("a prompt without folded notes was cut")
+	}
+	// Folding consumes: the next prompt carries only what the user typed.
+	if got, _ := r.foldRelays("abc12345", "again"); got != "again" {
+		t.Fatalf("notes survived folding: %q", got)
+	}
+}
+
+// A long reply is excerpted: the user has the full text in the transcript, so
+// the note only has to say what finished.
+func TestFoldedRelayExcerptsLongReplies(t *testing.T) {
+	r := newQueueTestRouter(t)
+	r.queueRelay("abc12345", "worker", strings.Repeat("长", relayExcerptRunes+50), nil)
+	folded, _ := r.foldRelays("abc12345", "next")
+	if !strings.Contains(folded, "truncated") || strings.Contains(folded, strings.Repeat("长", relayExcerptRunes+1)) {
+		t.Fatalf("folded = %q", folded)
+	}
+	if !strings.HasSuffix(folded, "next") {
+		t.Fatalf("user text lost: %q", folded)
+	}
+	// The IM hubs recognize a folded prompt by this marker (imutil.SamePromptEcho),
+	// so that their own echo suppression survives the preamble.
+	if !strings.HasPrefix(folded, relayNoteMark) {
+		t.Fatalf("folded prompt does not open with %q: %q", relayNoteMark, folded)
+	}
+}
+
+func TestRouterCannotRouteToItself(t *testing.T) {
+	r := newQueueTestRouter(t)
+	r.settings = settings.New("")
+	r.settings.SetRouterSession("abc12345")
+	if _, err := r.RouteToSession("abc12345", "loop"); err == nil {
+		t.Fatal("routing to the router session itself was accepted")
+	}
+}
+
+// A prompt that never leaves must not take the router's notes with it.
+func TestFailedSendKeepsRelayNotes(t *testing.T) {
+	r := newQueueTestRouter(t)
+	r.queueRelay("gone", "worker", "done", nil)
+	if err := r.SendToSession("gone", "next"); err == nil {
+		t.Fatal("send to a missing session succeeded")
+	}
+	if folded, _ := r.foldRelays("gone", "next"); !strings.Contains(folded, "[session worker replied] done") {
+		t.Fatalf("notes lost with the failed send: %q", folded)
+	}
+}
+
+// A routed reply is found by content: the target's user turn carrying the
+// dispatched text, at or after the dispatching turn, and the turn answering it.
+func TestRoutedRepliesMatchByContent(t *testing.T) {
+	tmp := t.TempDir()
+	line := func(typ, ts, uuid, content string) string {
+		return `{"type":"` + typ + `","sessionId":"target01","cwd":"/tmp/x","timestamp":"` + ts + `","uuid":"` + uuid +
+			`","message":{"role":"` + typ + `","content":` + content + `}}` + "\n"
+	}
+	text := func(s string) string { return `[{"type":"text","text":"` + s + `"}]` }
+	log := line("user", "2026-07-01T10:00:00.000Z", "u1", `"run the tests"`) +
+		line("assistant", "2026-07-01T10:00:05.000Z", "a1", text("first run: green")) +
+		line("user", "2026-07-01T11:00:00.000Z", "u2", `"something the user typed"`) +
+		line("assistant", "2026-07-01T11:00:05.000Z", "a2", text("unrelated")) +
+		line("user", "2026-07-01T12:00:01.000Z", "u3", `"run the tests"`) +
+		line("assistant", "2026-07-01T12:00:09.000Z", "a3", text("second run: red"))
+	p := filepath.Join(tmp, "-tmp-x", "target01.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := d.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := New(d, map[string]backend.Backend{"claude": {Runtime: &routerDesignationRuntime{}, Transcript: transcript.Claude{}}}, "claude",
+		broker.New(), nil, sessionmeta.New("", 0), nil)
+
+	dispatch := func(at, input, output string) core.Turn {
+		ts, _ := time.Parse(time.RFC3339, at)
+		return core.Turn{Role: "assistant", Time: ts, Cursor: at, Parts: []core.TurnPart{
+			{Type: "text", Content: "on it"},
+			{Type: "tool", ToolName: "mcp__usher__send_to_session", ToolInput: input, Content: output},
+		}}
+	}
+	ok := `{"status":"delivered","session_id":"target01","relayed":true}`
+	got := r.RoutedReplies([]core.Turn{
+		dispatch("2026-07-01T10:00:00Z", `{"session_id":"target01","text":"run the tests"}`, ok),
+		dispatch("2026-07-01T12:00:00Z", `{"session_id":"target01","text":"run the tests"}`, ok),
+		dispatch("2026-07-01T13:00:00Z", `{"session_id":"target01","text":"not sent yet"}`, ok),
+		dispatch("2026-07-01T13:00:00Z", `{"session_id":"nope","text":"x"}`, `session not found: nope`),
+	})
+	if len(got) != 3 {
+		t.Fatalf("replies = %+v, want one per accepted dispatch", got)
+	}
+	if got[0].Reply != "first run: green" || !got[0].Done || got[0].Part != 1 || got[0].SessionID != "target01" {
+		t.Errorf("first dispatch = %+v", got[0])
+	}
+	// The same text sent again resolves to its own, later, answer.
+	if got[1].Reply != "second run: red" || !got[1].Done {
+		t.Errorf("second dispatch = %+v", got[1])
+	}
+	// The session is idle and never took this up: settled, with nothing to show.
+	if got[2].Reply != "" || !got[2].Done {
+		t.Errorf("unanswered dispatch = %+v", got[2])
+	}
+}
+
+func (r *routerDesignationRuntime) LiveSessions() []backend.LiveSession { return nil }
+
+// A session the router creates without a cwd runs in the system temp
+// directory; a cwd it names is used as given.
+func TestRouteNewSessionDefaultsToTheTempDir(t *testing.T) {
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &routerDesignationRuntime{newID: "worker-1"}
+	r := New(d, map[string]backend.Backend{"claude": {Runtime: rt, Transcript: transcript.Claude{}}}, "claude",
+		broker.New(), nil, sessionmeta.New("", 0), nil)
+
+	if _, _, err := r.RouteNewSession(core.CreateOptions{InitialMessage: "quicksort"}); err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := filepath.EvalSymlinks(os.TempDir()); rt.req.Cwd != want {
+		t.Fatalf("no cwd ran in %q, want %q", rt.req.Cwd, want)
+	}
+	project := t.TempDir()
+	if _, _, err := r.RouteNewSession(core.CreateOptions{Cwd: project, InitialMessage: "fix it"}); err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := filepath.EvalSymlinks(project); rt.req.Cwd != want {
+		t.Fatalf("a named cwd ran in %q, want %q", rt.req.Cwd, want)
+	}
+}
+
+// The dispatching turn usually runs on after the call — more tools, closing
+// text — so its end is no measure of when the work was sent; and work whose
+// session has stopped without answering is settled, not pending.
+func TestRoutedRepliesFromReadsTurnStarts(t *testing.T) {
+	tmp := t.TempDir()
+	line := func(sid, typ, ts, uuid, content string) string {
+		return `{"type":"` + typ + `","sessionId":"` + sid + `","cwd":"/tmp/x","timestamp":"` + ts + `","uuid":"` + uuid +
+			`","message":{"role":"` + typ + `","content":` + content + `}}` + "\n"
+	}
+	write := func(sid, log string) {
+		p := filepath.Join(tmp, "-tmp-x", sid+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(log), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	toolUse := func(id, text string) string {
+		return `[{"type":"tool_use","id":"` + id + `","name":"mcp__usher__send_to_session","input":{"session_id":"worker01","text":"` + text + `"}}]`
+	}
+	toolResult := func(id string) string {
+		return `[{"type":"tool_result","tool_use_id":"` + id + `","content":[{"type":"text","text":"{\"status\":\"delivered\",\"session_id\":\"worker01\"}"}]}]`
+	}
+	// The router's turn starts at :00, dispatches, and only ends at :40.
+	write("router01", line("router01", "user", "2026-07-01T12:00:00.000Z", "r1", `"run the tests, then tell me a joke"`)+
+		line("router01", "assistant", "2026-07-01T12:00:01.000Z", "r2", toolUse("t1", "run the tests"))+
+		line("router01", "user", "2026-07-01T12:00:02.000Z", "r3", toolResult("t1"))+
+		line("router01", "assistant", "2026-07-01T12:00:03.000Z", "r4", toolUse("t2", "never answered"))+
+		line("router01", "user", "2026-07-01T12:00:04.000Z", "r5", toolResult("t2"))+
+		line("router01", "assistant", "2026-07-01T12:00:40.000Z", "r6", `[{"type":"text","text":"sent"}]`))
+	write("worker01", line("worker01", "user", "2026-07-01T12:00:01.500Z", "w1", `"run the tests"`)+
+		line("worker01", "assistant", "2026-07-01T12:00:09.000Z", "w2", `[{"type":"text","text":"all green"}]`))
+
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := d.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := New(d, map[string]backend.Backend{"claude": {Runtime: &routerDesignationRuntime{}, Transcript: transcript.Claude{}}}, "claude",
+		broker.New(), nil, sessionmeta.New("", 0), nil)
+
+	got, err := r.RoutedRepliesFrom("router01", "")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("replies = %+v, %v", got, err)
+	}
+	if got[0].Reply != "all green" || !got[0].Done {
+		t.Errorf("reply to a dispatch early in a long turn = %+v", got[0])
+	}
+	if got[1].Reply != "" || !got[1].Done {
+		t.Errorf("work the idle session never took up = %+v, want settled with no reply", got[1])
 	}
 }

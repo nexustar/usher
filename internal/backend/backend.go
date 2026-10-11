@@ -119,6 +119,9 @@ type StartRequest struct {
 	AppendSystemPrompt string
 	ExtraArgs          []string
 	AutoApprove        bool
+	// Router asks for usher's session-routing MCP tools: a new session has no
+	// id to be designated by until its process is already running.
+	Router bool
 }
 
 // LiveSession is one warm worker. Running: a turn is in flight, usher's or
@@ -191,6 +194,12 @@ type SystemPrompter interface {
 // and respawns must ask for them again by session id.
 type ExtraArgser interface {
 	SetExtraArgsLookup(lookup func(sessionID string) []string)
+}
+
+// RouterDesignator is an optional runtime capability: keeping the routing MCP
+// tools attached to usher's router session across cold worker rebuilds.
+type RouterDesignator interface {
+	SetRouterSession(sessionID string)
 }
 
 // Model is the backend-neutral model-picker projection.

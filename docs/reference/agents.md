@@ -72,6 +72,51 @@ GUI and API changes are written atomically and take effect immediately.
 Unknown agent names, unavailable backends, and invalid models cause session
 creation to fail rather than falling back silently.
 
+## The router session
+
+usher has one **router session**: it holds the session-routing MCP tools
+(`list_sessions`, `send_to_session`, `create_session`, …) on top of the ordinary
+`show_image`, and every session it routes work to delivers its reply back into
+it. It is not created from an agent. usher gives it a routing persona and takes
+its backend's local tools away (the recipes below), so it can only route; what
+is left to choose is the backend and model it runs on, picked when a new
+Router conversation is started (Settings → General → Start new). It runs in
+`router/` under the data directory, which the session lists show last; a
+session it creates without naming a directory runs in the system temp
+directory instead.
+
+Starting a router session replaces the current one, which becomes an ordinary
+session from its next cold start. Which session is the router is kept in
+`settings.json`, so it survives a restart. Every backend can host
+the router: Claude receives the tools as spawn arguments (`mcp-router.json`),
+Codex in its thread/start config params, and pi (1.0 or later) through a
+generated extension that registers the same MCP server. See [Router MCP](router-mcp.md) for
+what the tools promise.
+
+### Restricting local tools
+
+The router cannot answer questions itself: it gets usher's tools and nothing
+else — on Claude no built-in tool and no other MCP server (`--tools ""
+--strict-mcp-config`), on pi an allowlist of usher's tools by name (`--tools`),
+on Codex the recipe below — and its calls to them are approved without asking.
+An agent of your own — a "read-only analyst", say — is restricted through
+per-backend `extra_args`. This is supervision of the model, not a security
+boundary against the authenticated user:
+
+- **Claude**: `["--disallowedTools", "Bash,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,Agent,WebFetch,WebSearch"]`
+  removes tools by name; `mcp__usher__*` tools are unaffected. Drop entries to
+  taste for an analyst profile.
+- **Codex**: no per-tool switches. `["--sandbox", "read-only", "--ask-for-approval", "never"]`
+  is the closest: the sandbox blocks writes and `never` stops the model from
+  requesting escalation past it (under the default on-request policy an
+  auto-approve profile would wave escalations through). The model can still
+  read files.
+- **pi**: `["--tools", "read,grep,find,ls"]` whitelists built-ins (this set is
+  pi's own read-only preset); `["--no-builtin-tools"]` removes them all, which
+  on its own leaves no tools at all — the strictest
+  router shape any backend offers. Note pi's default active set is only
+  `read,bash,edit,write`, so prefer the whitelist form over `--exclude-tools`.
+
 The resolved `append_system_prompt` is snapshotted in usher's session metadata,
 so editing or removing the agent later does not change an existing session.
 For Codex, each session's dedicated app-server process starts with

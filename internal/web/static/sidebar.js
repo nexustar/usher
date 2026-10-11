@@ -3,11 +3,11 @@
 import {
   esc, cwdExpanded, cwdArchivedVisible,
   isUnread, reconcileUnread,
-  setLastSessions,
+  setLastSessions, getLastSessions,
   updateTabBadge,
   registerRenderSidebarSessions,
   refreshSubtitle, currentDetailId,
-  editorUrl, pendingInteractionCount,
+  editorUrl, pendingInteractionCount, routerDir,
 } from './state.js';
 import { statusDot, backendMark } from './render.js';
 import { loadList } from './list.js';
@@ -24,9 +24,8 @@ const archivedPageSize = 20;
 // ---------- Sidebar ----------
 //
 // Polled every 5s independently of the active route. Renders Claude Code
-// sessions grouped by cwd, recent activity first. The "main chat" entry is
-// static markup in index.html — no fetch needed since we only ever route
-// to a single mainchat (id=default).
+// sessions grouped by cwd, recent activity first. The Router entry is static
+// markup in index.html; which session it opens is resolved when it is opened.
 
 export async function loadSidebar() {
   try {
@@ -99,7 +98,9 @@ export function renderSidebarSessions(allSessions) {
   const byRecent = (a, b) => recencyKey(b) - recencyKey(a);
   // Sort cwd groups by their most-recent visible activity, not absolute
   // — stale cwds with one expanded archived row shouldn't jump to the top.
+  // The router's own directory comes last, whatever its activity.
   cwds.sort((a, b) => {
+    if ((a === routerDir) !== (b === routerDir)) return a === routerDir ? 1 : -1;
     const av = groups.get(a).filter(s => !s.archived);
     const bv = groups.get(b).filter(s => !s.archived);
     return recencyOf(bv) - recencyOf(av);
@@ -201,9 +202,10 @@ export function renderSidebarSessions(allSessions) {
 
 export function updateSidebarActive() {
   const hash = location.hash || '#/';
-  const inMainChat = hash === '#/chat' || hash.startsWith('#/chat/');
-  document.querySelectorAll('.sidebar-mainchat').forEach(a => {
-    a.classList.toggle('active', inMainChat);
+  const inRouter = hash === '#/router' || hash.startsWith('#/router/') ||
+    getLastSessions().some(s => s.router && hash === '#/s/' + encodeURIComponent(s.id));
+  document.querySelectorAll('.sidebar-router').forEach(a => {
+    a.classList.toggle('active', inRouter);
   });
   document.querySelectorAll('.sidebar-new:not(.cwd-new)').forEach(a => {
     a.classList.toggle('active', hash === '#/new');

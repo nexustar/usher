@@ -31,6 +31,7 @@ type Manager struct {
 	interactions *interaction.Manager
 	sandbox      map[string]any
 	config       map[string]any
+	routerConfig map[string]any
 	env          []string
 	logger       *slog.Logger
 	maxLive      int
@@ -38,6 +39,7 @@ type Manager struct {
 	mu           sync.Mutex
 	workers      map[string]*worker
 	starting     int
+	routerID     string
 	systemPrompt func(string) string
 	extraArgs    func(string) []string
 	autoPause    time.Duration
@@ -121,11 +123,34 @@ func (m *Manager) reapIdle(now time.Time, after time.Duration) {
 	}
 }
 
+// SetRouterConfig supplies the config that replaces the manager-wide config
+// for usher's router session.
+func (m *Manager) SetRouterConfig(config map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routerConfig = cloneMap(config)
+}
+
+// SetRouterSession designates id as usher's router session: its next cold
+// worker starts with the router config.
+func (m *Manager) SetRouterSession(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routerID = id
+}
+
+func (m *Manager) isRouter(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return id != "" && id == m.routerID
+}
+
 // newClient builds one session's worker. extra follows --codex-args
 // vocabulary (--sandbox / -c key=value) and overrides the manager-wide
 // sandbox and config for this worker only. id is empty for a fresh thread —
-// codex assigns one only after the worker is up.
-func (m *Manager) newClient(id, instructions string, extra []string) *Client {
+// codex assigns one only after the worker is up — so router selects the
+// routing-tools config for it in place of the id.
+func (m *Manager) newClient(id, instructions string, extra []string, router bool) *Client {
 	var args []string
 	if instructions != "" {
 		quoted, _ := json.Marshal(instructions)
@@ -135,7 +160,15 @@ func (m *Manager) newClient(id, instructions string, extra []string) *Client {
 	if id != "" {
 		logger = logger.With("session", id)
 	}
-	sandbox, config := m.sandbox, m.config
+	base := m.config
+	if router {
+		m.mu.Lock()
+		if m.routerConfig != nil {
+			base = m.routerConfig
+		}
+		m.mu.Unlock()
+	}
+	sandbox, config := m.sandbox, base
 	if len(extra) > 0 {
 		extraSandbox, extraConfig := ParseHeadlessArgs(extra, logger)
 		sandbox, config = cloneMap(sandbox), cloneMap(config)
@@ -219,7 +252,7 @@ func (m *Manager) finishStart() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions string, extraArgs []string) (string, error) {
+func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions string, extraArgs []string, router bool) (string, error) {
 	victim, err := m.reserve()
 	if err != nil {
 		return "", err
@@ -227,7 +260,7 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions stri
 	if victim != nil {
 		victim.Shutdown()
 	}
-	c := m.newClient("", instructions, extraArgs)
+	c := m.newClient("", instructions, extraArgs, router)
 	id, err := c.StartThread(ctx, cwd, model)
 	if err != nil {
 		m.finishStart()
@@ -238,6 +271,10 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions stri
 	m.mu.Lock()
 	m.starting--
 	m.workers[id] = &worker{client: c, lastUsed: time.Now()}
+	if router {
+		// Record the id the thread was minted under, for future cold resumes.
+		m.routerID = id
+	}
 	m.mu.Unlock()
 	return id, nil
 }
@@ -301,7 +338,7 @@ func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, err
 			victim.Shutdown()
 		}
 		ready := make(chan struct{})
-		w := &worker{client: m.newClient(id, m.promptFor(id), m.argsFor(id)), ready: ready, lastUsed: time.Now()}
+		w := &worker{client: m.newClient(id, m.promptFor(id), m.argsFor(id), m.isRouter(id)), ready: ready, lastUsed: time.Now()}
 		m.mu.Lock()
 		m.starting--
 		if existing := m.workers[id]; existing != nil {

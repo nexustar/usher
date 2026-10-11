@@ -77,7 +77,7 @@ both platforms.
 - Messages typed in a bound session topic are sent directly to that session.
   The General topic and unbound topics are ignored; create, archive, and delete
   sessions in the web UI.
-- Prompts sent from the web UI or main chat are echoed into the session topic.
+- Prompts sent from the web UI are echoed into the session topic.
 - Assistant text and supported `show_image` output are mirrored silently;
   successful turn completion sends a normal notification.
 - Tool approvals appear with **Allow**, **Deny**, and, when supported,

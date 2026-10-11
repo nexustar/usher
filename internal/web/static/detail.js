@@ -1,9 +1,9 @@
-// usher SPA: detail view + main chat + new session.
+// usher SPA: detail view + router view + new session.
 
 import {
   esc, root, subtitle, closeES, closeTerminalES, clearListInterval,
   currentDetailId, setCurrentDetailId, setCurrentDraftKey,
-  setSuppressAppendScroll,
+  setSuppressAppendScroll, setRoutedTargets, getLastSessions,
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
   registerRefreshSubtitle,
@@ -11,7 +11,7 @@ import {
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
   forkBtnHTML, updateMessageTs,
-  backendMark,
+  backendMark, statusDot, parseRoutedSession,
 } from './render.js';
 import { openTerminalScreen, wireTerminalControls, measureCols } from './terminal.js';
 import { loadSidebar } from './sidebar.js';
@@ -223,10 +223,8 @@ function wireUpload(url, promptEl, notify) {
   installDropGuard();
 
   const uploadFile = async (file) => {
-    const form = new FormData();
-    form.append('file', file);
     try {
-      const res = await fetch(url, { method: 'POST', body: form });
+      const res = await fetch(url + '?filename=' + encodeURIComponent(file.name), { method: 'POST', body: file });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         notify('upload failed: ' + (err.error || 'HTTP ' + res.status), 'error');
@@ -641,6 +639,9 @@ export async function showDetail(id) {
   liveTurnDirty = false;
   hasEarlier = false;
   detailStreaming = false;
+  routedSig = '';
+  clearTimeout(routedTimer);
+  setRoutedTargets([]);
   subtitle.textContent = 'session detail';
 
   let sess;
@@ -710,7 +711,7 @@ export async function showDetail(id) {
                 <span class="t-icon">+</span><span class="t-full">upload</span>
               </button>
               <input id="upload-input" type="file" hidden multiple>
-              <button id="auto-approve-toggle" class="auto-approve-toggle" type="button"
+              <button id="auto-approve-toggle" class="auto-approve-toggle" type="button" ${sess.router ? 'hidden' : ''}
                 aria-pressed="${sess.auto_approve ? 'true' : 'false'}"
                 title="ask: confirm each tool call · auto: run them automatically">
                 <span class="t-icon">ϟ</span><span class="t-full">approve:</span><span class="toggle-val">${sess.auto_approve ? 'auto' : 'ask'}</span>
@@ -735,8 +736,18 @@ export async function showDetail(id) {
     </div>
   `;
 
+  // Session ids in the transcript are linked against the sessions the sidebar
+  // knows; on a cold load that list may not have arrived yet.
+  if (!getLastSessions().length) await loadSidebar();
   await loadTranscript(id);
   if (epoch !== detailEpoch) return; // superseded before we wired the streams
+  if (sess.router) {
+    // No shell worth opening in the router's own directory.
+    const term = document.getElementById('term-toggle');
+    if (term) term.hidden = true;
+    // Nor is a branch of the router a router.
+    document.getElementById('chat-scroll')?.classList.add('router-view');
+  }
 
   const chatEl = document.getElementById('chat-scroll');
   const promptEl = document.getElementById('prompt');
@@ -762,9 +773,12 @@ export async function showDetail(id) {
   if (autoBtn) {
     autoBtn.addEventListener('click', async () => {
       const next = autoBtn.getAttribute('aria-pressed') !== 'true';
+      // On the Router page the toggle is the current session's.
+      const target = sess.router ? routerFocusID : id;
+      if (!target) return;
       autoBtn.disabled = true;
       try {
-        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/auto-approve', {
+        const res = await fetch('/api/sessions/' + encodeURIComponent(target) + '/auto-approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: next }),
@@ -772,11 +786,12 @@ export async function showDetail(id) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         autoBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
         autoBtn.querySelector('.toggle-val').textContent = next ? 'auto' : 'ask';
-        loadSidebar(); // refresh sidebar marker immediately
+        await loadSidebar(); // refresh sidebar marker immediately
       } catch (e) {
         appendChatMessage({ role: 'error', content: 'auto-approve toggle failed: ' + String(e), ts: new Date().toISOString() });
       } finally {
         autoBtn.disabled = false;
+        if (sess.router) updateRouterFocus();
       }
     });
   }
@@ -1097,6 +1112,9 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   };
 
   const handlers = {
+    // Mid-turn the dispatching turn is still a live bubble with no cursor to
+    // hang a reply on; its end fetches the transcript, which places it.
+    'relay.landed': () => { if (detailStreaming) liveTurnDirty = true; else syncRouted(id); },
     // Sent by the server on connect when the session is already mid-turn (the
     // started event predates this subscribe). beginTurn is idempotent, so if a
     // real subprocess.started also lands (connect raced the turn starting) it
@@ -1163,7 +1181,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       if (echo) {
         updateMessageTs(echo, d.ts);
         echo.classList.remove('optimistic');
-        renderedTurns.push({ key: turnKey(t), node: echo });
+        renderedTurns.push({ key: turnKey(t), node: echo, time: t.ts });
         return;
       }
       const node = appendChatMessage(t);
@@ -1171,7 +1189,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
         if (liveTurn && liveTurn.node && liveTurn.node.parentNode === el) {
           el.insertBefore(node, liveTurn.node);
         }
-        renderedTurns.push({ key: turnKey(t), node });
+        renderedTurns.push({ key: turnKey(t), node, time: t.ts });
       }
       liveTurnDirty = true;
     },
@@ -1227,8 +1245,9 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       // missing payload means a native error — ignore it (es.onerror handles
       // reconnect) instead of rendering a spurious "{}" error bubble.
       if (ev.data == null) return;
+      // Each frame is the whole event; the handlers take its payload.
       let data;
-      try { data = JSON.parse(ev.data); } catch { data = { raw: ev.data }; }
+      try { data = JSON.parse(ev.data).raw || {}; } catch { data = { raw: ev.data }; }
       try { fn(data); } catch (e) { console.error('handler error', name, e); }
     });
   });
@@ -1236,141 +1255,112 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   es.onerror = () => {/* SSE auto-reconnects; no user-visible noise */};
 }
 
-// ---------- Main chat view ----------
+// ---------- Router view ----------
 
-export async function showMainChat(id) {
+// showRouter opens usher's router session through showDetail or, when there
+// is none (or the user asked for a new one), a bare composer whose first
+// message creates it.
+export async function showRouter(fresh) {
+  const epoch = ++detailEpoch;
+  let router = {};
+  try {
+    const res = await fetch('/api/config');
+    if (res.ok) router = (await res.json()).router || {};
+  } catch { /* fall through to the empty view */ }
+  if (epoch !== detailEpoch) return; // the user went elsewhere meanwhile
+  if (!fresh && router.session_id) return showDetail(router.session_id);
+  // Start from this browser's last choice.
+  const saved = (key) => { try { return localStorage.getItem(key) || ''; } catch { return ''; } };
+  let catalog = null;
+  try {
+    const res = await fetch('/api/models');
+    if (res.ok) catalog = await res.json();
+  } catch { /* no picker: the last choice, or usher's defaults, apply */ }
+  if (epoch !== detailEpoch) return;
+
   clearListInterval();
   setCurrentDetailId(null);
-  setCurrentDraftKey('c:' + id);
+  setCurrentDraftKey('router');
   closeES();
   subtitle.innerHTML = `<span class="subtitle-left"><strong class="session-title">Router</strong></span>`;
-
   root.innerHTML = `
     <div id="chat-scroll" class="chat-area">
+      <div class="chat-loading muted router-empty">Ask about your sessions, or hand one some work. The router finds, opens and dispatches — the sessions do the work.</div>
       <section class="send-anchor">
         <div class="composer">
-          <textarea id="prompt" rows="1" placeholder="message… (try /help)"></textarea>
+          <textarea id="prompt" rows="1" placeholder="message…"></textarea>
           <div class="composer-bar">
+            <div class="composer-tools">
+              <div class="composer-config-wrap router-pickers" id="router-model-picker" hidden>
+                <select id="router-backend" class="composer-picker router-backend" aria-label="backend"></select>
+                <span class="picker-divider" aria-hidden="true"></span>
+                <select id="router-model" class="composer-picker" aria-label="model"></select>
+              </div>
+            </div>
             <div class="composer-send"><button id="send">send</button></div>
           </div>
         </div>
       </section>
     </div>
   `;
-
   const promptEl = document.getElementById('prompt');
   const sendBtn = document.getElementById('send');
+  const backendEl = document.getElementById('router-backend');
+  const modelEl = document.getElementById('router-model');
+  if (catalog && (catalog.backends || []).length) {
+    const option = (value, label, selected) =>
+      `<option value="${esc(value)}"${value === selected ? ' selected' : ''}>${esc(label)}</option>`;
+    const fillModels = (selected) => {
+      const models = (catalog.models || {})[backendEl.value] || [];
+      modelEl.innerHTML = models.length
+        ? models.map(m => option(m.id, m.display_name || m.id, selected)).join('')
+        : option('default', 'Default');
+    };
+    backendEl.innerHTML = catalog.backends
+      .map(b => option(b, b.charAt(0).toUpperCase() + b.slice(1), saved('usher.routerBackend'))).join('');
+    fillModels(saved('usher.routerModel.' + backendEl.value));
+    // Both segments wear the backend's colour, as the new-session picker does.
+    const picker = document.getElementById('router-model-picker');
+    const tint = () => { picker.dataset.backend = backendEl.value; };
+    backendEl.addEventListener('change', () => { fillModels(saved('usher.routerModel.' + backendEl.value)); tint(); });
+    tint();
+    picker.hidden = false;
+  }
   restoreDraft(promptEl);
-
-  // The "thinking…" placeholder lives until this turn's `turn.done` (or an
-  // error); one placeholder even across queued sends.
-  let placeholder = null;
-  const clearPlaceholder = () => { if (placeholder) { placeholder.remove(); placeholder = null; } };
-
-  // Delivery contract: no replay, but the server registers the subscription
-  // before the SSE headers flush. So: open the stream FIRST, refetch history
-  // on EVERY open — anything after the fetch snapshot is guaranteed to
-  // arrive on the stream. Messages streaming in mid-refetch are queued and
-  // re-applied after it renders; chatMsgKeys dedups the overlap.
-  let chatLoading = false;
-  const pendingWhileLoading = [];
-
-  const applyChatMessage = (data) => {
-    const m = data.message || {};
-    if (chatSeenKey(m)) return; // already rendered (refetch overlap)
-    if (m.role === 'user') {
-      // Adopt our optimistic echo (canonical ts, drop the optimistic mark);
-      // no matching echo means another client sent it — render it.
-      const list = document.getElementById('chat-scroll');
-      const echo = list && [...list.querySelectorAll(':scope > .chat-message.user.optimistic')]
-        .find(n => { const c = n.querySelector('.content'); return c && c.dataset.raw === m.content; });
-      if (echo) {
-        updateMessageTs(echo, m.ts);
-        echo.classList.remove('optimistic');
-        markChatSeen(m);
-      } else {
-        appendChatMessage(m);
-        markChatSeen(m);
-      }
-    } else {
-      clearPlaceholder();
-      appendChatMessage(m);
-      markChatSeen(m);
-    }
-    if (data.focus) renderFocus(data.focus);
-  };
-
-  const refetchChat = async () => {
-    chatLoading = true;
-    try {
-      await loadMainChatInfo(id);
-      await loadChatMessages(id);
-    } finally {
-      chatLoading = false;
-      // Re-apply anything that streamed in mid-fetch; chatSeenKey skips what
-      // the fetched snapshot already contained.
-      while (pendingWhileLoading.length) applyChatMessage(pendingWhileLoading.shift());
-    }
-  };
-
-  const es = new EventSource('/api/mainchats/' + encodeURIComponent(id) + '/events');
-  setCurrentES(es);
-  es.onopen = () => { refetchChat(); };
-  es.onerror = () => {/* auto-reconnect; onopen refetches */};
-  es.addEventListener('message', (ev) => {
-    if (ev.data == null) return;
-    let data;
-    try { data = JSON.parse(ev.data); } catch { return; }
-    if (chatLoading) { pendingWhileLoading.push(data); return; }
-    applyChatMessage(data);
-  });
-  es.addEventListener('turn.done', () => { clearPlaceholder(); });
-
-  const submit = async () => {
-    const text = promptEl.value;
-    if (!text.trim() || sendBtn.disabled) return;
+  const start = async () => {
+    const text = promptEl.value.trim();
+    if (!text || sendBtn.disabled) return;
     sendBtn.disabled = true;
-    promptEl.value = '';
-    clearDraft();
-    growPrompt(promptEl); // shrink back; programmatic clear fires no input event
-    const userNode = appendChatMessage({ role: 'user', content: text });
-    if (userNode) userNode.classList.add('optimistic');
-    if (!placeholder) placeholder = appendChatMessage({ role: 'agent', content: 'thinking…', _placeholder: true });
     try {
-      const res = await fetch('/api/mainchats/' + encodeURIComponent(id) + '/send', {
+      const res = await fetch('/api/router', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(catalog && backendEl.value
+          ? { initial_message: text, backend: backendEl.value, model: modelEl.value }
+          : { initial_message: text }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        clearPlaceholder();
-        // Rejected (429 queue full / 500 persist failure): the message was
-        // NOT accepted — drop the echo and restore the draft for a retry.
-        if (userNode) userNode.remove();
-        promptEl.value = text;
-        growPrompt(promptEl);
-        appendChatMessage({ role: 'error', content: err.error || 'send failed', ts: new Date().toISOString() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);
+      if (catalog && backendEl.value) {
+        try {
+          localStorage.setItem('usher.routerBackend', backendEl.value);
+          localStorage.setItem('usher.routerModel.' + backendEl.value, modelEl.value);
+        } catch { /* private mode: the next conversation starts from the first choice */ }
       }
-      // 202 accepted: everything else arrives over SSE.
+      clearDraft();
+      loadSidebar();
+      // Same hash when this was the first conversation, so route by hand.
+      if (location.hash === '#/router') showDetail(body.id);
+      else location.hash = '#/router';
     } catch (e) {
-      clearPlaceholder();
-      if (userNode) userNode.remove();
-      promptEl.value = text;
-      growPrompt(promptEl);
-      appendChatMessage({ role: 'error', content: String(e), ts: new Date().toISOString() });
-    } finally {
+      const n = appendChatMessage({ role: 'error', content: String(e.message || e), ts: new Date().toISOString() });
+      if (n) n.classList.add('optimistic');
       sendBtn.disabled = false;
-      promptEl.focus();
     }
   };
-
-  sendBtn.addEventListener('click', submit);
+  sendBtn.addEventListener('click', start);
   promptEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      submit();
-    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); start(); }
   });
   promptEl.focus();
 }
@@ -1399,12 +1389,51 @@ function renderSessionSubtitle(sess) {
         ` data-id="${esc(sess.id)}" data-archived="${sess.archived ? '1' : '0'}"` +
         ` data-pinned="${sess.pinned ? '1' : '0'}" data-status="${esc(sess.status || '')}"` +
         ` data-cwd="${esc(sess.cwd || '')}" aria-label="session actions" aria-haspopup="menu">` +
-        `<strong class="session-title">${esc(sess.title || '(untitled)')}</strong>` +
+        `<strong class="session-title">${sess.router ? 'Router' : esc(sess.title || '(untitled)')}</strong>` +
         `<svg class="subtitle-chevron" viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>` +
       `</button>` +
-      `<span class="session-id">${esc(sess.id.slice(0, 8))}</span>` +
-      `<span class="session-cwd">${esc(sess.cwd || '')}</span>` +
-    `</span>`;
+      (sess.router ? '' :
+        `<span class="session-id">${esc(sess.id.slice(0, 8))}</span>` +
+        `<span class="session-cwd">${esc(sess.cwd || '')}</span>`) +
+    `</span>` +
+    (sess.router ? `<a id="router-focus" class="subtitle-focus" hidden></a>` : '');
+  updateRouterFocus();
+}
+
+// The router's current session — the one it last sent work to, created or
+// resolved — read off the conversation.
+const FOCUS_TOOL = /(^|__)(send_to_session|create_session|resolve_session)$/;
+let routerFocusID = '';
+
+function updateRouterFocus() {
+  const link = document.getElementById('router-focus');
+  if (!link) return;
+  let id = '';
+  for (let i = renderedTurns.length - 1; i >= 0 && !id; i--) {
+    const parts = renderedTurns[i].parts || [];
+    for (let j = parts.length - 1; j >= 0 && !id; j--) {
+      const p = parts[j];
+      if (p.type !== 'tool' || p.tool_error || !FOCUS_TOOL.test(p.tool_name || '')) continue;
+      const a = (p.content || '').indexOf('{');
+      const b = (p.content || '').lastIndexOf('}');
+      try { id = JSON.parse(p.content.slice(a, b + 1)).session_id || ''; } catch { /* not a result */ }
+    }
+  }
+  routerFocusID = id;
+  link.hidden = !id;
+  const known = getLastSessions().find(s => s.id === id);
+  const approve = document.getElementById('auto-approve-toggle');
+  if (approve) {
+    const auto = !!(known && known.auto_approve);
+    approve.hidden = !id;
+    approve.setAttribute('aria-pressed', auto ? 'true' : 'false');
+    approve.querySelector('.toggle-val').textContent = auto ? 'auto' : 'ask';
+    approve.title = 'tool calls of the current session (' + id.slice(0, 8) + ') — ask: confirm each · auto: run them automatically';
+  }
+  if (!id) return;
+  link.href = '#/s/' + encodeURIComponent(id);
+  link.title = (known && known.title) || '';
+  link.textContent = 'focus: ' + id.slice(0, 8);
 }
 
 // refreshSubtitle re-reads the session so the header picks up a title/cwd that
@@ -1534,6 +1563,12 @@ function appendLivePart(d) {
   const lt = ensureLiveTurn();
   if (!lt) return;
   lt.node.classList.remove('awaiting-output');
+  // Replies and the focus hang on the turn's cursor and parts, which a
+  // promoted live bubble does not have: end the turn with a transcript fetch.
+  if (p.type === 'tool' && FOCUS_TOOL.test(p.tool_name || '')) {
+    liveTurnDirty = true;
+    setRoutedTargets([...routedTargetIds(), parseRoutedSession(p.content)].filter(Boolean));
+  }
   // Pi emits pending tool cards before results; enrich the matching card even
   // when parallel calls finish out of order instead of rendering a duplicate.
   let enrichIndex = -1;
@@ -1633,7 +1668,7 @@ function finalizeTurn(id, d) {
     else lt.node.insertAdjacentHTML('beforeend', forkBtnHTML(d.assistant_uuid));
   }
   lt.node.classList.remove('optimistic');
-  renderedTurns.push({ key: turnKey({ role: 'assistant', ts, parts: lt.parts }), node: lt.node });
+  renderedTurns.push({ key: turnKey({ role: 'assistant', ts, parts: lt.parts }), node: lt.node, parts: lt.parts, ts, time: ts });
   updateLoadEarlier(id);
 }
 
@@ -1673,7 +1708,7 @@ async function loadTranscript(id) {
     // scroll yank when there's nothing new).
     const last = turns[turns.length - 1];
     const sig = from + ':' + turns.length + ':' + (last ? JSON.stringify(last) : '');
-    if (sig === lastTranscriptSig) { updateLoadEarlier(id); return; }
+    if (sig === lastTranscriptSig) { updateLoadEarlier(id); syncRouted(id); return; }
     const el = document.getElementById('chat-scroll');
     // Can't render now (view mid-transition): leave lastTranscriptSig untouched
     // so the next call retries this state instead of skipping it forever.
@@ -1685,7 +1720,7 @@ async function loadTranscript(id) {
     // canonical turns from this fetch.
     const hadOptimistic = !!el.querySelector(':scope > .chat-message.optimistic');
     el.querySelectorAll(':scope > .chat-loading, :scope > .chat-message.optimistic').forEach(n => n.remove());
-    const committed = () => el.querySelectorAll(':scope > .chat-message:not(.optimistic)');
+    const committed = () => el.querySelectorAll(':scope > .chat-message:not(.optimistic):not(.routed)');
     // Self-heal: if our tracked turns drifted from what's actually in the DOM
     // (an earlier early-return, a caught exception, or a race), rebuild from
     // scratch — which a catch-up response can't do, so read the newest page.
@@ -1714,8 +1749,9 @@ async function loadTranscript(id) {
     const newKeys = turns.map(turnKey);
     let same = 0;
     while (base + same < renderedTurns.length && same < newKeys.length && renderedTurns[base + same].key === newKeys[same]) {
-      // A turn rendered from the live stream learns its cursor here.
-      renderedTurns[base + same].cursor = turns[same].cursor;
+      // A turn rendered from the live stream learns here what only the
+      // transcript knows: its cursor, and what routed replies hang on.
+      Object.assign(renderedTurns[base + same], turnEntry(turns[same], renderedTurns[base + same].node));
       same++;
     }
     for (let i = base + same; i < renderedTurns.length; i++) renderedTurns[i].node.remove();
@@ -1738,13 +1774,113 @@ async function loadTranscript(id) {
     // bail-out leaves the signature stale and the next call retries.
     lastTranscriptSig = sig;
     updateLoadEarlier(id);
+    syncRouted(id);
   } catch {/* ignore — lastTranscriptSig stays put, so the next call retries */}
+}
+
+// ---------- Routed replies ----------
+
+// Each reply to routed work is its own message, where it landed in the
+// conversation. The server resolves which turn answers which dispatch.
+const ROUTING_TOOL = /(^|__)(send_to_session|create_session)$/;
+let routedSig = '';
+let routedTimer = null;
+
+function routedReplyNode(rr) {
+  const div = document.createElement('div');
+  div.className = 'chat-message routed' + (rr.done ? '' : ' pending');
+  const name = esc(rr.title || 'session ' + rr.session_id.slice(0, 8));
+  const href = '#/s/' + esc(encodeURIComponent(rr.session_id));
+  const ts = rr.done && rr.ts ? `<span class="ts">${esc(new Date(rr.ts).toLocaleString())}</span>` : '';
+  const head = `<div class="routed-head">${backendMark(rr.backend)}<a class="relay-source" href="${href}">${name}</a>${ts}</div>`;
+  if (!rr.done) {
+    const state = rr.status === 'awaiting_permission' ? 'waiting for approval' : 'working…';
+    div.innerHTML = head + `<div class="routed-state">${statusDot('running')} ${state}</div>`;
+  } else if (!rr.reply) {
+    // Stopped without an answer to show: interrupted, tools only, or the
+    // prompt never reached it.
+    div.innerHTML = head + `<div class="routed-state">no reply</div>`;
+  } else {
+    div.innerHTML = head +
+      `<div class="routed-body"><div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div></div>`;
+  }
+  return div;
+}
+
+// routedTargetIds are the sessions the rendered conversation routed work to.
+function routedTargetIds() {
+  const ids = [];
+  for (const r of renderedTurns) {
+    for (const p of r.parts || []) {
+      if (p.type !== 'tool' || !ROUTING_TOOL.test(p.tool_name || '')) continue;
+      const id = parseRoutedSession(p.content);
+      if (id) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+async function syncRouted(id) {
+  clearTimeout(routedTimer);
+  updateRouterFocus();
+  if (id === currentDetailId) setRoutedTargets(routedTargetIds());
+  const el = document.getElementById('chat-scroll');
+  if (!el || id !== currentDetailId) return;
+  const routes = renderedTurns.some(r => (r.parts || []).some(p => p.type === 'tool' && ROUTING_TOOL.test(p.tool_name || '')));
+  if (!routes) {
+    el.querySelectorAll(':scope > .routed').forEach(n => n.remove());
+    routedSig = '';
+    return;
+  }
+  const first = renderedTurns.find(r => r.cursor);
+  let replies;
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/routed' +
+      (first ? '?from=' + encodeURIComponent(first.cursor) : ''));
+    if (!res.ok) return;
+    replies = await res.json();
+  } catch { return; }
+  if (id !== currentDetailId) return;
+  // Placement depends on the turns around a reply, so they are part of what
+  // "unchanged" means.
+  const sig = JSON.stringify(replies) + '|' + renderedTurns.map(r => r.cursor || '').join(',');
+  if (sig !== routedSig) {
+    routedSig = sig;
+    const wasAtBottom = isNearBottom(el);
+    el.querySelectorAll(':scope > .routed').forEach(n => n.remove());
+    const anchor = el.querySelector(':scope > .send-anchor');
+    for (const rr of replies) {
+      const at = renderedTurns.findIndex(r => r.cursor === rr.turn);
+      if (at < 0) continue;
+      // A finished reply goes where it landed: ahead of the first later turn
+      // that began after it. One still in flight stays under its dispatch.
+      let before = renderedTurns[at + 1];
+      if (rr.done && rr.ts) {
+        const landed = Date.parse(rr.ts || '') || 0;
+        before = renderedTurns.slice(at + 1).find(r => (Date.parse(r.time || '') || 0) > landed);
+      }
+      el.insertBefore(routedReplyNode(rr), before ? before.node : anchor);
+    }
+    if (wasAtBottom) el.scrollTop = el.scrollHeight;
+  }
+  // Markers are part of their turn, which may have been re-rendered since.
+  for (const rr of replies) {
+    if (!rr.title) continue;
+    el.querySelectorAll('.routed-part').forEach(a => {
+      if (a.dataset.session === rr.session_id) a.querySelector('.routed-title').textContent = rr.title;
+    });
+  }
+  // No event announces a reply that was not relayed, or the moment a landed
+  // one stops being "still running" — look again while anything is pending.
+  if (replies.some(rr => !rr.done)) {
+    routedTimer = setTimeout(() => syncRouted(id), 4000);
+  }
 }
 
 // turnEntry tracks a turn the server returned. parts/ts ride along for
 // adoptLastTurnAsLive on a later reconnect.
 function turnEntry(t, node) {
-  const entry = { key: turnKey(t), node, cursor: t.cursor };
+  const entry = { key: turnKey(t), node, cursor: t.cursor, time: t.ts };
   if (t.role === 'assistant') { entry.parts = t.parts; entry.ts = t.ts; }
   return entry;
 }
@@ -1866,6 +2002,7 @@ async function loadEarlier(id) {
     hasEarlier = page.more && page.turns.length > 0;
     el.scrollTop = anchorTop + (el.scrollHeight - anchorHeight);
     updateLoadEarlier(id);
+    syncRouted(id);
   } catch {/* window unchanged — the button stays for a retry */}
   finally { loadingEarlier = false; }
 }
@@ -1879,54 +2016,6 @@ function turnKey(t) {
   }
   const c = t.content || '';
   return (t.role || '') + '\x00' + (t.ts || '') + '\x00' + c.length + '\x00' + c.slice(0, 48);
-}
-
-// chatMsgKeys tracks which persisted messages are rendered, across the two
-// arrival paths (history refetch + SSE stream), so their overlap renders once.
-// Reset by loadChatMessages, whose snapshot becomes the new ground truth.
-let chatMsgKeys = new Set();
-function chatKey(m) { return (m.role || '') + '\x00' + (m.ts || '') + '\x00' + (m.content || ''); }
-function chatSeenKey(m) { return chatMsgKeys.has(chatKey(m)); }
-function markChatSeen(m) { chatMsgKeys.add(chatKey(m)); }
-
-async function loadChatMessages(id) {
-  try {
-    const res = await fetch('/api/mainchats/' + encodeURIComponent(id) + '/messages');
-    if (!res.ok) return;
-    const data = (await res.json()) || [];
-    const list = document.getElementById('chat-scroll');
-    if (!list) return;
-    list.querySelectorAll(':scope > .chat-loading, :scope > .chat-message').forEach(n => n.remove());
-    chatMsgKeys = new Set();
-    setSuppressAppendScroll(true);
-    try {
-      for (const m of data) { appendChatMessage(m); markChatSeen(m); }
-    } finally {
-      setSuppressAppendScroll(false);
-    }
-    list.scrollTop = list.scrollHeight; // fresh main-chat load lands at the bottom
-  } catch { /* ignore */ }
-}
-
-async function loadMainChatInfo(id) {
-  try {
-    const res = await fetch('/api/mainchats/' + encodeURIComponent(id));
-    if (!res.ok) return;
-    const info = await res.json();
-    renderFocus(info.focus);
-  } catch {}
-}
-
-function renderFocus(focus) {
-  const left = `<span class="subtitle-left"><strong class="session-title">Router</strong></span>`;
-  if (!focus || !focus.session_id) {
-    subtitle.innerHTML = left;
-    return;
-  }
-  const sid = esc(focus.session_id.slice(0, 8));
-  subtitle.innerHTML =
-    left +
-    `<a href="#/s/${esc(focus.session_id)}" class="subtitle-focus">focus: ${sid}</a>`;
 }
 
 // Preserve the reader's place across resize / orientation change.

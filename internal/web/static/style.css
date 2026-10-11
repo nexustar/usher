@@ -13,9 +13,9 @@
   --bg-chrome: #ffffff;       /* sidebar, header, modal, inputs */
   --bg-subtle: #f6f8fa;         /* table hover, render-mode hover, modal tool-input */
   --bg-faint: #fcfcfc;          /* raw-markdown container */
-  --bg-mainchat: #f0f2f5;        /* sidebar main-chat fill */
+  --bg-router: #f0f2f5;        /* sidebar Router entry fill */
   --bg-hover: #eef0f3;          /* sidebar item hover, sidebar-new hover */
-  --bg-accent: #e3edf9;         /* sidebar mainchat/list/new active */
+  --bg-accent: #e3edf9;         /* sidebar router/list/new active */
 
   /* Text — three muted levels, plus a faint empty-state shade */
   --text: #1f2328;
@@ -158,7 +158,7 @@ body {
   justify-content: space-between;
 }
 .sidebar-brand a { color: inherit; text-decoration: none; }
-.sidebar-mainchat {
+.sidebar-router {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -166,15 +166,15 @@ body {
   margin-left: 1.15rem;
   margin-right: 1.15rem;
   border: none;
-  background: var(--bg-mainchat);
+  background: var(--bg-router);
   border-radius: var(--radius);
   margin-bottom: 0.5rem;
   color: var(--accent);
   text-decoration: none;
 }
-.sidebar-mainchat .mainchat-icon { flex-shrink: 0; opacity: 0.85; }
-.sidebar-mainchat:hover { background: var(--bg-hover); }
-.sidebar-mainchat.active { background: var(--bg-accent); font-weight: 500; }
+.sidebar-router .router-icon { flex-shrink: 0; opacity: 0.85; }
+.sidebar-router:hover { background: var(--bg-hover); }
+.sidebar-router.active { background: var(--bg-accent); font-weight: 500; }
 .sidebar-section { margin-bottom: 0; flex: 1; overflow-y: auto; min-height: 0; padding: 0 var(--sidebar-pad-x); }
 .sidebar-heading {
   border-top: 1px solid var(--border-muted);
@@ -644,7 +644,7 @@ body.sidebar-collapsed .mobile-toggle {
    * box instead so it sits on the title's optical midline. */
   align-self: center;
 }
-.subtitle-menu:active, .subtitle-menu.open { background: var(--bg-mainchat); }
+.subtitle-menu:active, .subtitle-menu.open { background: var(--bg-router); }
 @media (hover: hover) {
   .subtitle-menu:hover .subtitle-chevron { color: var(--text); }
 }
@@ -694,8 +694,8 @@ td.id { color: var(--text-disabled); }
   font-size: var(--font-meta);
 }
 
-/* Rendered markdown — used for transcripts, current-send response, and
-   main-chat messages. marked emits the usual GFM HTML: <em>, <strong>,
+/* Rendered markdown — used for transcripts and the current-send response.
+   marked emits the usual GFM HTML: <em>, <strong>,
    <code>, <a>, <pre><code>, <ul>/<ol>, <li>, <blockquote>, <h1..6>,
    <hr>, <img>, <table>/<thead>/<tbody>/<tr>/<th>/<td>, <del>. */
 .content { line-height: 1.45; overflow-wrap: anywhere; }
@@ -945,7 +945,7 @@ button.session-usage.unknown {
 }
 .render-pill {
   display: inline-flex;
-  background: var(--bg-mainchat);
+  background: var(--bg-router);
   border-radius: var(--radius);
   padding: 2px;
   margin-left: 0.25rem;
@@ -1088,22 +1088,6 @@ pre.raw-markdown {
 }
 .chat-message.system.compaction > span { white-space: nowrap; }
 .chat-message.system.compaction .ts { margin-left: 0.4rem; }
-/* Relay: a session's reply forwarded verbatim into the main chat. The role
-   header links to the source session; the accent bar marks it as the
-   session's voice rather than the router agent's. */
-.chat-message.relay { border-left: 2px solid var(--claude); padding-left: 0.5rem; }
-.chat-message.relay .role a.relay-source { color: var(--claude); text-decoration: none; }
-.chat-message.relay .role a.relay-source:hover { text-decoration: underline; }
-/* Compaction marker: older turns folded into a standing summary (model-side
-   view only — the full messages remain above). Collapsed and muted. */
-.chat-message.summary .summary-body > summary {
-  cursor: pointer;
-  color: var(--text-faint);
-  font-size: var(--font-meta);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.chat-message.summary .content { color: var(--text-muted); }
 /* Grouped assistant turn: tool parts render as collapsible <details> within the
    single assistant card. Edit/Write expand by default; others collapse. */
 .chat-message.assistant .tool-details {
@@ -1248,6 +1232,7 @@ pre.raw-markdown {
 }
 .chat-message .turn-fork:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
 .chat-message .turn-fork:disabled { opacity: 0.5; cursor: default; }
+.router-view .turn-fork { display: none; }
 
 /* Session status dot. "live" (warm process, idle) is a DIM solid green dot —
    present but quiet, so a row of idle sessions doesn't shout and full
@@ -1504,6 +1489,8 @@ pre.raw-markdown {
 .interaction { padding: 0.75rem 0; border-top: 1px solid var(--border-muted); }
 .interaction:first-of-type { border-top: 0; }
 .interaction .meta { margin-bottom: 0.4rem; }
+.interaction .meta .interaction-source { margin-left: 0.5rem; color: var(--text-muted); font-size: var(--font-sm); text-decoration: none; }
+.interaction .meta .interaction-source:hover { text-decoration: underline; }
 .interaction .meta .muted { margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--font-sm); }
 .interaction .tool-input {
   background: var(--bg-subtle);
@@ -2030,6 +2017,54 @@ pre.raw-markdown {
 }
 .cfg-form-advanced[open] summary { margin-bottom: 1.15rem; }
 .cfg-form-advanced label + label { margin-top: 1.15rem; }
+/* Work handed to another session. The marker is a tool block that unfolds
+ * to what was sent; the reply is a card that names its speaker first, as the user's
+ * bubble does by sitting on the right. */
+.chat-message.assistant .tool-details.routed-part summary {
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.routed-arrow { color: var(--text-faint); }
+.routed-open { margin-left: 0.6rem; color: var(--text-faint); font-weight: 400; }
+.chat-message.routed {
+  width: fit-content;
+  max-width: min(92%, 760px);
+  margin: 0.5rem 0.25rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+}
+.routed-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--font-meta);
+  color: var(--text-faint);
+  min-width: 0;
+}
+.routed-head .relay-source {
+  color: var(--text-muted);
+  font-weight: 600;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.routed-head .relay-source:hover { text-decoration: underline; }
+.routed-head .ts { flex-shrink: 0; }
+.routed-body { margin-top: 0.3rem; }
+.routed-state { margin-top: 0.3rem; color: var(--text-faint); font-size: var(--font-meta); }
+.router-empty { padding: 0.5rem; }
+/* The router's backend and model, as two ghost segments split by a short
+ * divider. They are <select>s, so their text stays at 16px (iOS focus-zoom);
+ * the backend segment reserves the longest name so switching moves nothing. */
+.router-pickers .composer-picker { font-size: 16px; max-width: 14rem; text-overflow: ellipsis; }
+.router-backend { min-width: 5rem; }
+.picker-divider { width: 1px; height: 1.05em; background: var(--border); }
 .cfg-field-hint {
   color: var(--text-faint);
   line-height: 1.5;
@@ -2241,7 +2276,7 @@ pre.raw-markdown {
     --bg-chrome: #0d1117;
     --bg-subtle: #21262d;
     --bg-faint: #1c2128;
-    --bg-mainchat: #1c2128;
+    --bg-router: #1c2128;
     --bg-hover: #21262d;
     --bg-accent: rgba(56, 139, 253, 0.15);
 

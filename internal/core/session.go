@@ -1,7 +1,10 @@
 // Package core holds shared types referenced by multiple internal packages.
 package core
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Status describes a session's relationship to usher's worker pool. "live"
 // means usher holds a warm worker for it (idle, ready to answer instantly);
@@ -89,15 +92,6 @@ type Session struct {
 	Runtime SessionRuntime `json:"runtime"`
 }
 
-// TranscriptTurn is a single user/assistant turn extracted from a session
-// jsonl. Shared across packages so the router and the LLM agent can pass
-// transcripts through without copying types.
-type TranscriptTurn struct {
-	Role    string    `json:"role"`
-	Content string    `json:"content"`
-	Time    time.Time `json:"ts"`
-}
-
 // SessionRuntime is the latest model configuration and active context recorded
 // for a session. Account-wide limits deliberately do not belong here.
 type SessionRuntime struct {
@@ -108,28 +102,26 @@ type SessionRuntime struct {
 }
 
 // TranscriptSearchHit is one matching turn from a transcript substring search.
-// TurnIndex is the 0-based position of the turn within the full transcript
-// (newest last), letting a caller locate the surrounding context with a
-// follow-up read. Snippet is the matched text with limited context on either
-// side of the first occurrence; Occurrences counts all matches in that turn.
+// Snippet is the matched text with limited context on either side of the first
+// occurrence; Occurrences counts all matches in that turn.
 type TranscriptSearchHit struct {
-	Role        string    `json:"role"`
-	Time        time.Time `json:"ts"`
-	TurnIndex   int       `json:"turn_index"`
-	Occurrences int       `json:"occurrences"`
-	Snippet     string    `json:"snippet"`
+	Role string    `json:"role"`
+	Time time.Time `json:"ts"`
+	// Cursor names the matching turn; a transcript read from it starts there.
+	Cursor      string `json:"cursor,omitempty"`
+	Occurrences int    `json:"occurrences"`
+	Snippet     string `json:"snippet"`
 }
 
 // SessionSearchResult is one session's summary from a cross-session search:
 // how many turns matched and a snippet at the first hit, enough to decide
-// which session to open or route to. TurnIndex locates the first hit for a
-// follow-up read_session_transcript.
+// which session to open or route to. Cursor names that first hit's turn.
 type SessionSearchResult struct {
 	SessionID string `json:"session_id"`
 	Title     string `json:"title"`
 	Cwd       string `json:"cwd"`
 	HitCount  int    `json:"hit_count"`
-	TurnIndex int    `json:"turn_index"`
+	Cursor    string `json:"cursor,omitempty"`
 	Snippet   string `json:"snippet"`
 }
 
@@ -145,4 +137,38 @@ type CreateOptions struct {
 	AppendSystemPrompt string
 	ExtraArgs          []string
 	AutoApprove        bool
+	// Router designates the new session as usher's router, replacing any
+	// previous one.
+	Router bool
+}
+
+// Errors a caller can branch on, whichever layer raised them.
+var (
+	ErrSessionNotFound = errors.New("session not found")
+	ErrReadOnlySession = errors.New("subagent transcripts are read-only")
+	ErrSendQueueFull   = errors.New("send queue full for session")
+	ErrInvalidTitle    = errors.New("session title must not be empty")
+)
+
+// EventRelayLanded is published on the router session when a session it routed
+// work to has replied; its raw names that session.
+const EventRelayLanded = "relay.landed"
+
+// RoutedReply is what a routing tool call in a transcript led to: the reply of
+// the session the work went to.
+type RoutedReply struct {
+	// Turn and Part locate the call: its turn's cursor and its index there.
+	Turn string `json:"turn"`
+	Part int    `json:"part"`
+	// SessionID, Title, Backend and Status are the session the work went to,
+	// as it is now.
+	SessionID string `json:"session_id"`
+	Title     string `json:"title,omitempty"`
+	Backend   string `json:"backend,omitempty"`
+	Status    Status `json:"status,omitempty"`
+	// Reply is empty until the session has answered; Done is false while that
+	// answer is still being written.
+	Reply string    `json:"reply,omitempty"`
+	Time  time.Time `json:"ts,omitzero"`
+	Done  bool      `json:"done"`
 }

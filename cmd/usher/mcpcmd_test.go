@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/nexustar/usher/internal/mcptools"
+	"github.com/nexustar/usher/internal/router"
 )
 
 func writeTestPNG(t *testing.T, path string, w, h int) {
@@ -61,5 +67,62 @@ func TestValidateImage_Errors(t *testing.T) {
 				t.Errorf("expected isError for %q", c.path)
 			}
 		})
+	}
+}
+
+func TestMCPRouterToolsAreOptIn(t *testing.T) {
+	t.Setenv("USHER_HOOK_SOCK", filepath.Join(t.TempDir(), "hook.sock"))
+	if got := len(mcpTools(nil)); got != 1 {
+		t.Fatalf("default tool count = %d, want show_image only", got)
+	}
+	tools := mcpTools(&mcptools.Router{})
+	if want := 1 + len(mcptools.RouterTools()); len(tools) != want {
+		t.Fatalf("router tool count = %d, want %d", len(tools), want)
+	}
+	if tools[0]["name"] != "show_image" || tools[1]["name"] != "list_sessions" {
+		t.Fatalf("tool order = %q, %q", tools[0]["name"], tools[1]["name"])
+	}
+}
+
+// A session that usher did not spawn gets no tools at all, router flag or not.
+func TestMCPUnmanagedSessionGetsNoTools(t *testing.T) {
+	t.Setenv("USHER_HOOK_SOCK", "")
+	if got := len(mcpTools(&mcptools.Router{})); got != 0 {
+		t.Fatalf("unmanaged tool count = %d, want 0", got)
+	}
+}
+
+func TestMCPToolsListDefaultsToImageOnly(t *testing.T) {
+	t.Setenv("USHER_HOOK_SOCK", filepath.Join(t.TempDir(), "hook.sock"))
+	var raw bytes.Buffer
+	out := bufio.NewWriter(&raw)
+	err := handleMCPLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`), out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Result struct {
+			Tools []map[string]any `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Result.Tools) != 1 || resp.Result.Tools[0]["name"] != "show_image" {
+		t.Fatalf("tools = %#v", resp.Result.Tools)
+	}
+}
+
+// The pi router's allowlist names the routing tools one by one; a tool added
+// to the catalog must be added there too, or pi's router never sees it.
+func TestPiRouterAllowlistCoversTheCatalog(t *testing.T) {
+	allowed := "," + router.PiRouterTools() + ","
+	for _, tool := range mcptools.RouterTools() {
+		if !strings.Contains(allowed, ",mcp__usher__"+tool.Name+",") {
+			t.Errorf("pi allowlist is missing %s", tool.Name)
+		}
 	}
 }

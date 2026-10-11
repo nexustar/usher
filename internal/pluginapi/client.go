@@ -11,9 +11,11 @@ import (
 	"net"
 	"net/http"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
@@ -83,41 +85,142 @@ func (c *Client) Ping(ctx context.Context) error {
 func (c *Client) GetSession(id string) (core.Session, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	var sess core.Session
-	if err := c.getJSON(ctx, "/v1/sessions/"+id, &sess); err != nil {
+	var sess api.Session
+	if err := c.getJSON(ctx, "/v1/sessions/"+neturl.PathEscape(id), &sess); err != nil {
 		return core.Session{}, false
 	}
-	return sess, true
+	return sess.Session, true
 }
 
 // SendToSession routes text to a session as a user prompt.
 func (c *Client) SendToSession(id, text string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	return c.post(ctx, "/v1/sessions/"+id+"/send", sendReq{Text: text})
+	return c.post(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/send", api.SendRequest{Text: text})
 }
 
-// StartSession asks the router to spawn a brand-new session. An empty Backend
-// preserves model inference/default behavior; see CreateRequest for how Agent
-// interacts with the other fields.
-func (c *Client) StartSession(req CreateRequest) (string, error) {
+// ListSessions returns every root session, archived ones included, with
+// usher's own flags attached.
+func (c *Client) ListSessions() ([]SessionView, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	var out []SessionView
+	if err := c.getJSON(ctx, "/v1/sessions?include_archived=1", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SendToSessionRelayed routes a prompt on the router session's behalf and
+// returns as soon as it is accepted. Delivery says whether the reply will be
+// relayed: there may be no router session.
+func (c *Client) SendToSessionRelayed(id, text string) (Delivery, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	var out Delivery
+	err := c.postJSON(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/route", api.SendRequest{Text: text}, &out)
+	return out, err
+}
+
+// CreateRequest spawns a session; see api.CreateRequest.
+type CreateRequest = api.CreateRequest
+
+// CreateSession spawns a session and returns as soon as its process is up. An
+// empty Backend preserves model inference/default behavior.
+func (c *Client) CreateSession(req CreateRequest) (Delivery, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
-	var out struct {
-		ID string `json:"id"`
-	}
-	if err := c.postJSON(ctx, "/v1/sessions", req, &out, http.StatusAccepted); err != nil {
-		return "", err
-	}
-	return out.ID, nil
+	var out Delivery
+	err := c.postJSON(ctx, "/v1/sessions", req, &out)
+	return out, err
 }
+
+// RouteNewSession is CreateSession on the router session's behalf: the new
+// session's first reply is delivered into the router session.
+func (c *Client) RouteNewSession(req CreateRequest) (Delivery, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
+	defer cancel()
+	var out Delivery
+	err := c.postJSON(ctx, "/v1/route", req, &out)
+	return out, err
+}
+
+// ReadTurns reads a page of a session's turns, oldest first: the newest page,
+// the page just before the cursor before, or — when from is set — the turn at
+// that cursor and every turn after it.
+func (c *Client) ReadTurns(id, before, from string, limit int) (api.TranscriptPage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	values := neturl.Values{}
+	if limit > 0 {
+		values.Set("limit", strconv.Itoa(limit))
+	}
+	if before != "" {
+		values.Set("before", before)
+	}
+	if from != "" {
+		values.Set("from", from)
+	}
+	var out api.TranscriptPage
+	err := c.getJSON(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/transcript?"+values.Encode(), &out)
+	return out, err
+}
+
+// SearchSessions searches one session's transcript when id is set, or ranks
+// matching sessions across the machine when it is empty.
+func (c *Client) SearchSessions(id, query string, limit, contextChars int) (SearchResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	values := neturl.Values{}
+	values.Set("q", query)
+	values.Set("limit", strconv.Itoa(limit))
+	values.Set("context_chars", strconv.Itoa(contextChars))
+	if id != "" {
+		values.Set("session_id", id)
+	}
+	var out SearchResult
+	err := c.getJSON(ctx, "/v1/search?"+values.Encode(), &out)
+	return out, err
+}
+
+func (c *Client) SetArchived(id string, archived bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	method := http.MethodPost
+	if !archived {
+		method = http.MethodDelete
+	}
+	return c.do(ctx, method, "/v1/sessions/"+neturl.PathEscape(id)+"/archive", nil, nil)
+}
+
+func (c *Client) SetAutoApprove(id string, enabled bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	return c.post(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/auto-approve",
+		map[string]bool{"enabled": enabled})
+}
+
+// ListPendingInteractions returns the currently-pending prompts as a snapshot;
+// SubscribePendingInteractions is the streaming form.
+func (c *Client) ListPendingInteractions() ([]interaction.Pending, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	var out []interaction.Pending
+	if err := c.getJSON(ctx, "/v1/interactions", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SessionView is a session plus the flags usher keeps outside the jsonl.
+type SessionView = api.Session
 
 // UploadAttachment streams a file into an existing session's managed
 // attachment directory and returns the absolute path agents can read.
 func (c *Client) UploadAttachment(id, filename string, src io.Reader) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), attachmentTimeout)
 	defer cancel()
-	path := "/v1/sessions/" + id + "/attachments?filename=" + neturl.QueryEscape(filename)
+	path := "/v1/sessions/" + neturl.PathEscape(id) + "/upload?filename=" + neturl.QueryEscape(filename)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url(path), src)
 	if err != nil {
 		return "", err
@@ -144,7 +247,7 @@ func (c *Client) UploadAttachment(id, filename string, src io.Reader) (string, e
 func (c *Client) RespondInteraction(id string, resp interaction.Response) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	return c.post(ctx, "/v1/interactions/"+id+"/respond", resp)
+	return c.post(ctx, "/v1/interactions/"+neturl.PathEscape(id)+"/respond", resp)
 }
 
 // SubscribeAllSessions streams every session's events (filtered to
@@ -162,7 +265,20 @@ func (c *Client) SubscribeAllSessions() (<-chan broker.Event, func()) {
 // (re)connect the server replays the currently-pending set before the live
 // stream; consumers must dedupe by pending id.
 func (c *Client) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
-	return subscribe[interaction.Pending](c, "/v1/interactions")
+	events, cancel := subscribe[broker.Event](c, "/v1/events?types="+api.EventInteractionPending)
+	ch := make(chan interaction.Pending, 64)
+	go func() {
+		defer close(ch)
+		for ev := range events {
+			var p interaction.Pending
+			if err := json.Unmarshal(ev.Raw, &p); err != nil {
+				c.logger.Warn("plugin api: bad pending interaction", "err", err)
+				continue
+			}
+			ch <- p
+		}
+	}()
+	return ch, cancel
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, v any) error {
@@ -182,25 +298,36 @@ func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 }
 
 func (c *Client) post(ctx context.Context, path string, body any) error {
-	return c.postJSON(ctx, path, body, nil, http.StatusNoContent)
+	return c.postJSON(ctx, path, body, nil)
 }
 
-func (c *Client) postJSON(ctx context.Context, path string, body any, out any, wantStatus int) error {
-	data, err := json.Marshal(body)
+func (c *Client) postJSON(ctx context.Context, path string, body any, out any) error {
+	return c.do(ctx, http.MethodPost, path, body, out)
+}
+
+// do sends body as JSON (nil sends none) and decodes a 2xx reply into out.
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url(path), reader)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url(path), bytes.NewReader(data))
-	if err != nil {
-		return err
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != wantStatus {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return apiError(resp)
 	}
 	if out != nil {

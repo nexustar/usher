@@ -2,7 +2,7 @@
 
 import {
   esc, renderMode, setRenderModeValue, renderPillMd, renderPillRaw,
-  isNearBottom, suppressAppendScroll, currentDetailId,
+  isNearBottom, suppressAppendScroll, currentDetailId, getLastSessions,
 } from './state.js';
 
 // renderMarkdown turns assistant/user content into safe HTML using the
@@ -76,13 +76,59 @@ export function renderMarkdown(md) {
     '$1#unsafe"',
   );
   // Markdown links open away from the SPA, except hash routes: those are
-  // internal navigation (for example the server-generated "Switching to"
-  // banner) and stay consistent with the header/sidebar focus links.
+  // internal navigation, like the links to sessions.
   html = html.replace(
     /<a (?=[^>]*\bhref="(?!#\/))/g,
     '<a target="_blank" rel="noopener" ',
   );
-  return html;
+  return linkSessions(html);
+}
+
+// A session id, whole or as its first eight characters.
+const SESSION_REF = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\b/g;
+
+// linkSessions turns the session ids in rendered text into links to those
+// sessions. Only ids that name exactly one session usher knows are linked, so
+// a commit hash or any other hex string is left alone.
+function linkSessions(html) {
+  const sessions = getLastSessions();
+  if (!sessions.length || html.search(SESSION_REF) < 0) return html;
+  const resolve = (ref) => {
+    const found = sessions.filter(s => s.id === ref || (ref.length === 8 && s.id.startsWith(ref)));
+    return found.length === 1 ? found[0] : null;
+  };
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    // Not inside a link already, and not inside a code block.
+    if (!node.parentElement?.closest('a, pre')) texts.push(node);
+  }
+  let linked = false;
+  for (const node of texts) {
+    const text = node.nodeValue;
+    const out = document.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(SESSION_REF)) {
+      const sess = resolve(m[0]);
+      if (!sess) continue;
+      out.append(text.slice(last, m.index));
+      const a = document.createElement('a');
+      a.href = '#/s/' + encodeURIComponent(sess.id);
+      a.className = 'session-link';
+      if (sess.title) a.title = sess.title;
+      a.textContent = m[0];
+      out.append(a);
+      last = m.index + m[0].length;
+    }
+    if (!last) continue;
+    out.append(text.slice(last));
+    node.replaceWith(out);
+    linked = true;
+  }
+  return linked ? tpl.innerHTML : html;
 }
 
 // Re-render every element that carries a data-raw markdown source. Called
@@ -159,9 +205,56 @@ function toolBodyHTML(p) {
   return '<pre>' + (p.content_kind === 'diff' ? diffHTML(p.content) : esc(p.content)) + '</pre>';
 }
 
+// parseRoutedSession pulls the target session id out of a routing tool's JSON
+// result. The id is only there: create_session doesn't know it when called.
+export function parseRoutedSession(content) {
+  if (!content) return '';
+  const a = content.indexOf('{');
+  const b = content.lastIndexOf('}');
+  if (a < 0 || b <= a) return '';
+  try {
+    const o = JSON.parse(content.slice(a, b + 1));
+    return typeof o.session_id === 'string' ? o.session_id : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+// renderRoutedPart marks where work was handed to another session, and
+// unfolds to what was sent. The detail view places the reply.
+function renderRoutedPart(p) {
+  const id = parseRoutedSession(p.content);
+  if (!id) return '';
+  let sent = '';
+  try {
+    const input = JSON.parse(p.tool_input || '{}');
+    sent = input.text || input.initial_message || '';
+  } catch (_) { /* no input recorded */ }
+  // The title is filled in once the detail view knows the session's name.
+  return '<details class="tool-details routed-part" data-session="' + esc(id) + '">' +
+    '<summary><span class="routed-arrow" aria-hidden="true">→</span> ' +
+    '<span class="routed-title">' + esc(sessionTitle(id)) + '</span>' +
+    '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) + '" title="Open this session">open ↗</a></summary>' +
+    (sent ? '<div class="tool-scroll"><pre class="tool-input">' + esc(sent) + '</pre></div>' : '') +
+    '</details>';
+}
+
+// sessionTitle is a session's title as the sidebar last saw it, else its
+// short id.
+function sessionTitle(id) {
+  const known = getLastSessions().find(s => s.id === id);
+  return (known && known.title) || id.slice(0, 8);
+}
+
 export function renderToolPart(p) {
   const name = p.tool_name || 'tool';
   const target = p.tool_target || '';
+  // Falls through to the plain tool block if the result carried no session
+  // id — a rejected call.
+  if (/(^|__)(send_to_session|create_session)$/.test(name)) {
+    const routed = renderRoutedPart(p);
+    if (routed) return routed;
+  }
   // show_image renders as an inline image (not a collapsible tool block). The
   // path travels only as an encodeURIComponent'd query param, so it can't break
   // out of the attribute; /image resolves+validates it against the session cwd.
@@ -238,16 +331,9 @@ export function appendChatMessage(m, beforeNode) {
   div.className = 'chat-message ' + role + (m._placeholder ? ' placeholder' : '');
   const ts = m.ts ? `<span class="ts">${esc(new Date(m.ts).toLocaleString())}</span>` : '';
   const modelAttr = m.model ? ` title="${esc(m.model)}"` : '';
-  // A relay message is a session's own reply forwarded verbatim into the main
-  // chat — label it as the session speaking, linked to its detail view.
   let roleLabel = esc(role);
   // The user bubble (CSS) marks the speaker itself; keep only the ts.
   if (role === 'user' || role === 'assistant') roleLabel = '';
-  if (role === 'relay') {
-    roleLabel = m.source_session
-      ? `<a class="relay-source" href="#/s/${esc(m.source_session)}">session ${esc(m.source_session.slice(0, 8))}</a>`
-      : 'session';
-  }
 
   if (role === 'system' && m.content === 'Context compacted') {
     div.classList.add('compaction');
@@ -263,17 +349,8 @@ export function appendChatMessage(m, beforeNode) {
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
       (m.uuid ? forkBtnHTML(m.uuid) : '') +
       `</div>`;
-  } else if (role === 'summary') {
-    // Compaction marker: earlier turns were folded into this standing
-    // summary (model-side only — the full history stays above). Collapsed
-    // by default to keep the chat readable.
-    div.innerHTML =
-      `<details class="summary-body">` +
-      `<summary>earlier conversation compressed${ts}</summary>` +
-      `<div class="content" data-raw="${esc(m.content || '')}">${renderMarkdown(m.content || '')}</div>` +
-      `</details>`;
   } else {
-    // User, error, agent, relay, or streaming placeholder (flat content).
+    // User, error, or streaming placeholder (flat content).
     div.innerHTML =
       `<div class="content" data-raw="${esc(m.content || '')}">${renderMarkdown(m.content || '')}</div>` +
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>`;

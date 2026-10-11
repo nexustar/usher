@@ -129,7 +129,20 @@ function renderGeneralPane(host) {
         <button id="general-notif" class="settings-row-action" type="button" hidden></button>
         <span class="settings-row-note muted">Not available in this browser.</span>
       </div>
+    </div>
+    <div class="settings-section">
+      <h2>Router</h2>
+      <div class="settings-row">
+        <div class="settings-row-text">
+          <span class="settings-row-label">New conversation</span>
+          <p class="settings-row-hint">Start the Router over with nothing in mind,
+            on a backend and model of your choice. The current conversation
+            stays in the session list.</p>
+        </div>
+        <button id="router-new" class="settings-row-action" type="button">Start new</button>
+      </div>
     </div>`;
+  document.getElementById('router-new').addEventListener('click', () => { location.hash = '#/router/new'; });
   // push.js owns the label, the disabled state, and the gesture-sensitive
   // click path; it keeps this button and the sidebar item in step.
   bindPushToggle(document.getElementById('general-notif'));
@@ -201,7 +214,10 @@ function renderForm(agent, copy = false) {
   const host = document.getElementById('agent-editor');
   if (!host) return;
   const creating = !agent || copy;
-  const value = agent || {name: '', cwd: '', backend: '', model: '', append_system_prompt: '', auto_approve: false};
+  const value = agent || {
+    name: '', cwd: '', backend: '', model: '', append_system_prompt: '',
+    auto_approve: false,
+  };
   const name = copy ? value.name + '-copy' : value.name;
   const selectedBackend = value.backend || backends[0] || '';
   host.innerHTML = `
@@ -262,7 +278,7 @@ function renderForm(agent, copy = false) {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const payload = Object.fromEntries(new FormData(form));
-    // FormData reports the checkbox as "on" or omits it; the API wants a bool.
+    // FormData reports a checkbox as "on" or omits it; the API wants a bool.
     payload.auto_approve = form.elements.auto_approve.checked;
     // The API wants an array; an empty field must not send [""].
     const extraArgs = form.elements.extra_args.value.trim();

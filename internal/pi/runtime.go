@@ -509,12 +509,14 @@ func (r *Runtime) pump(id string, w *worker) {
 type Runtime struct {
 	bin, sessionsDir string
 	extra            []string
+	routerExtension  string
 	max              int
 	models           Models
 	logger           *slog.Logger
 	interactions     *interaction.Manager
 	mu               sync.Mutex
 	workers          map[string]*worker
+	routerID         string
 	systemPrompt     func(string) string
 	extraArgs        func(string) []string
 	autoPause        time.Duration
@@ -623,11 +625,45 @@ func (r *Runtime) SetExtraArgsLookup(lookup func(string) []string) {
 	r.mu.Unlock()
 }
 
+// SetRouterExtension supplies the generated routing-tools extension, loaded
+// only by usher's router session.
+func (r *Runtime) SetRouterExtension(path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.routerExtension = path
+}
+
+var _ backend.RouterDesignator = (*Runtime)(nil)
+
+// SetRouterSession designates id as usher's router session: its next cold
+// worker spawns with the routing-tools extension.
+func (r *Runtime) SetRouterSession(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.routerID = id
+}
+
+func (r *Runtime) isRouter(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return id != "" && id == r.routerID
+}
+
 // spawnArgs is the full extra-flag set for one session's worker: the
-// runtime-wide flags plus the session's agent-profile flags, profile last so
-// its repeats win.
-func (r *Runtime) spawnArgs(perSession []string) []string {
-	return append(append([]string(nil), r.extra...), perSession...)
+// runtime-wide flags, the routing-tools extension when the worker is usher's
+// router, then the session's agent-profile flags, profile last so its repeats
+// win.
+func (r *Runtime) spawnArgs(perSession []string, router bool) []string {
+	args := append([]string(nil), r.extra...)
+	if router {
+		r.mu.Lock()
+		ext := r.routerExtension
+		r.mu.Unlock()
+		if ext != "" {
+			args = append(args, "--extension", ext)
+		}
+	}
+	return append(args, perSession...)
 }
 
 func (r *Runtime) argsFor(id string) []string {
@@ -815,7 +851,7 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	if model == "default" {
 		model = ""
 	}
-	c, err := startClientWithSystemPrompt(r.bin, req.Cwd, "", r.sessionsDir, model, req.AppendSystemPrompt, r.spawnArgs(req.ExtraArgs))
+	c, err := startClientWithSystemPrompt(r.bin, req.Cwd, "", r.sessionsDir, model, req.AppendSystemPrompt, r.spawnArgs(req.ExtraArgs, req.Router))
 	if err != nil {
 		return "", nil, err
 	}
@@ -839,6 +875,10 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	if err := r.add(state.SessionID, w); err != nil {
 		c.stop()
 		return "", nil, err
+	}
+	if req.Router {
+		// Record the id pi assigned, for future cold resumes.
+		r.SetRouterSession(state.SessionID)
 	}
 	defer r.releaseWorker(w)
 	// Recorded before the prompt so first-turn escalations see it.
@@ -869,7 +909,7 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 			return nil, fmt.Errorf("pi session %s not found", id)
 		}
 		c, err := startClientWithSystemPrompt(
-			r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.spawnArgs(r.argsFor(id)))
+			r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.spawnArgs(r.argsFor(id), r.isRouter(id)))
 		if err != nil {
 			return nil, err
 		}
@@ -972,7 +1012,7 @@ func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
 		return fmt.Errorf("pi session %s not found", id)
 	}
 	c, err := startClientWithSystemPrompt(
-		r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.spawnArgs(r.argsFor(id)))
+		r.bin, cwd, path, r.sessionsDir, "", r.promptFor(id), r.spawnArgs(r.argsFor(id), r.isRouter(id)))
 	if err != nil {
 		return err
 	}
