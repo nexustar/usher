@@ -133,7 +133,7 @@ func TestCallSendWithoutInbox(t *testing.T) {
 	if ack["status"] != "delivered" || ack["relayed"] != false {
 		t.Fatalf("send ack = %#v", ack)
 	}
-	if note, _ := ack["note"].(string); !strings.Contains(note, "no reply will be reported back") {
+	if note, _ := ack["note"].(string); !strings.Contains(note, "nothing will be reported back") {
 		t.Fatalf("note = %q, want the no-inbox warning", note)
 	}
 	if sent := f.Sent("s1"); len(sent) != 1 {
@@ -148,11 +148,16 @@ func TestRouterToolsDescribeTheRelay(t *testing.T) {
 		if tool.Name != "send_to_session" && tool.Name != "create_session" {
 			continue
 		}
-		if !strings.Contains(tool.Description, "never poll") {
-			t.Errorf("%s does not forbid polling: %q", tool.Name, tool.Description)
+		for _, want := range []string{"[session <id> replied]", "poll"} {
+			if !strings.Contains(tool.Description, want) {
+				t.Errorf("%s does not mention %q: %q", tool.Name, want, tool.Description)
+			}
 		}
-		if !strings.Contains(tool.Description, "relayed=false") {
-			t.Errorf("%s does not cover the no-relay case: %q", tool.Name, tool.Description)
+	}
+	note, _ := deliveredResult(pluginapi.Delivery{SessionID: "s", Relayed: true})["note"].(string)
+	for _, want := range []string{"[session <id> replied]", "poll", "restate"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("relayed ack does not mention %q: %q", want, note)
 		}
 	}
 }

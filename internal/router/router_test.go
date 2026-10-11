@@ -1119,7 +1119,7 @@ func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
 	}
 	want := "[session worker-1 replied] built it\n\n" +
 		"[session worker-2 failed] backend died\n\n" +
-		"[end of session replies]\n\n" +
+		"[end of session replies; the user has already seen them]\n\n" +
 		"what happened?"
 	if got[0] != want {
 		t.Fatalf("folded prompt = %q, want %q", got[0], want)
@@ -1127,6 +1127,9 @@ func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
 	// The notes are the model's: what a client reads back is what was typed.
 	if typed := stripRelayNotes(want); typed != "what happened?" {
 		t.Fatalf("stripRelayNotes = %q", typed)
+	}
+	if typed := stripRelayNotes("[session w replied] ok\n\n[end of session replies]\n\nolder"); typed != "older" {
+		t.Fatalf("stripRelayNotes of the earlier marker = %q", typed)
 	}
 	if plain := "[session x] is how my own message starts"; stripRelayNotes(plain) != plain {
 		t.Fatal("a prompt without folded notes was cut")

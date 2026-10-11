@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const params = Type.Object({
-	file_path: Type.String({ description: "Image path, absolute or relative to the session working directory" }),
+	file_path: Type.String({ description: "Image path, absolute or relative to the working directory." }),
 });
 
 const supported = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
@@ -13,7 +13,10 @@ export default function usherExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "show_image",
 		label: "Show image",
-		description: "Display a local image inline to the user. Use this after creating or editing an image the user should see.",
+		description:
+			"Show an image to the user. Call it whenever you have produced or found an image the user should see " +
+			"(a chart, screenshot, render): saving a file or printing its path does not display it. " +
+			"Supports .png, .jpg, .jpeg, .gif and .webp.",
 		parameters: params,
 		async execute(_toolCallId, input, _signal, _onUpdate, ctx) {
 			const raw = input.file_path.trim();

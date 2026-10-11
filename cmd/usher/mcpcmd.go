@@ -142,17 +142,15 @@ func mcpTools(router *mcptools.Router) []map[string]any {
 		// with the server-level alwaysLoad in the spawned config).
 		"_meta": map[string]any{"anthropic/alwaysLoad": true},
 		"name":  "show_image",
-		"description": "Display an image to the user. " +
-			"Use this whenever you have produced or want to surface an image " +
-			"(chart, screenshot, render) so the user can actually see it — " +
-			"saving the file or printing its path does NOT display it. " +
-			"Only .png, .jpg, .jpeg, .gif, and .webp files are supported.",
+		"description": "Show an image to the user. Call it whenever you have produced or found an image " +
+			"the user should see (a chart, screenshot, render): saving a file or printing its path does not display it. " +
+			"Supports .png, .jpg, .jpeg, .gif and .webp.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"file_path": map[string]any{
 					"type":        "string",
-					"description": "Path to the image file (absolute, or relative to the working directory).",
+					"description": "Image path, absolute or relative to the working directory.",
 				},
 			},
 			"required": []string{"file_path"},

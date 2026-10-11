@@ -38,10 +38,11 @@ When the turn completes, usher splits what happens next in two:
 - **The router's copy is a note, folded into its next prompt.** `[session <id>
   replied] <excerpt>` (`[session <id> failed] …` when the turn errored, so a
   dead turn is never silent) is prefixed to whatever the user types next, and
-  the queue is cleared. A closing `[end of session replies]` line separates the
-  notes from the prompt, and usher shows the user only what they typed. Nothing
-  is sent when the reply lands: prompting the router would start a turn whose
-  only product is a restatement of text the user can already read.
+  the queue is cleared. A closing `[end of session replies; the user has
+  already seen them]` line separates the notes from the prompt, and usher shows
+  the user only what they typed. Nothing is sent when the reply lands:
+  prompting the router would start a turn whose only product is a restatement
+  of text the user can already read.
 
 The note is excerpted, because it exists to say *what finished*, not to carry
 the reply — `read_session_transcript` is there for the rest. The queue is
@@ -61,8 +62,9 @@ router:
 - A `claude` you launched yourself in a terminal is not reachable. usher would
   have to spawn a second process resuming the same jsonl, which the terminal
   copy neither sees nor tolerates. With no router session designated, sends
-  still land and every ack reports `relayed: false`, which the tool result
-  turns into "collect it with read_session_transcript".
+  still land and every ack reports `relayed: false`, with a note that nothing
+  will be reported back and `read_session_transcript` is the only way to see
+  the reply.
 - The router session usher starts is reachable: usher minted its id,
   spawned it with the routing tools, and recorded the designation, so the relay
   closes the loop with no polling anywhere.
@@ -75,11 +77,17 @@ of a create, and answer `{"id", "relayed"}`.
 ## The current session
 
 The session the router last sent work to, created or resolved is its current
-one — the old main chat's "focus". The router is told to pass a message that
-names no session on to it in the user's own words, so a conversation with one
-session can go on from the Router page; the page header names that session and
-links to it. usher keeps no state for this: it is read off the router's
-transcript.
+one — the old main chat's "focus". The router's prompt ranks where a message
+goes: to the session it names; else to the current session when it leans on
+that session's work (a follow-up, a correction, an answer to what it asked —
+anything that would not stand on its own); else, standing on its own, it is
+routed like a first message, to a session already on that subject or in that
+directory or to a new one, the current session counting only if it fits like
+any other. In doubt it is a follow-up: a message that needs context is
+answerable only where the context is, while one that stands on its own is
+answerable anywhere. So a conversation with one session can go on from the
+Router page; the page header names that session and links to it. usher keeps
+no state for this: it is read off the router's transcript.
 
 ## Test through usher
 

@@ -620,18 +620,19 @@ func (r *Router) RouterSession() string {
 }
 
 // routerPrompt and routerArgs leave the router session able only to route.
-const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
-	"route it to a session with the usher tools, creating one when none fits. " +
-	"Greetings and questions about the sessions themselves are yours to answer. " +
-	"To pick a session, prefer the current one, then one working in the directory the request is about; " +
-	"when two or three fit equally, ask which, naming them by title and short id. Never invent a session id. " +
-	"The session you last sent work to, created or resolved is the current one, and while there is one you are a relay: " +
-	"a message that names no other session and is not about managing sessions goes to it with send_to_session, " +
-	"in the user's own words — reworded only as far as it needs to stand on its own. " +
-	"Do not answer such a message yourself, and do not read the session's transcript to answer for it: " +
-	"read_session_transcript is for when the user asks what a session has said or done. " +
-	"Your own working directory is not a workspace: never pass it as a cwd or mention it in what you send. " +
-	"When the user names no directory and the work belongs to no existing session's project, create the session without a cwd."
+const routerPrompt = "You are usher's session router: you hand the user's messages to coding-agent sessions and manage those sessions. " +
+	"You never answer anything substantive yourself, however small — a session does, and usher shows its reply to the user directly. " +
+	"Yours to answer: greetings, and questions about the sessions themselves — what exists, what one said or did " +
+	"(read_session_transcript and search_sessions are for that, not for answering in a session's place).\n" +
+	"Where a message goes:\n" +
+	"1. To the session it names.\n" +
+	"2. Else to the current session — the one you last sent work to, created or resolved — when the message leans on its work: " +
+	"a follow-up, a correction, an answer to what it asked, anything that would not stand on its own.\n" +
+	"3. Else it stands on its own and is routed like a first message: to a session already on that subject or in that directory, " +
+	"or a new one; the current session counts only if it fits like any other. " +
+	"When several fit equally, ask which, naming them by title and short id.\n" +
+	"In doubt between 2 and 3, it is a follow-up. Never invent a session id.\n" +
+	"Your own working directory is usher's, not a workspace: never pass it as a cwd or mention it in what you send."
 
 var routerArgs = map[string][]string{
 	// No built-in tool at all, and no MCP server but usher's own.
@@ -929,7 +930,7 @@ func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 }
 
 // relayNotesEnd closes the notes folded in front of a router prompt.
-const relayNotesEnd = "[end of session replies]"
+const relayNotesEnd = "[end of session replies; the user has already seen them]"
 
 // relayNoteMark opens every relay note.
 const relayNoteMark = "[session "
@@ -939,8 +940,11 @@ func stripRelayNotes(prompt string) string {
 	if !strings.HasPrefix(prompt, relayNoteMark) {
 		return prompt
 	}
-	if _, typed, ok := strings.Cut(prompt, "\n\n"+relayNotesEnd+"\n\n"); ok {
-		return typed
+	// Transcripts written before the marker said more close with the short form.
+	for _, end := range []string{relayNotesEnd, "[end of session replies]"} {
+		if _, typed, ok := strings.Cut(prompt, "\n\n"+end+"\n\n"); ok {
+			return typed
+		}
 	}
 	return prompt
 }
@@ -956,7 +960,7 @@ func relayNoteText(note relayNote) string {
 	}
 	if runes := []rune(reply); len(runes) > relayExcerptRunes {
 		reply = string(runes[:relayExcerptRunes]) +
-			"\n[… truncated; the user has the full reply, read_session_transcript for the rest]"
+			"\n[… truncated; read_session_transcript for the rest]"
 	}
 	return fmt.Sprintf("[session %s replied] %s", note.sessionID, reply)
 }

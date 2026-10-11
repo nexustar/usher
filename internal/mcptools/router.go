@@ -30,13 +30,14 @@ type Router struct {
 
 // RouterTools returns the session-management tool catalog.
 func RouterTools() []Tool {
-	deliver := "The call returns as soon as the prompt is accepted — it does NOT wait for the turn. " +
-		"usher puts the session's reply in front of the user itself, verbatim, the moment it lands: it is " +
-		"NOT your job to deliver, quote, or summarize it. You are told what finished as a " +
-		"[session <id> replied] line prefixed to your next message. Never wait for it, never poll for it " +
-		"with list_sessions or read_session_transcript. Send, then end your turn. " +
-		"If the result says relayed=false, nothing will be reported and you must collect it with " +
-		"read_session_transcript instead."
+	deliver := " Returns as soon as the prompt is accepted; the turn runs on without you, however long it takes. " +
+		"usher shows the session's reply to the user itself, verbatim, and tells you it came in a " +
+		"[session <id> replied] note before your next message. Never wait or poll for it."
+	userWords := map[string]any{"type": "string",
+		"description": "The user's message in their own words, reworded only as far as it needs to stand on its own."}
+	sessionRef := map[string]any{"type": "string",
+		"description": "A session id, its first 8 or more characters, or a unique part of its title."}
+	onRequest := "Only when the user asks for one; otherwise usher's default."
 
 	object := func(properties map[string]any, required ...string) map[string]any {
 		schema := map[string]any{
@@ -52,9 +53,8 @@ func RouterTools() []Tool {
 	tools := []Tool{
 		{
 			Name: "list_sessions",
-			Description: "List usher coding-agent sessions. Returns session id, cwd, title, status, timestamps, backend, archived, and auto_approve. " +
-				"Use this to choose a session before routing work. Archived sessions are a separate query: " +
-				"archived=true lists only them, the default lists only live ones.",
+			Description: "List sessions with id, title, cwd, backend and status; use it to pick a session for routing. " +
+				"The default omits archived sessions; archived=true lists only them.",
 			InputSchema: object(map[string]any{
 				"statuses": map[string]any{"type": "array", "items": map[string]any{
 					"type": "string", "enum": []string{"idle", "live", "running", "awaiting_permission"},
@@ -65,31 +65,29 @@ func RouterTools() []Tool {
 		},
 		{
 			Name: "resolve_session",
-			Description: "Resolve a loose session reference — full id, the first eight or more characters of " +
-				"one, or a unique title substring — to an exact session id, without sending it anything. " +
-				"Use it when the user turns to a session (\"focus X\", \"switch to X\"): it becomes the " +
-				"current session. Never invent message text just to satisfy send_to_session.",
+			Description: "Resolve a session reference to its exact id and title without sending it anything; " +
+				"it becomes the current session. Use it when the user turns to a session " +
+				"(\"focus X\", \"switch to X\") with nothing to send.",
 			InputSchema: object(map[string]any{
-				"session_id": map[string]any{"type": "string"},
+				"session_id": sessionRef,
 			}, "session_id"),
 		},
 		{
-			Name: "send_to_session",
-			Description: "Deliver the user's substantive instruction or question to an existing coding-agent session. " +
-				"This is THE delivery tool — task duration never matters, so never decline work for being long-running. " +
-				deliver,
+			Name:        "send_to_session",
+			Description: "Send the user's message to an existing session as its next turn." + deliver,
 			InputSchema: object(map[string]any{
-				"session_id": map[string]any{"type": "string", "description": "Full session id from list_sessions."},
-				"text":       map[string]any{"type": "string"},
+				"session_id": sessionRef,
+				"text":       userWords,
 			}, "session_id", "text"),
 		},
 		{
 			Name: "read_session_transcript",
-			Description: "Read a page of a session transcript, oldest turn first. With neither cursor, the latest page. " +
-				"before pages backward: pass the returned before value while more is true. " +
-				"from starts at a turn found by search_sessions: pass a hit's cursor, and pass the returned from value to read on.",
+			Description: "Read a page of a session's transcript, oldest turn first: user and assistant text, " +
+				"tool calls as [tool: name target] markers. With neither cursor, the latest page. " +
+				"before pages backward: pass the returned before while more is true. " +
+				"from starts at a search hit's cursor: pass the returned from to read on.",
 			InputSchema: object(map[string]any{
-				"session_id": map[string]any{"type": "string"},
+				"session_id": sessionRef,
 				"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
 				"before":     map[string]any{"type": "string"},
 				"from":       map[string]any{"type": "string"},
@@ -97,10 +95,10 @@ func RouterTools() []Tool {
 		},
 		{
 			Name: "search_sessions",
-			Description: "Search transcript text. With session_id, search that session; without it, find matching sessions. " +
+			Description: "Search transcript text. With session_id, search that session; without it, find the sessions that match. " +
 				"Each hit carries a cursor for read_session_transcript's from.",
 			InputSchema: object(map[string]any{
-				"session_id":    map[string]any{"type": "string"},
+				"session_id":    sessionRef,
 				"query":         map[string]any{"type": "string"},
 				"limit":         map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
 				"context_chars": map[string]any{"type": "integer", "minimum": 1, "maximum": 500},
@@ -108,27 +106,28 @@ func RouterTools() []Tool {
 		},
 		{
 			Name: "create_session",
-			Description: "Create a coding-agent session and send its initial instruction. " +
-				"Use when the work fits no existing session. Pass cwd when the user names a directory or the work " +
-				"belongs to a project — never a path you made up; leave it out for work tied to no project, which then " +
-				"runs in the system temp directory. Returns the new session id immediately. " + deliver,
+			Description: "Create a session and send it its first message, for work no existing session fits. " +
+				"Returns the new session id." + deliver,
 			InputSchema: object(map[string]any{
-				"cwd":             map[string]any{"type": "string"},
-				"initial_message": map[string]any{"type": "string"},
-				"backend":         map[string]any{"type": "string", "enum": []string{"claude", "codex", "pi"}},
-				"model":           map[string]any{"type": "string"},
+				"cwd": map[string]any{"type": "string",
+					"description": "The directory the user named, or the project the work belongs to. " +
+						"Omit it for work tied to no project (it then runs in the temp directory); never a path you made up."},
+				"initial_message": userWords,
+				"backend":         map[string]any{"type": "string", "enum": []string{"claude", "codex", "pi"}, "description": onRequest},
+				"model":           map[string]any{"type": "string", "description": onRequest},
 			}, "initial_message"),
 		},
 		{
-			Name:        "list_pending_interactions",
-			Description: "List pending permission and user-question interactions across usher sessions.",
+			Name: "list_pending_interactions",
+			Description: "List the permission requests and questions sessions are waiting on. " +
+				"Read-only: the user answers them in usher's UI.",
 			InputSchema: object(map[string]any{}),
 		},
 		{
 			Name:        "set_archived",
-			Description: "Archive or unarchive an usher session.",
+			Description: "Archive or unarchive a session.",
 			InputSchema: object(map[string]any{
-				"session_id": map[string]any{"type": "string"},
+				"session_id": sessionRef,
 				"archived":   map[string]any{"type": "boolean"},
 			}, "session_id", "archived"),
 		},
@@ -334,17 +333,18 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 	return nil, fmt.Errorf("unknown router tool: %s", name)
 }
 
-// deliveredResult is the ack for a send or create. Its note repeats the tool
-// description's promise, for a model that skimmed the catalog.
+// deliveredResult is the ack for a send or create.
 func deliveredResult(d pluginapi.Delivery) map[string]any {
 	out := map[string]any{
 		"status": "delivered", "session_id": d.SessionID, "relayed": d.Relayed,
 	}
 	if d.Relayed {
-		out["note"] = "usher shows the session's reply to the user verbatim when it completes, and tells " +
-			"you what finished with your next message — do not wait for it, poll for it, or restate it"
+		out["note"] = "usher shows the session's reply to the user when it lands and tells you in a " +
+			"[session <id> replied] note before your next message. Nothing more is needed from you: " +
+			"do not wait, poll, or restate it."
 	} else {
-		out["note"] = "no reply will be reported back; read_session_transcript is the only way to collect it"
+		out["note"] = "no router session is designated, so nothing will be reported back to you; " +
+			"read_session_transcript is the only way to see the reply"
 	}
 	return out
 }
@@ -440,10 +440,10 @@ func resolveSession(api *pluginapi.Client, query string) (pluginapi.SessionView,
 		matches = byID
 	}
 	if len(matches) == 0 {
-		return pluginapi.SessionView{}, fmt.Errorf("session not found: %s", query)
+		return pluginapi.SessionView{}, fmt.Errorf("no session matches %q: give the first 8 or more characters of its id, or a unique part of its title", query)
 	}
 	if len(matches) > 1 {
-		return pluginapi.SessionView{}, fmt.Errorf("ambiguous session: %s", query)
+		return pluginapi.SessionView{}, fmt.Errorf("ambiguous: %d sessions match %q; give more of the id or title", len(matches), query)
 	}
 	return matches[0], nil
 }
