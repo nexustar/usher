@@ -1,7 +1,6 @@
 // Package api holds the session handlers the web server and the control
-// socket both serve: one implementation, so a request means the same thing on
-// either listener. Each listener mounts them under its own prefix and adds its
-// own authentication and private routes.
+// socket both serve. Each listener mounts them under its own prefix and adds
+// its own authentication and private routes.
 package api
 
 import (
@@ -103,8 +102,7 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
 }
 
-// ErrStatus maps a router error onto the status a caller can branch on: the
-// session is not there, it cannot take the request now, or it never can.
+// ErrStatus maps a router error onto an HTTP status.
 func ErrStatus(err error) int {
 	switch {
 	case errors.Is(err, core.ErrSessionNotFound):
@@ -122,10 +120,9 @@ func ErrStatus(err error) int {
 // Session is a core.Session plus the flags usher keeps outside the log.
 type Session struct {
 	core.Session
-	AutoApprove bool `json:"auto_approve"`
-	Archived    bool `json:"archived"`
-	Pinned      bool `json:"pinned"`
-	// Router marks usher's router session — the one holding the routing tools.
+	AutoApprove       bool `json:"auto_approve"`
+	Archived          bool `json:"archived"`
+	Pinned            bool `json:"pinned"`
 	Router            bool `json:"router,omitempty"`
 	TerminalOpen      bool `json:"terminal_open,omitempty"`
 	TerminalAvailable bool `json:"terminal_available,omitempty"`
@@ -490,7 +487,7 @@ func SSEStart(w http.ResponseWriter) (http.Flusher, bool) {
 }
 
 // writeEvent writes one frame: the type as the SSE event name, the whole event
-// as its data, so one parser reads either stream.
+// as its data.
 func writeEvent(w http.ResponseWriter, flusher http.Flusher, ev broker.Event) bool {
 	data, err := json.Marshal(ev)
 	if err != nil {

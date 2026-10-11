@@ -745,8 +745,7 @@ export async function showDetail(id) {
     // No shell worth opening in the router's own directory.
     const term = document.getElementById('term-toggle');
     if (term) term.hidden = true;
-    // Nor is a branch of the router a router: it would inherit a session
-    // with no tools at all.
+    // Nor is a branch of the router a router.
     document.getElementById('chat-scroll')?.classList.add('router-view');
   }
 
@@ -774,8 +773,7 @@ export async function showDetail(id) {
   if (autoBtn) {
     autoBtn.addEventListener('click', async () => {
       const next = autoBtn.getAttribute('aria-pressed') !== 'true';
-      // On the Router page the toggle is the current session's: the router
-      // itself has nothing to approve.
+      // On the Router page the toggle is the current session's.
       const target = sess.router ? routerFocusID : id;
       if (!target) return;
       autoBtn.disabled = true;
@@ -1259,9 +1257,9 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
 
 // ---------- Router view ----------
 
-// showRouter opens usher's router session — an ordinary session shown through
-// showDetail — or, when there is none (or the user asked for a new one), a
-// bare composer whose first message creates it.
+// showRouter opens usher's router session through showDetail or, when there
+// is none (or the user asked for a new one), a bare composer whose first
+// message creates it.
 export async function showRouter(fresh) {
   const epoch = ++detailEpoch;
   let router = {};
@@ -1271,8 +1269,7 @@ export async function showRouter(fresh) {
   } catch { /* fall through to the empty view */ }
   if (epoch !== detailEpoch) return; // the user went elsewhere meanwhile
   if (!fresh && router.session_id) return showDetail(router.session_id);
-  // A new conversation picks what it runs on, starting from this browser's
-  // last choice.
+  // Start from this browser's last choice.
   const saved = (key) => { try { return localStorage.getItem(key) || ''; } catch { return ''; } };
   let catalog = null;
   try {
@@ -1392,7 +1389,6 @@ function renderSessionSubtitle(sess) {
         ` data-id="${esc(sess.id)}" data-archived="${sess.archived ? '1' : '0'}"` +
         ` data-pinned="${sess.pinned ? '1' : '0'}" data-status="${esc(sess.status || '')}"` +
         ` data-cwd="${esc(sess.cwd || '')}" aria-label="session actions" aria-haspopup="menu">` +
-        // The router is the Router, whatever its first message was.
         `<strong class="session-title">${sess.router ? 'Router' : esc(sess.title || '(untitled)')}</strong>` +
         `<svg class="subtitle-chevron" viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>` +
       `</button>` +
@@ -1405,8 +1401,7 @@ function renderSessionSubtitle(sess) {
 }
 
 // The router's current session — the one it last sent work to, created or
-// resolved — is where a message that names no session goes next. It is read
-// off the conversation, so it is there again after a reload.
+// resolved — read off the conversation.
 const FOCUS_TOOL = /(^|__)(send_to_session|create_session|resolve_session)$/;
 let routerFocusID = '';
 
@@ -1427,8 +1422,6 @@ function updateRouterFocus() {
   routerFocusID = id;
   link.hidden = !id;
   const known = getLastSessions().find(s => s.id === id);
-  // The approve toggle speaks for the current session; without one it has
-  // nothing to say.
   const approve = document.getElementById('auto-approve-toggle');
   if (approve) {
     const auto = !!(known && known.auto_approve);
@@ -1570,9 +1563,8 @@ function appendLivePart(d) {
   const lt = ensureLiveTurn();
   if (!lt) return;
   lt.node.classList.remove('awaiting-output');
-  // A turn that routed work, or changed the current session, ends with a
-  // transcript fetch: replies and the focus hang on the turn's cursor and
-  // parts, which a promoted live bubble does not have.
+  // Replies and the focus hang on the turn's cursor and parts, which a
+  // promoted live bubble does not have: end the turn with a transcript fetch.
   if (p.type === 'tool' && FOCUS_TOOL.test(p.tool_name || '')) {
     liveTurnDirty = true;
     setRoutedTargets([...routedTargetIds(), parseRoutedSession(p.content)].filter(Boolean));
@@ -1788,9 +1780,8 @@ async function loadTranscript(id) {
 
 // ---------- Routed replies ----------
 
-// A session that routes work to others (usher's router) shows each reply as
-// its own message, where it landed in the conversation. The server resolves
-// which turn of the target answers which dispatch; this only places them.
+// Each reply to routed work is its own message, where it landed in the
+// conversation. The server resolves which turn answers which dispatch.
 const ROUTING_TOOL = /(^|__)(send_to_session|create_session)$/;
 let routedSig = '';
 let routedTimer = null;
@@ -1817,8 +1808,6 @@ function routedReplyNode(rr) {
 }
 
 // routedTargetIds are the sessions the rendered conversation routed work to.
-// Read off the turns rather than a fetch, so a worker's permission request
-// shows here the moment the dispatch is on screen.
 function routedTargetIds() {
   const ids = [];
   for (const r of renderedTurns) {

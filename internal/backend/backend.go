@@ -119,9 +119,8 @@ type StartRequest struct {
 	AppendSystemPrompt string
 	ExtraArgs          []string
 	AutoApprove        bool
-	// Router asks for usher's session-routing MCP tools. It travels with the
-	// request because the session id does not exist until the runtime mints
-	// it, which is after the process it configures has to be spawned.
+	// Router asks for usher's session-routing MCP tools: a new session has no
+	// id to be designated by until its process is already running.
 	Router bool
 }
 
@@ -198,9 +197,7 @@ type ExtraArgser interface {
 }
 
 // RouterDesignator is an optional runtime capability: keeping the routing MCP
-// tools attached to usher's router session across cold worker rebuilds, the
-// same reason SystemPrompter exists. Runtimes that don't implement it cannot
-// host a router session.
+// tools attached to usher's router session across cold worker rebuilds.
 type RouterDesignator interface {
 	SetRouterSession(sessionID string)
 }

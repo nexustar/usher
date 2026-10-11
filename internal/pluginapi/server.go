@@ -34,10 +34,9 @@ import (
 // router session's tools use.
 type RouterAPI interface {
 	api.Router
-	// The Route variants resolve the inbox — usher's router session —
-	// themselves and queue the finished turn there as a note; the caller only
-	// asks. The returned bool reports whether a relay was attached: with no
-	// router session designated they degrade to the plain form.
+	// The Route variants queue the finished turn as a note for usher's router
+	// session. The bool reports whether there is one; without it they are the
+	// plain form.
 	RouteToSession(id, text string) (relayed bool, err error)
 	RouteNewSession(o core.CreateOptions) (id string, relayed bool, err error)
 	SearchSessionTranscript(id, query string, maxHits, contextChars int) ([]core.TranscriptSearchHit, bool, error)
@@ -112,10 +111,9 @@ type Delivery struct {
 	Relayed   bool   `json:"relayed,omitempty"`
 }
 
-// handleRoute sends a prompt to a session on the router session's behalf: the
-// turn's reply is delivered into the router session once it completes. With no
-// router session the prompt is still delivered, and the ack says nothing will
-// come back.
+// handleRoute sends a prompt to a session on the router session's behalf.
+// With no router session the prompt is still delivered, and the ack says
+// nothing will come back.
 func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 	var req api.SendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

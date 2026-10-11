@@ -140,8 +140,7 @@ func (f *FakeRouter) SendToSession(id, text string) error {
 }
 
 // HoldRelay parks every subsequent relay callback until ReleaseRelay, so a
-// test can assert that a send returns before its turn finishes — the whole
-// point of the asynchronous shape.
+// test can assert that a send returns before its turn finishes.
 func (f *FakeRouter) HoldRelay() {
 	f.mu.Lock()
 	defer f.mu.Unlock()

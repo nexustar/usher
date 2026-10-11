@@ -33,8 +33,7 @@ func runMCPStdio(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	// A nil Router is what turns the routing tools off, so the flag needs no
-	// separate plumbing past this point.
+	// A nil Router turns the routing tools off.
 	var router *mcptools.Router
 	if *routerTools {
 		hookSock := os.Getenv("USHER_HOOK_SOCK")

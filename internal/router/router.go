@@ -133,9 +133,8 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 	return r
 }
 
-// SetSettings attaches the instance settings; routerDir is the cwd router
-// sessions run in. The router designation outlives usher, so
-// this hands the routing tools back before the router session is resumed.
+// SetSettings attaches the instance settings and hands the routing tools back
+// to the stored router; routerDir is the cwd router sessions run in.
 func (r *Router) SetSettings(s *settings.Store, routerDir string) {
 	r.settings = s
 	if abs, err := filepath.Abs(routerDir); err == nil {
@@ -145,9 +144,8 @@ func (r *Router) SetSettings(s *settings.Store, routerDir string) {
 	r.designateRouter(s.Router().SessionID)
 }
 
-// retireRouter makes a replaced router an ordinary session: what made it a
-// router — the prompt, the missing local tools, the blanket approval — goes,
-// and its process stops so the next message starts it as any other session.
+// retireRouter makes a replaced router an ordinary session: its prompt, tool
+// restrictions and blanket approval go, and its process stops.
 func (r *Router) retireRouter(id string) {
 	if r.meta != nil {
 		r.meta.SetAppendSystemPrompt(id, "")
@@ -159,8 +157,7 @@ func (r *Router) retireRouter(id string) {
 	r.stopLive(id)
 }
 
-// designateRouter tells every runtime which session is the router; each keeps
-// the routing tools off any other session from its next cold start.
+// designateRouter tells every runtime which session keeps the routing tools.
 func (r *Router) designateRouter(id string) {
 	for _, backend := range r.backends {
 		if setter, ok := backend.Runtime.(backendpkg.RouterDesignator); ok {
@@ -430,9 +427,8 @@ func wireTurns(turns []core.Turn) []core.Turn {
 	return turns
 }
 
-// userText is what the user typed in a prompt of session id. A router
-// session's prompt may carry relay notes in front: those are the model's, and
-// the user reads the replies as messages of their own.
+// userText is prompt without the relay notes folded in front of a router
+// session's prompt.
 func (r *Router) userText(id, prompt string) string {
 	if r.routerDir == "" {
 		return prompt
@@ -605,8 +601,7 @@ func (r *Router) IsArchived(sessionID string) bool {
 	return r.meta.IsArchived(sessionID, staleClock(sess), time.Now())
 }
 
-// routerInbox is the router session — the only place a relayed reply can be
-// delivered — or "" when none is designated.
+// routerInbox is the designated router session, or "".
 func (r *Router) routerInbox() string {
 	if r.settings == nil {
 		return ""
@@ -624,9 +619,7 @@ func (r *Router) RouterSession() string {
 	return id
 }
 
-// routerPrompt and routerArgs make the router session what it is on every
-// backend: a session that can only route, because its local tools are taken
-// away.
+// routerPrompt and routerArgs leave the router session able only to route.
 const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
 	"route it to a session with the usher tools, creating one when none fits. " +
 	"Greetings and questions about the sessions themselves are yours to answer. " +
@@ -652,9 +645,8 @@ var routerArgs = map[string][]string{
 	"pi": {"--tools", PiRouterTools()},
 }
 
-// PiRouterTools names usher's tools one by one: pi matches a pattern in --tools
-// only from 1.0.4 on. The names are the routing tools' as pi's MCP support
-// registers them.
+// PiRouterTools names usher's tools one by one: pi matches a pattern in
+// --tools only from 1.0.4 on.
 func PiRouterTools() string {
 	names := []string{"show_image"}
 	for _, tool := range []string{
@@ -667,9 +659,7 @@ func PiRouterTools() string {
 }
 
 // StartRouter creates the router session with prompt as its first message,
-// replacing the current one: the previous router is an ordinary session from
-// its next cold start. An empty backend or model means usher's default
-// backend and that backend's default model.
+// replacing the current one. An empty backend or model means the default.
 func (r *Router) StartRouter(prompt, backend, model string) (string, error) {
 	if r.settings == nil {
 		return "", errors.New("router sessions are not configured")
@@ -686,8 +676,6 @@ func (r *Router) StartRouter(prompt, backend, model string) (string, error) {
 	return r.StartSession(core.CreateOptions{
 		Backend: backend, Model: model, Cwd: r.routerDir, InitialMessage: prompt,
 		AppendSystemPrompt: routerPrompt, ExtraArgs: slices.Clone(routerArgs[backend]),
-		// Its tools are usher's own: asking the user to approve each routing
-		// call would gate usher's control surface behind itself.
 		AutoApprove: true,
 		Router:      true,
 	})
@@ -891,35 +879,25 @@ type relayNote struct {
 	err       error
 }
 
-// maxQueuedRelays bounds one router's pending notes. Beyond it the oldest go:
-// a router that has not spoken in that long has already lost the thread, and
-// the transcripts remain the record.
+// maxQueuedRelays bounds one router's pending notes; beyond it the oldest go.
 const maxQueuedRelays = 32
 
-// relayExcerptRunes caps one folded reply. The full text is already in front
-// of the user — usher renders it under the routing tool call — so the model
-// needs only enough to recognize what finished, and read_session_transcript
-// for the rest.
+// relayExcerptRunes caps one folded reply: the user already has the full text,
+// and the model has read_session_transcript.
 const relayExcerptRunes = 600
 
-// queueRelay records that a session a router dispatched has finished. The
-// reply is NOT sent as a prompt: that would start a turn whose only product is
-// the model restating text the user can already read verbatim. It waits for
-// the router's next prompt instead: displaying a reply and telling the model
-// about it are two separate things.
+// queueRelay records that a session the router dispatched has finished. The
+// reply is not sent as a prompt: it waits for the router's next one.
 func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
 	if routerID == "" {
 		return
 	}
-	// The note waits for the router's next prompt; this is for whoever has
-	// the router session open, so the reply shows up as it lands.
+	// For whoever has the router session open, so the reply shows as it lands.
 	raw, _ := json.Marshal(map[string]string{"session_id": sessionID})
 	r.broker.Publish(broker.Event{SessionID: routerID, Type: core.EventRelayLanded, Raw: raw})
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
 	if r.relayIn == nil {
-		// Created on the first note: an usher without a router session never
-		// grows this map, and the read paths already tolerate a nil one.
 		r.relayIn = map[string][]relayNote{}
 	}
 	notes := append(r.relayIn[routerID], relayNote{sessionID: sessionID, reply: reply, err: err})
@@ -931,7 +909,6 @@ func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
 
 // foldRelays prefixes a router's pending notes to its next prompt and takes
 // them off the queue, returning them so a failed send can put them back.
-// Ordinary sessions never have any, so this is a map lookup for them.
 func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 	r.sendMu.Lock()
 	notes := r.relayIn[id]
@@ -951,15 +928,13 @@ func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 	return b.String(), notes
 }
 
-// relayNotesEnd closes the notes folded in front of a router prompt, so what
-// the user typed can be told apart from them again.
+// relayNotesEnd closes the notes folded in front of a router prompt.
 const relayNotesEnd = "[end of session replies]"
 
 // relayNoteMark opens every relay note.
 const relayNoteMark = "[session "
 
-// stripRelayNotes returns the prompt the user typed from one that reached the
-// router with notes folded in front of it.
+// stripRelayNotes removes the notes folded in front of a router prompt.
 func stripRelayNotes(prompt string) string {
 	if !strings.HasPrefix(prompt, relayNoteMark) {
 		return prompt
@@ -970,9 +945,7 @@ func stripRelayNotes(prompt string) string {
 	return prompt
 }
 
-// relayNoteText renders one note. A failed turn is reported the same way as a
-// reply: swallowing it would leave the router waiting on one that is never
-// coming.
+// relayNoteText renders one note; a failed turn is reported like a reply.
 func relayNoteText(note relayNote) string {
 	if note.err != nil {
 		return fmt.Sprintf("[session %s failed] %s", note.sessionID, note.err.Error())
@@ -1556,8 +1529,7 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 	}
 	q := []rune(query)
 	var results []core.SessionSearchResult
-	// The router session is the one asking: its own conversation repeats every
-	// query it was given, so it would match them all.
+	// The router's own conversation repeats every query it was given.
 	asking := r.routerInbox()
 	for _, s := range r.ListSessions() {
 		path, ok := r.discovery.Path(s.ID)
@@ -1688,11 +1660,8 @@ const relayWaitCeiling = 24 * time.Hour
 // (ceiling/timeout expiry before any part arrived).
 var errNoResponse = errors.New("timeout (no response received)")
 
-// RouteToSession delivers text like SendToSession and, when usher has a
-// router session designated, queues the finished turn as a note for that
-// inbox. The inbox is resolved here, never named by the caller; the returned
-// bool reports whether a relay was attached — without a designation the send
-// degrades to a plain SendToSession.
+// RouteToSession sends text like SendToSession and queues the finished turn as
+// a note for the router session. The bool reports whether there is one.
 func (r *Router) RouteToSession(id, text string) (bool, error) {
 	inbox := r.routerInbox()
 	if inbox == "" {
@@ -1867,8 +1836,8 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 	})
 	if err != nil {
 		if o.Router {
-			// A runtime may already have pointed its routing tools at the id
-			// that never came to be: point them back at the router there is.
+			// A runtime may have pointed its routing tools at the id that never came
+			// to be.
 			r.designateRouter(r.routerInbox())
 		}
 		return "", nil, nil, err
@@ -1878,9 +1847,7 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 		r.meta.SetExtraArgs(id, o.ExtraArgs)
 	}
 	if o.Router && r.settings != nil {
-		// The runtime already spawned this process with the routing tools;
-		// persisting the designation is what makes it the relay inbox and
-		// what survives a restart.
+		// Persisting the designation is what makes it the relay inbox.
 		if prev := r.settings.Router().SessionID; prev != "" && prev != id {
 			slog.Info("router session replaced", "session", id, "previous", prev)
 			r.retireRouter(prev)
@@ -1936,10 +1903,7 @@ func validateCreateInputs(cwd, initialMsg string) (string, error) {
 	return cwd, nil
 }
 
-// RouteNewSession starts a session like RouteToSession sends: the first
-// assistant reply is queued as a note for usher's router session, resolved
-// here — without a designation this is a plain StartSession, reported by the
-// returned bool.
+// RouteNewSession starts a session like RouteToSession sends.
 func (r *Router) RouteNewSession(o core.CreateOptions) (string, bool, error) {
 	// Work tied to no project runs in the temp directory.
 	if o.Cwd == "" {

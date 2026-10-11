@@ -137,21 +137,17 @@ type CreateOptions struct {
 	AppendSystemPrompt string
 	ExtraArgs          []string
 	AutoApprove        bool
-	// Router designates the new session as usher's router: it spawns with the
-	// session-routing MCP tools and becomes the inbox for relayed replies,
-	// replacing any previous designation.
+	// Router designates the new session as usher's router, replacing any
+	// previous one.
 	Router bool
 }
 
 // Errors a caller can branch on, whichever layer raised them.
 var (
-	// ErrSessionNotFound: the operation targets a session with no log on disk.
 	ErrSessionNotFound = errors.New("session not found")
-	// ErrReadOnlySession: the operation would change a session usher only reads.
 	ErrReadOnlySession = errors.New("subagent transcripts are read-only")
-	// ErrSendQueueFull: a busy session cannot queue another prompt.
-	ErrSendQueueFull = errors.New("send queue full for session")
-	ErrInvalidTitle  = errors.New("session title must not be empty")
+	ErrSendQueueFull   = errors.New("send queue full for session")
+	ErrInvalidTitle    = errors.New("session title must not be empty")
 )
 
 // EventRelayLanded is published on the router session when a session it routed

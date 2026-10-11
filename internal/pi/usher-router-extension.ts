@@ -8,8 +8,7 @@ export default function usherRouterExtension(pi: ExtensionAPI) {
 		command: __USHER_BIN__,
 		args: ["mcp-stdio", "--router-tools"],
 		env: { USHER_HOOK_SOCK: __USHER_HOOK_SOCK__ },
-		// Declared to the model like built-in tools, as on the other backends:
-		// usher reads each routing call back from the transcript.
+		// Declared to the model like built-in tools, as on the other backends.
 		exposure: "direct",
 		// usher's base extension already provides show_image.
 		toolExposure: { show_image: "hidden" },

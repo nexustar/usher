@@ -625,9 +625,8 @@ func (r *Runtime) SetExtraArgsLookup(lookup func(string) []string) {
 	r.mu.Unlock()
 }
 
-// SetRouterExtension supplies the generated routing-tools extension,
-// loaded via an extra --extension only by usher's router session. Empty
-// leaves routers indistinguishable from ordinary sessions.
+// SetRouterExtension supplies the generated routing-tools extension, loaded
+// only by usher's router session.
 func (r *Runtime) SetRouterExtension(path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -637,8 +636,7 @@ func (r *Runtime) SetRouterExtension(path string) {
 var _ backend.RouterDesignator = (*Runtime)(nil)
 
 // SetRouterSession designates id as usher's router session: its next cold
-// worker spawns with the routing-tools extension. One at a time, mirroring
-// the persisted designation; a live worker keeps what it started with.
+// worker spawns with the routing-tools extension.
 func (r *Runtime) SetRouterSession(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -879,8 +877,7 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 		return "", nil, err
 	}
 	if req.Router {
-		// The worker already carries the routing tools; recording the id pi
-		// assigned keys the same choice for future cold resumes.
+		// Record the id pi assigned, for future cold resumes.
 		r.SetRouterSession(state.SessionID)
 	}
 	defer r.releaseWorker(w)

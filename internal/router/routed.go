@@ -35,10 +35,9 @@ func (r *Router) RoutedRepliesFrom(id, from string) ([]core.RoutedReply, error) 
 }
 
 // RoutedReplies resolves, for each routing tool call in turns, the reply it
-// led to in the target session. Nothing records that link: the call's prompt is
-// in the caller's transcript and the target's transcript holds the same text
-// as a user turn, so the reply is the turn that answers it. A turn's Time is
-// taken as when it began.
+// led to. Nothing records that link: the target's transcript holds the call's
+// prompt as a user turn, and the reply is the turn that answers it. A turn's
+// Time is taken as when it began.
 func (r *Router) RoutedReplies(turns []core.Turn) []core.RoutedReply {
 	out := []core.RoutedReply{}
 	for _, t := range turns {
@@ -79,8 +78,7 @@ const routedSearchPages = 8
 // while an answer is still to come or still being written.
 func (r *Router) replyTo(id, prompt string, since time.Time) (reply string, at time.Time, done bool) {
 	prompt = strings.TrimSpace(prompt)
-	// The dispatching turn's clock and the target's are the same machine's, but
-	// allow for a turn stamped as it was queued.
+	// Allow for a turn stamped as it was queued.
 	since = since.Add(-5 * time.Second)
 	var all []core.Turn // the target's turns back to since, oldest first
 	before := ""

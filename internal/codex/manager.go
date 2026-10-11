@@ -124,9 +124,7 @@ func (m *Manager) reapIdle(now time.Time, after time.Duration) {
 }
 
 // SetRouterConfig supplies the config that replaces the manager-wide config
-// for usher's router session — the same MCP registration with the routing
-// tools switched on. Nil leaves routers indistinguishable from ordinary
-// sessions.
+// for usher's router session.
 func (m *Manager) SetRouterConfig(config map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -134,8 +132,7 @@ func (m *Manager) SetRouterConfig(config map[string]any) {
 }
 
 // SetRouterSession designates id as usher's router session: its next cold
-// worker starts with the router config. One at a time, mirroring the
-// persisted designation; a live worker keeps what it started with.
+// worker starts with the router config.
 func (m *Manager) SetRouterSession(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -275,8 +272,7 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions stri
 	m.starting--
 	m.workers[id] = &worker{client: c, lastUsed: time.Now()}
 	if router {
-		// The worker already carries the router config; recording the id it
-		// was minted under keys the same choice for future cold resumes.
+		// Record the id the thread was minted under, for future cold resumes.
 		m.routerID = id
 	}
 	m.mu.Unlock()

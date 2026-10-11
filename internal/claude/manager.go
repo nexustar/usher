@@ -252,17 +252,15 @@ func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, interact
 }
 
 // SetRouterArgs supplies the spawn arguments that replace mcpArgs for usher's
-// router session — the same MCP registration with the routing tools switched
-// on. Empty leaves routers indistinguishable from ordinary sessions.
+// router session.
 func (m *Manager) SetRouterArgs(args []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.routerArgs = append([]string(nil), args...)
 }
 
-// SetRouterSession designates id as usher's router session. One at a time,
-// mirroring the persisted designation: a new router repoints it and the
-// previous session spawns as an ordinary one from its next cold start.
+// SetRouterSession designates id as usher's router session; the previous one
+// spawns as an ordinary session from its next cold start.
 func (m *Manager) SetRouterSession(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

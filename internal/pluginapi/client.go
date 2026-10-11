@@ -112,9 +112,8 @@ func (c *Client) ListSessions() ([]SessionView, error) {
 }
 
 // SendToSessionRelayed routes a prompt on the router session's behalf and
-// returns as soon as it is accepted. When the turn completes, its reply is
-// delivered into the router session. The returned Delivery says whether a
-// relay was actually attached: there may not be a router session.
+// returns as soon as it is accepted. Delivery says whether the reply will be
+// relayed: there may be no router session.
 func (c *Client) SendToSessionRelayed(id, text string) (Delivery, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
@@ -184,7 +183,6 @@ func (c *Client) SearchSessions(id, query string, limit, contextChars int) (Sear
 	return out, err
 }
 
-// SetArchived archives or unarchives a session.
 func (c *Client) SetArchived(id string, archived bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
@@ -195,7 +193,6 @@ func (c *Client) SetArchived(id string, archived bool) error {
 	return c.do(ctx, method, "/v1/sessions/"+neturl.PathEscape(id)+"/archive", nil, nil)
 }
 
-// SetAutoApprove toggles usher's permission auto-approval for a session.
 func (c *Client) SetAutoApprove(id string, enabled bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
@@ -203,9 +200,8 @@ func (c *Client) SetAutoApprove(id string, enabled bool) error {
 		map[string]bool{"enabled": enabled})
 }
 
-// ListPendingInteractions returns the currently-pending prompts as a snapshot.
-// SubscribePendingInteractions is the streaming form; a caller that cannot
-// hold a stream open (an MCP tool call) uses this one.
+// ListPendingInteractions returns the currently-pending prompts as a snapshot;
+// SubscribePendingInteractions is the streaming form.
 func (c *Client) ListPendingInteractions() ([]interaction.Pending, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()

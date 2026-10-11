@@ -123,8 +123,7 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	}
 	// Register the show_image MCP server (unless --disable-usher-tools). Additive
 	// — no --strict-mcp-config — so the user's own MCP servers are untouched.
-	// The router variant is the same registration with the routing tools on; it
-	// reaches only the session designated as usher's router.
+	// The router variant reaches only the session designated as usher's router.
 	var mcpArgs, routerMCPArgs []string
 	if injectMCPTools {
 		mcpArgs = claudeMCPConfigArgs(hookSock, false, logger)
@@ -151,11 +150,8 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 }
 
 // claudeHookSettings builds the inline --settings JSON. With allowUsherTools
-// it pre-allows the usher MCP server's tools: they are usher's own control
-// surface, so gating them behind usher's own permission UI is circular — and
-// without this, the router's ten routing tools are each approved separately
-// (permission scope is per tool name). Parity with codex's
-// default_tools_approval_mode "approve"; local tools stay supervised.
+// it pre-allows the usher MCP server's tools; permission scope is per tool
+// name, so each would otherwise be approved separately.
 func claudeHookSettings(hookSock string, allowUsherTools bool, logger *slog.Logger) string {
 	exe, err := os.Executable()
 	if err == nil {
@@ -186,8 +182,6 @@ func claudeHookSettings(hookSock string, allowUsherTools bool, logger *slog.Logg
 		},
 	}
 	if allowUsherTools {
-		// The server-level rule covers every tool the usher MCP server
-		// exposes, show_image and the routing tools alike.
 		settings["permissions"] = map[string]any{"allow": []string{"mcp__usher"}}
 	}
 	b, _ := json.Marshal(settings)
@@ -215,7 +209,7 @@ func codexMCPConfig(routerTools bool, logger *slog.Logger) map[string]any {
 	direct := []string{"mcp__usher", "usher"}
 	if routerTools {
 		// The whole table, not keys under it: it replaces the user's own
-		// servers, so the router sees usher's and no other.
+		// servers.
 		return map[string]any{
 			"mcp_servers": map[string]any{"usher": map[string]any{
 				"command": exe, "args": args, "env_vars": []string{"USHER_HOOK_SOCK"},
@@ -261,8 +255,8 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 	}
 	t := timing{poll: 150 * time.Millisecond}
 	sandbox, config := codex.ParseHeadlessArgs(sandboxArgs, logger)
-	// The router variant is the same registration with the routing tools on;
-	// the manager applies it to the thread designated as usher's router.
+	// The manager applies the router variant to the thread designated as
+	// usher's router.
 	var routerConfig map[string]any
 	if mcp := codexMCPConfig(false, logger); injectMCPTools && mcp != nil {
 		routerConfig = make(map[string]any, len(config)+len(mcp))
@@ -385,7 +379,7 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 		id := newSessionID()
 		if req.Router {
 			// Before the turn: the routing tools are spawn arguments, and this
-			// is the first moment the id they are keyed by exists.
+			// is the first moment the id exists.
 			s.claude.SetRouterSession(id)
 		}
 		s.setAutoApprove(id, req.AutoApprove)
@@ -466,8 +460,7 @@ func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
 var _ backend.RouterDesignator = (*Sender)(nil)
 
 // SetRouterSession restores the routing tools onto usher's designated router
-// after a restart, so its next cold worker spawns with them — as spawn args
-// for claude, as thread/resume config params for codex.
+// after a restart: its next cold worker spawns with them.
 func (s *Sender) SetRouterSession(sessionID string) {
 	if s.claude != nil {
 		s.claude.SetRouterSession(sessionID)

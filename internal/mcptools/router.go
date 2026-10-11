@@ -22,22 +22,13 @@ type Tool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-// Router dispatches usher's routing tools. Holding these tools is what makes
-// a session the router, so it never has to name itself: usher resolves the
-// relay inbox — its own router session — on the other side of the socket.
+// Router dispatches usher's routing tools.
 type Router struct {
 	// API is the control socket. Nil disables every routing tool.
 	API *pluginapi.Client
 }
 
-// RouterTools returns the session-management tool catalog. Descriptions hold
-// the routing boundary: substantive work goes to a coding-agent session, never
-// to the router model itself.
-//
-// The send/create descriptions promise the report-back, because holding these
-// tools is what makes a session the router. Each call's result confirms whether
-// it was actually attached, for the case where usher has no router session
-// designated and nothing will come back.
+// RouterTools returns the session-management tool catalog.
 func RouterTools() []Tool {
 	deliver := "The call returns as soon as the prompt is accepted — it does NOT wait for the turn. " +
 		"usher puts the session's reply in front of the user itself, verbatim, the moment it lands: it is " +
@@ -142,9 +133,7 @@ func RouterTools() []Tool {
 			}, "session_id", "archived"),
 		},
 	}
-	// Exempt every routing tool from Tool Search deferral (paired with the
-	// server-level alwaysLoad in mcp-router.json): these tools are the router
-	// session's whole job, so none may hide behind a ToolSearch step.
+	// Exempt every routing tool from Tool Search deferral.
 	for i := range tools {
 		tools[i].Meta = map[string]any{"anthropic/alwaysLoad": true}
 	}
@@ -152,12 +141,7 @@ func RouterTools() []Tool {
 }
 
 // Call validates and dispatches one router tool call against usher's control
-// socket. The returned value is JSON-compatible and becomes MCP
-// structuredContent as well as text content.
-//
-// There is no context parameter because there is nothing to cancel: every
-// call is a short control-socket round trip, and the client bounds each one
-// itself. Delivering a prompt no longer blocks on the turn.
+// socket. The returned value is JSON-compatible.
 func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 	if r == nil || r.API == nil {
 		return nil, errors.New("router control API unavailable")
@@ -227,8 +211,6 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if args.SessionID == "" || args.Text == "" {
 			return nil, errors.New("session_id and text are required")
 		}
-		// Resolve first: a prompt delivered to the wrong session is not
-		// something the model can take back once the turn starts.
 		sess, err := resolveSession(api, args.SessionID)
 		if err != nil {
 			return nil, err
@@ -296,15 +278,12 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 			}
 			args.SessionID = sess.ID
 		}
-		// The server clamps further for cross-session searches; no need to
-		// mirror its ceilings here.
 		return api.SearchSessions(args.SessionID, args.Query,
 			bounded(args.Limit, 20, 100), bounded(args.ContextChars, 120, 500))
 
 	case "create_session":
-		// A local struct, not pluginapi.CreateRequest: the wire type also
-		// carries agent, which must stay out of the model's reach — the input
-		// schema is only enforced client-side.
+		// Not pluginapi.CreateRequest: that also carries agent, which stays out
+		// of the model's reach.
 		var args struct {
 			Cwd            string `json:"cwd"`
 			InitialMessage string `json:"initial_message"`
@@ -355,10 +334,8 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 	return nil, fmt.Errorf("unknown router tool: %s", name)
 }
 
-// deliveredResult is the ack for a send or create. The note repeats the tool
-// description's promise at the point of use, where a model that skimmed the
-// catalog still sees it — the failure this guards against is a router that
-// polls for a reply, or apologises for not having one yet.
+// deliveredResult is the ack for a send or create. Its note repeats the tool
+// description's promise, for a model that skimmed the catalog.
 func deliveredResult(d pluginapi.Delivery) map[string]any {
 	out := map[string]any{
 		"status": "delivered", "session_id": d.SessionID, "relayed": d.Relayed,

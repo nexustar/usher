@@ -64,8 +64,7 @@ export function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.cl
 // multi-round turn never flickers mid-flight. In-memory, clean on every load;
 // the app-away case is push's job.
 let viewingId = null;          // session whose detail is open
-// Router sessions all run in one directory; lists show it last, since the
-// Router entry is the way to the current one.
+// Router sessions all run in one directory; lists show it last.
 export let routerDir = '';
 export function setRouterDir(v) { routerDir = v || ''; }
 

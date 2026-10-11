@@ -84,8 +84,7 @@ export function renderMarkdown(md) {
   return linkSessions(html);
 }
 
-// A session id, whole or as its first eight characters — how models and people
-// both refer to a session.
+// A session id, whole or as its first eight characters.
 const SESSION_REF = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\b/g;
 
 // linkSessions turns the session ids in rendered text into links to those
@@ -207,9 +206,7 @@ function toolBodyHTML(p) {
 }
 
 // parseRoutedSession pulls the target session id out of a routing tool's JSON
-// result (the same "first {…} span" trick parseImageDims uses). The id is only
-// in the result, never the arguments: create_session doesn't know it yet when
-// it is called.
+// result. The id is only there: create_session doesn't know it when called.
 export function parseRoutedSession(content) {
   if (!content) return '';
   const a = content.indexOf('{');
@@ -224,9 +221,7 @@ export function parseRoutedSession(content) {
 }
 
 // renderRoutedPart marks where work was handed to another session, and
-// unfolds to what was sent — the one thing about a dispatch that cannot be
-// taken back. The reply is not the model's to deliver: the detail view places
-// it in the conversation as its own message when it lands.
+// unfolds to what was sent. The detail view places the reply.
 function renderRoutedPart(p) {
   const id = parseRoutedSession(p.content);
   if (!id) return '';
@@ -254,9 +249,8 @@ function sessionTitle(id) {
 export function renderToolPart(p) {
   const name = p.tool_name || 'tool';
   const target = p.tool_target || '';
-  // Routing tools: usher resolves and shows the reply itself (see
-  // renderRoutedPart). Falls through to the plain tool block if the result
-  // carried no session id — a rejected call, or an older transcript.
+  // Falls through to the plain tool block if the result carried no session
+  // id — a rejected call.
   if (/(^|__)(send_to_session|create_session)$/.test(name)) {
     const routed = renderRoutedPart(p);
     if (routed) return routed;

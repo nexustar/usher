@@ -7,7 +7,7 @@ import {
 } from './state.js';
 
 // The open session's own interactions, and those of the sessions it routed
-// work to: a router conversation is where that work is being watched.
+// work to.
 function shownHere(p) {
   return p.session_id === currentDetailId || (currentDetailId && routedTargets.has(p.session_id));
 }
