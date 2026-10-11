@@ -40,13 +40,29 @@ control, or edit by hand:
 ```
 
 Selecting an agent fills its defaults, and anything set explicitly alongside
-it — in the composer, or as a field in an API request — is an override. A
+it — in the composer, or as a field in an API request — is an override.
+Overriding the backend leaves the agent's model and extra CLI flags behind:
+they were written for the other one. A
 profile may omit any field: the Settings form always writes a concrete backend
 and model, but the API and a hand-edited file may leave them empty, in which
 case the value comes from the request or from the backend's own default. The
 model sentinel `"default"` beats a configured model and hands the pick back to
 the backend; the pickers offer it only when usher cannot read that backend's
 catalog.
+
+## The default agent
+
+One agent always exists: `default`. A request that names no agent, backend or
+model is created from it — a session the router starts on its own, a chat
+frontend's plain instruction, an API call with only a message. Until you save
+it, it is usher's first available backend with that backend's default model,
+and it is not written to `agents.json`. Saving it in Settings stores it like
+any other agent, its prompt, flags and auto-approve included; it cannot be
+renamed, and deleting it brings the built-in one back.
+
+A request that names a backend or a model without an agent is not created from
+it, so the composer's "custom" choice stays exactly what was picked there. The
+new-session page lists `default` once it has been saved.
 
 The authenticated HTTP API exposes the same configuration:
 

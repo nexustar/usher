@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -26,7 +27,14 @@ type Profile struct {
 	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
 	ExtraArgs          []string `json:"extra_args,omitempty"`
 	AutoApprove        bool     `json:"auto_approve,omitempty"`
+	// Builtin marks the default agent while nothing is stored for it.
+	Builtin bool `json:"builtin,omitempty"`
 }
+
+// DefaultName is the agent a request that names no agent, backend or model is
+// created from. It always exists: until one is stored, it is the instance's
+// default backend with that backend's default model.
+const DefaultName = "default"
 
 type fileFormat struct {
 	Agents []Profile `json:"agents"`
@@ -74,6 +82,19 @@ type Store struct {
 	path     string
 	profiles []Profile
 	byName   map[string]Profile
+	// defaultBackend is the built-in default agent's backend.
+	defaultBackend string
+}
+
+// SetDefaultBackend names the backend of the built-in default agent.
+func (s *Store) SetDefaultBackend(backend string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.defaultBackend = backend
+}
+
+func (s *Store) builtinLocked() Profile {
+	return Profile{Name: DefaultName, Backend: s.defaultBackend, Model: "default", Builtin: true}
 }
 
 func New(profiles []Profile) *Store {
@@ -93,7 +114,10 @@ func (s *Store) List() []Profile {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]Profile(nil), s.profiles...)
+	if _, stored := s.byName[DefaultName]; stored {
+		return append([]Profile(nil), s.profiles...)
+	}
+	return append([]Profile{s.builtinLocked()}, s.profiles...)
 }
 
 // validate checks one profile. The name is kept as typed — no case folding —
@@ -104,6 +128,7 @@ func (s *Store) List() []Profile {
 // path segment in /api/agents/{name}, which proxies normalize).
 func validate(p Profile) (Profile, error) {
 	p.Name = strings.TrimSpace(p.Name)
+	p.Builtin = false
 	if p.Name == "" {
 		return Profile{}, errors.New("name is required")
 	}
@@ -140,6 +165,10 @@ func (s *Store) Create(p Profile) (Profile, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.createLocked(p)
+}
+
+func (s *Store) createLocked(p Profile) (Profile, error) {
 	if _, exists := s.byName[p.Name]; exists {
 		return Profile{}, fmt.Errorf("agent %q already exists", p.Name)
 	}
@@ -169,6 +198,14 @@ func (s *Store) Update(name string, p Profile) (Profile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, exists := s.byName[name]
+	if name == DefaultName {
+		if p.Name != name {
+			return Profile{}, errors.New("the default agent cannot be renamed")
+		}
+		if !exists {
+			return s.createLocked(p)
+		}
+	}
 	if !exists {
 		return Profile{}, fmt.Errorf("agent %q not found", name)
 	}
@@ -204,6 +241,9 @@ func (s *Store) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, exists := s.byName[name]
+	if !exists && name == DefaultName {
+		return errors.New("the default agent cannot be deleted")
+	}
 	if !exists {
 		return fmt.Errorf("agent %q not found", name)
 	}
@@ -249,12 +289,18 @@ func (s *Store) persistLocked() error {
 }
 
 // Resolve turns one create request into session options: non-empty request
-// fields override the named agent's defaults, and an empty name passes them
-// through unchanged. The "default" model sentinel is normalized last, so it
-// still beats a configured profile model on its way to the backend default.
-// InitialMessage is the caller's to fill in.
+// fields override the named agent's defaults. A request that names no agent,
+// backend or model is created from the default agent; one that names a backend
+// or model without an agent passes through unchanged. Overriding the backend
+// drops the agent's model and flags. The "default" model sentinel is
+// normalized last, so it still beats a configured profile model on its way to
+// the backend default. InitialMessage is the caller's to fill in.
 func (s *Store) Resolve(name, cwd, backend, model string) (core.CreateOptions, error) {
 	var p Profile
+	name = strings.TrimSpace(name)
+	if name == "" && backend == "" && model == "" && s != nil {
+		name = DefaultName
+	}
 	if name != "" {
 		if s == nil {
 			return core.CreateOptions{}, errors.New("agents are not configured")
@@ -262,14 +308,28 @@ func (s *Store) Resolve(name, cwd, backend, model string) (core.CreateOptions, e
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 		var ok bool
-		if p, ok = s.byName[strings.TrimSpace(name)]; !ok {
-			return core.CreateOptions{}, fmt.Errorf("unknown agent %q", name)
+		if p, ok = s.byName[name]; !ok && name == DefaultName {
+			p, ok = s.builtinLocked(), true
+		}
+		if !ok {
+			names := []string{DefaultName}
+			for n := range s.byName {
+				if n != DefaultName {
+					names = append(names, n)
+				}
+			}
+			slices.Sort(names)
+			return core.CreateOptions{}, fmt.Errorf("unknown agent %q; configured agents: %s", name, strings.Join(names, ", "))
 		}
 	}
 	if cwd != "" {
 		p.Cwd = cwd
 	}
 	if backend != "" {
+		// A model and CLI flags belong to the backend they were written for.
+		if p.Backend != "" && p.Backend != backend {
+			p.Model, p.ExtraArgs = "", nil
+		}
 		p.Backend = backend
 	}
 	if model != "" {

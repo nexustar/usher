@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/pluginapi"
@@ -246,8 +247,7 @@ func TestCallCreateRelaysToTheRouterInbox(t *testing.T) {
 	}
 }
 
-// The model must not be able to opt routed work out of reporting back, nor
-// smuggle wire-only fields (agent) past the client-side input schema.
+// The model must not be able to opt routed work out of reporting back.
 func TestCallCreateIgnoresWireOnlyFields(t *testing.T) {
 	f := pluginapitest.NewFakeRouter()
 	f.AddSession(core.Session{ID: "router"})
@@ -255,11 +255,32 @@ func TestCallCreateIgnoresWireOnlyFields(t *testing.T) {
 	r := start(t, f)
 
 	ack := call(t, r, "create_session",
-		`{"cwd":"/tmp/new","initial_message":"build","relay":false,"agent":"sneaky"}`).(map[string]any)
+		`{"cwd":"/tmp/new","initial_message":"build","relay":false}`).(map[string]any)
 	if ack["relayed"] != true {
 		t.Fatalf("model turned the relay off: %#v", ack)
 	}
 	f.WaitForRelay(t, "router", 1)
+}
+
+func TestCallCreateFromAgent(t *testing.T) {
+	f := pluginapitest.NewFakeRouter()
+	agents := agentprofile.New([]agentprofile.Profile{
+		{Name: "opus", Backend: "claude", Model: "opus", Cwd: "/srv/app", AutoApprove: true},
+	})
+	r := &Router{API: pluginapitest.StartWithAgents(t, f, agents)}
+
+	call(t, r, "create_session", `{"agent":"opus","initial_message":"build","cwd":"/tmp/other"}`)
+	started := f.Started()
+	if len(started) != 1 {
+		t.Fatalf("started = %+v", started)
+	}
+	if got := started[0]; got.Backend != "claude" || got.Model != "opus" || got.Cwd != "/tmp/other" || !got.AutoApprove {
+		t.Fatalf("options = %+v", got)
+	}
+	_, err := r.Call("create_session", json.RawMessage(`{"agent":"sonnet","initial_message":"build"}`))
+	if err == nil || !strings.Contains(err.Error(), "configured agents: default, opus") {
+		t.Fatalf("unknown agent error = %v", err)
+	}
 }
 
 func TestCallRejectsUnknownToolAndNilAPI(t *testing.T) {

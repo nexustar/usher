@@ -43,7 +43,7 @@ func TestAgentCRUDHandlers(t *testing.T) {
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d, body = %s", deleted.Code, deleted.Body.String())
 	}
-	if got := store.List(); len(got) != 0 {
+	if got := store.List(); len(got) != 1 || !got[0].Builtin {
 		t.Fatalf("agents after delete = %+v", got)
 	}
 }

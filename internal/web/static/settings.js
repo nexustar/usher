@@ -202,6 +202,9 @@ function backendOptions(selected) {
 function modelOptions(backend, selected) {
   const models = catalogs[backend] || [];
   const options = models.length ? [...models] : [{id: 'default', display_name: 'Default'}];
+  if (selected === 'default' && !options.some(model => model.id === selected)) {
+    options.unshift({id: 'default', display_name: 'Backend default'});
+  }
   if (selected && !options.some(model => model.id === selected)) {
     options.push({id: selected, display_name: selected + ' (unavailable)'});
   }
@@ -214,6 +217,9 @@ function renderForm(agent, copy = false) {
   const host = document.getElementById('agent-editor');
   if (!host) return;
   const creating = !agent || copy;
+  // The default agent keeps its name, and goes back to the built-in one
+  // instead of away.
+  const isDefault = !creating && agent.name === 'default';
   const value = agent || {
     name: '', cwd: '', backend: '', model: '', append_system_prompt: '',
     auto_approve: false,
@@ -224,7 +230,7 @@ function renderForm(agent, copy = false) {
     <form class="cfg-form">
       <label>
         <span>Name</span>
-        <input name="name" class="mono" value="${esc(name)}" required placeholder="no spaces or /"
+        <input name="name" class="mono" value="${esc(name)}" required placeholder="no spaces or /"${isDefault ? ' readonly' : ''}
                autocapitalize="off" autocorrect="off" spellcheck="false">
       </label>
       <label><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
@@ -252,7 +258,8 @@ function renderForm(agent, copy = false) {
       </details>
       <div class="cfg-form-error err" hidden></div>
       <div class="cfg-form-actions">
-        ${creating ? '' : '<button type="button" class="danger agent-delete">Delete</button><button type="button" class="agent-copy">Duplicate</button>'}
+        ${creating || value.builtin ? '' : `<button type="button" class="danger agent-delete">${isDefault ? 'Reset' : 'Delete'}</button>`}
+        ${creating ? '' : '<button type="button" class="agent-copy">Duplicate</button>'}
         <button type="submit" class="primary agent-save">${creating ? 'Create agent' : 'Save'}</button>
       </div>
     </form>`;
@@ -298,7 +305,7 @@ function renderForm(agent, copy = false) {
     // just been renamed, so echoing what was typed would lose the selection.
     selectedName = body.name || '';
     agents = creating
-      ? [...agents, body]
+      ? [...agents.filter(agent => agent.name !== body.name), body]
       : agents.map(agent => (agent.name === value.name ? body : agent));
     // Refresh only the list. Re-rendering the form here would reset focus, the
     // caret, and any height the user dragged the textarea to — and would wipe
@@ -307,7 +314,7 @@ function renderForm(agent, copy = false) {
     // start issuing PUTs.
     value.name = body.name;
     renderList();
-    if (creating) {
+    if (creating || value.builtin) {
       renderForm(body);
     }
     const save = document.querySelector('#agent-editor .agent-save');
@@ -317,14 +324,17 @@ function renderForm(agent, copy = false) {
     if (confirmDiscard()) renderForm(value, true);
   });
   host.querySelector('.agent-delete')?.addEventListener('click', async () => {
-    if (!confirm(`Delete agent “${value.name}”? Existing sessions are not affected.`)) return;
+    const ask = isDefault
+      ? 'Reset the default agent to the built-in one? Existing sessions are not affected.'
+      : `Delete agent “${value.name}”? Existing sessions are not affected.`;
+    if (!confirm(ask)) return;
     const response = await fetch('/api/agents/' + encodeURIComponent(value.name), {method: 'DELETE'});
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       showError(body.error || ('HTTP ' + response.status));
       return;
     }
-    selectedName = '';
+    selectedName = isDefault ? value.name : '';
     await loadAgents();
   });
 }
@@ -357,7 +367,7 @@ async function renderAgentsPane(host) {
     <div class="cfg-pane">
       <div class="cfg-pane-list">
         <div class="cfg-pane-heading">
-          <p class="cfg-intro">Reusable defaults for new sessions.</p>
+          <p class="cfg-intro">Reusable defaults for new sessions. <code>default</code> is used when nothing else is asked for.</p>
           <button id="agent-new" type="button">+ new</button>
         </div>
         <div id="agent-list"></div>

@@ -562,7 +562,8 @@ export async function showNewSession(opts = {}) {
     modelCatalogs = (models && models.models) || {};
     restoreSavedChoice();
 
-    agentProfiles = (agents && agents.agents) || [];
+    // The default agent is offered once it says something "custom" does not.
+    agentProfiles = ((agents && agents.agents) || []).filter(a => !a.builtin);
     if (agentName && !agentProfiles.some(a => a.name === agentName)) {
       // Stale link (agent renamed or deleted): fall back to a custom session
       // rather than letting submit fail on a name the server won't resolve.

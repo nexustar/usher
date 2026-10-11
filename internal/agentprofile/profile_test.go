@@ -78,6 +78,21 @@ func TestResolveCarriesAutoApprove(t *testing.T) {
 	}
 }
 
+func TestResolveBackendOverrideDropsModelAndFlags(t *testing.T) {
+	store := New([]Profile{{
+		Name: "opus", Backend: "claude", Model: "opus", ExtraArgs: []string{"--tools", ""},
+		AppendSystemPrompt: "be brief", AutoApprove: true,
+	}})
+	got, err := store.Resolve("opus", "", "codex", "")
+	want := core.CreateOptions{Backend: "codex", AppendSystemPrompt: "be brief", AutoApprove: true}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
+	}
+	if got, _ := store.Resolve("opus", "", "claude", ""); got.Model != "opus" || len(got.ExtraArgs) != 2 {
+		t.Fatalf("same backend lost the agent's model or flags: %+v", got)
+	}
+}
+
 func TestResolveUnknown(t *testing.T) {
 	_, err := New(nil).Resolve("missing", "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
@@ -138,7 +153,7 @@ func TestCRUDPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := reloaded.List()
-	if len(got) != 1 || !reflect.DeepEqual(got[0], updated) {
+	if len(got) != 2 || !got[0].Builtin || !reflect.DeepEqual(got[1], updated) {
 		t.Fatalf("reloaded = %+v, want %+v", got, updated)
 	}
 	if err := reloaded.Delete("dev"); err != nil {
@@ -148,7 +163,7 @@ func TestCRUDPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := empty.List(); len(got) != 0 {
+	if got := empty.List(); len(got) != 1 || !got[0].Builtin {
 		t.Fatalf("after delete = %+v", got)
 	}
 }
@@ -227,7 +242,64 @@ func TestUpdateRenames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := reloaded.List(); len(got) != 2 || got[0].Name != "Typo" {
+	if got := reloaded.List(); len(got) != 3 || got[1].Name != "Typo" {
 		t.Fatalf("persisted = %+v", got)
+	}
+}
+
+// The default agent always exists: built in until one is stored, and it is
+// what a request that says nothing about what to run is created from.
+func TestDefaultAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetDefaultBackend("codex")
+
+	if got := store.List(); len(got) != 1 || got[0].Name != DefaultName || !got[0].Builtin || got[0].Backend != "codex" {
+		t.Fatalf("List = %+v", got)
+	}
+	got, err := store.Resolve("", "/w", "", "")
+	if want := (core.CreateOptions{Backend: "codex", Cwd: "/w"}); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
+	}
+	if err := store.Delete(DefaultName); err == nil {
+		t.Fatal("the built-in default was deleted")
+	}
+
+	// Saving it stores it; its prompt then reaches every unnamed request, but
+	// not one that names a backend or a model.
+	saved, err := store.Update(DefaultName, Profile{Backend: "pi", Model: "luna", AppendSystemPrompt: "be brief"})
+	if err != nil || saved.Builtin {
+		t.Fatalf("Update = %+v, %v", saved, err)
+	}
+	if _, err := store.Update(DefaultName, Profile{Name: "other"}); err == nil {
+		t.Fatal("the default agent was renamed")
+	}
+	got, _ = store.Resolve("", "", "", "")
+	if want := (core.CreateOptions{Backend: "pi", Model: "luna", AppendSystemPrompt: "be brief"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, want %+v", got, want)
+	}
+	for _, req := range [][2]string{{"claude", ""}, {"", "opus"}} {
+		got, _ := store.Resolve("", "", req[0], req[1])
+		if want := (core.CreateOptions{Backend: req[0], Model: req[1]}); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Resolve(%v) = %+v, want %+v", req, got, want)
+		}
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.List(); len(got) != 1 || got[0].Builtin || got[0].Model != "luna" {
+		t.Fatalf("reloaded = %+v", got)
+	}
+
+	// Deleting the stored one brings the built-in back.
+	if err := store.Delete(DefaultName); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.List(); len(got) != 1 || !got[0].Builtin {
+		t.Fatalf("after reset = %+v", got)
 	}
 }

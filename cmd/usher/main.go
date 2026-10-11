@@ -307,6 +307,7 @@ func serve(args []string) error {
 		time.Duration(*autoArchiveDays)*24*time.Hour,
 	)
 	term := terminal.New("tmux", *tmuxSocket+"-terminal", *terminalShell, logger)
+	agents.SetDefaultBackend(defaultBackend)
 	r := router.New(d, backends, defaultBackend, b, h, meta, term)
 	r.SetSettings(settings.New(filepath.Join(*dataDir, "settings.json")), filepath.Join(*dataDir, "router"))
 

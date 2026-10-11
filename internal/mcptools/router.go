@@ -113,8 +113,12 @@ func RouterTools() []Tool {
 					"description": "The directory the user named, or the project the work belongs to. " +
 						"Omit it for work tied to no project (it then runs in the temp directory); never a path you made up."},
 				"initial_message": userWords,
-				"backend":         map[string]any{"type": "string", "enum": []string{"claude", "codex", "pi"}, "description": onRequest},
-				"model":           map[string]any{"type": "string", "description": onRequest},
+				"agent": map[string]any{"type": "string",
+					"description": "A named set of session defaults the user configured: backend, model, cwd and more. " +
+						"Only when the user names one; an unknown name fails with the names there are. " +
+						"cwd, backend and model given alongside override the agent's."},
+				"backend": map[string]any{"type": "string", "enum": []string{"claude", "codex", "pi"}, "description": onRequest},
+				"model":   map[string]any{"type": "string", "description": onRequest},
 			}, "initial_message"),
 		},
 		{
@@ -281,9 +285,8 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 			bounded(args.Limit, 20, 100), bounded(args.ContextChars, 120, 500))
 
 	case "create_session":
-		// Not pluginapi.CreateRequest: that also carries agent, which stays out
-		// of the model's reach.
 		var args struct {
+			Agent          string `json:"agent"`
 			Cwd            string `json:"cwd"`
 			InitialMessage string `json:"initial_message"`
 			Backend        string `json:"backend"`
@@ -296,7 +299,7 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 			return nil, errors.New("initial_message is required")
 		}
 		out, err := api.RouteNewSession(pluginapi.CreateRequest{
-			Cwd: args.Cwd, InitialMessage: args.InitialMessage,
+			Agent: args.Agent, Cwd: args.Cwd, InitialMessage: args.InitialMessage,
 			Backend: args.Backend, Model: args.Model,
 		})
 		if err != nil {
