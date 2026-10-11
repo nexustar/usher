@@ -270,8 +270,12 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if args.SessionID == "" {
 			return nil, errors.New("session_id is required")
 		}
+		sess, err := resolveSession(api, args.SessionID)
+		if err != nil {
+			return nil, err
+		}
 		limit := bounded(args.Limit, 20, 200)
-		page, err := api.ReadTurns(args.SessionID, args.Before, args.From, limit)
+		page, err := api.ReadTurns(sess.ID, args.Before, args.From, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -300,6 +304,13 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		}
 		if strings.TrimSpace(args.Query) == "" {
 			return nil, errors.New("query is required")
+		}
+		if args.SessionID != "" {
+			sess, err := resolveSession(api, args.SessionID)
+			if err != nil {
+				return nil, err
+			}
+			args.SessionID = sess.ID
 		}
 		// The server clamps further for cross-session searches; no need to
 		// mirror its ceilings here.
@@ -377,6 +388,11 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if args.SessionID == "" {
 			return nil, errors.New("session_id is required")
 		}
+		sess, err := resolveSession(api, args.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		args.SessionID = sess.ID
 		if err := notRouter(api, args.SessionID); err != nil {
 			return nil, err
 		}
@@ -398,6 +414,11 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if args.SessionID == "" {
 			return nil, errors.New("session_id is required")
 		}
+		sess, err := resolveSession(api, args.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		args.SessionID = sess.ID
 		if err := api.SetArchived(args.SessionID, args.Archived); err != nil {
 			return nil, err
 		}
@@ -510,15 +531,22 @@ func resolveSession(api *pluginapi.Client, query string) (pluginapi.SessionView,
 	if err != nil {
 		return pluginapi.SessionView{}, err
 	}
-	var matches []pluginapi.SessionView
+	// An id, whole or as a prefix, wins over a title that happens to contain
+	// it — a session asked to "message 6304903c" mentions that id in its title.
+	var byID, matches []pluginapi.SessionView
 	lower := strings.ToLower(query)
 	for _, sess := range all {
 		if sess.ID == query {
 			return sess, nil
 		}
-		if strings.HasPrefix(sess.ID, query) || strings.Contains(strings.ToLower(sess.Title), lower) {
+		if strings.HasPrefix(sess.ID, query) {
+			byID = append(byID, sess)
+		} else if strings.Contains(strings.ToLower(sess.Title), lower) {
 			matches = append(matches, sess)
 		}
+	}
+	if len(byID) > 0 {
+		matches = byID
 	}
 	if len(matches) == 0 {
 		return pluginapi.SessionView{}, fmt.Errorf("session not found: %s", query)

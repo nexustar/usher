@@ -15,8 +15,8 @@ next to `mcp.json` in the data dir — passed as spawn arguments; for Codex the
 same registration as config overrides in its thread/start and thread/resume
 params; for pi a generated bridge extension (pi has no MCP) that bakes in the
 tool catalog and forwards each call to a spawned
-`usher mcp-stdio --router-tools`. Which agent the router is created from is
-[an instance setting](agents.md#the-router-agent); the flag stays available by
+`usher mcp-stdio --router-tools`. What the router runs on is
+[an instance setting](agents.md#the-router-session); the flag stays available by
 hand for driving a `claude` started outside usher.
 
 ## Replies come back asynchronously — and not through the model
@@ -77,8 +77,8 @@ knowing before adding any other server-side prompt rewriting.
 
 ## Test through usher
 
-Start a router session — from the built-in router agent, or the one chosen
-with `PUT /api/router`:
+Start a router session, on the backend and model chosen with `PUT /api/router`
+(or usher's defaults):
 
 ```sh
 curl -sS -X POST localhost:8080/api/router \

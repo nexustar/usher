@@ -11,9 +11,9 @@ func TestRouterSettingsPersist(t *testing.T) {
 	if got := s.Router(); got != (Router{}) {
 		t.Fatalf("fresh settings = %+v", got)
 	}
-	s.SetRouterAgent("main")
+	s.SetRouterModel("claude", "haiku")
 	s.SetRouterSession("router-1")
-	if got, want := New(path).Router(), (Router{Agent: "main", SessionID: "router-1"}); got != want {
+	if got, want := New(path).Router(), (Router{Backend: "claude", Model: "haiku", SessionID: "router-1"}); got != want {
 		t.Fatalf("reloaded = %+v, want %+v", got, want)
 	}
 }

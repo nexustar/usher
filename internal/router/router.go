@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -135,8 +136,8 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 	return r
 }
 
-// SetSettings attaches the instance settings; routerDir is the cwd of a router
-// session whose agent names none. The router designation outlives usher, so
+// SetSettings attaches the instance settings; routerDir is the cwd router
+// sessions run in. The router designation outlives usher, so
 // this hands the routing tools back before the router session is resumed.
 func (r *Router) SetSettings(s *settings.Store, routerDir string) {
 	r.settings = s
@@ -591,40 +592,67 @@ func (r *Router) RouterSession() string {
 	return id
 }
 
-// StartRouter creates a session as the router, replacing the current one: the
-// previous router is an ordinary session from its next cold start.
-func (r *Router) StartRouter(o core.CreateOptions) (string, error) {
+// routerPrompt and routerArgs make the router session what it is on every
+// backend: a session that can only route, because its local tools are taken
+// away.
+const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
+	"route it to a session with the usher tools, creating one when none fits."
+
+var routerArgs = map[string][]string{
+	// No built-in tool at all, and no MCP server but usher's own.
+	"claude": {"--tools", "", "--strict-mcp-config"},
+	"codex":  {"--sandbox", "read-only", "--ask-for-approval", "never"},
+	"pi":     {"--no-builtin-tools"},
+}
+
+// StartRouter creates the router session with prompt as its first message,
+// replacing the current one: the previous router is an ordinary session from
+// its next cold start. It runs on the configured router backend and model.
+func (r *Router) StartRouter(prompt string) (string, error) {
 	if r.settings == nil {
 		return "", errors.New("router sessions are not configured")
 	}
-	o.Router = true
-	if o.Cwd == "" {
-		if err := os.MkdirAll(r.routerDir, 0o700); err != nil {
-			return "", err
-		}
-		o.Cwd = r.routerDir
+	backend, model := r.RouterModel()
+	if backend == "" {
+		backend = r.defaultBackend
 	}
-	return r.StartSession(o)
+	if _, ok := r.backends[backend]; !ok {
+		return "", fmt.Errorf("backend %q is not available", backend)
+	}
+	if err := os.MkdirAll(r.routerDir, 0o700); err != nil {
+		return "", err
+	}
+	return r.StartSession(core.CreateOptions{
+		Backend: backend, Model: model, Cwd: r.routerDir, InitialMessage: prompt,
+		AppendSystemPrompt: routerPrompt, ExtraArgs: slices.Clone(routerArgs[backend]),
+		Router: true,
+	})
 }
 
-// RouterAgent names the agent new router sessions are created from; empty is
-// the built-in router agent.
-func (r *Router) RouterAgent() string {
+// RouterModel is the backend and model new router sessions run on; empty
+// means usher's default backend and the backend's default model.
+func (r *Router) RouterModel() (backend, model string) {
 	if r.settings == nil {
-		return ""
+		return "", ""
 	}
-	return r.settings.Router().Agent
+	s := r.settings.Router()
+	return s.Backend, s.Model
 }
 
-func (r *Router) SetRouterAgent(name string) {
-	if r.settings != nil {
-		r.settings.SetRouterAgent(name)
+// SetRouterModel chooses what new router sessions run on. The current router
+// session keeps what it started with.
+func (r *Router) SetRouterModel(backend, model string) error {
+	if r.settings == nil {
+		return errors.New("router sessions are not configured")
 	}
-}
-
-// DefaultBackend is the backend a create request that names none runs on.
-func (r *Router) DefaultBackend() string {
-	return r.defaultBackend
+	if _, ok := r.backends[backend]; backend != "" && !ok {
+		return fmt.Errorf("backend %q is not available", backend)
+	}
+	if model == "default" {
+		model = ""
+	}
+	r.settings.SetRouterModel(backend, model)
+	return nil
 }
 
 func (r *Router) Archive(sessionID string)       { r.meta.Archive(sessionID) }
@@ -1478,9 +1506,12 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 	}
 	q := []rune(query)
 	var results []core.SessionSearchResult
+	// The router session is the one asking: its own conversation repeats every
+	// query it was given, so it would match them all.
+	asking := r.routerInbox()
 	for _, s := range r.ListSessions() {
 		path, ok := r.discovery.Path(s.ID)
-		if !ok {
+		if !ok || s.ID == asking {
 			continue
 		}
 		turns, err := r.readTurnsForBackend(path, r.backendOf(s.ID), 0)

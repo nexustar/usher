@@ -1244,14 +1244,20 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
 // showDetail — or, when there is none (or the user asked for a new one), a
 // bare composer whose first message creates it.
 export async function showRouter(fresh) {
-  let routerID = '';
-  if (!fresh) {
+  let router = {};
+  try {
+    const res = await fetch('/api/config');
+    if (res.ok) router = (await res.json()).router || {};
+  } catch { /* fall through to the empty view */ }
+  if (!fresh && router.session_id) return showDetail(router.session_id);
+  // Until a backend is chosen for the router, the first conversation picks it.
+  let catalog = null;
+  if (!router.backend) {
     try {
-      const res = await fetch('/api/config');
-      if (res.ok) routerID = ((await res.json()).router || {}).session_id || '';
-    } catch { /* fall through to the empty view */ }
+      const res = await fetch('/api/models');
+      if (res.ok) catalog = await res.json();
+    } catch { /* no picker: usher's defaults apply */ }
   }
-  if (routerID) return showDetail(routerID);
 
   ++detailEpoch;
   clearListInterval();
@@ -1266,6 +1272,10 @@ export async function showRouter(fresh) {
         <div class="composer">
           <textarea id="prompt" rows="1" placeholder="message…"></textarea>
           <div class="composer-bar">
+            <div class="composer-tools router-model" id="router-model-picker" hidden>
+              <select id="router-backend" aria-label="Router backend"></select>
+              <select id="router-model" aria-label="Router model"></select>
+            </div>
             <div class="composer-send"><button id="send">send</button></div>
           </div>
         </div>
@@ -1274,6 +1284,21 @@ export async function showRouter(fresh) {
   `;
   const promptEl = document.getElementById('prompt');
   const sendBtn = document.getElementById('send');
+  const backendEl = document.getElementById('router-backend');
+  const modelEl = document.getElementById('router-model');
+  if (catalog && (catalog.backends || []).length) {
+    const option = (value, label) => `<option value="${esc(value)}">${esc(label)}</option>`;
+    const fillModels = () => {
+      const models = (catalog.models || {})[backendEl.value] || [];
+      modelEl.innerHTML = models.length
+        ? models.map(m => option(m.id, m.display_name || m.id)).join('')
+        : option('default', 'Default');
+    };
+    backendEl.innerHTML = catalog.backends.map(b => option(b, b.charAt(0).toUpperCase() + b.slice(1))).join('');
+    fillModels();
+    backendEl.addEventListener('change', fillModels);
+    document.getElementById('router-model-picker').hidden = false;
+  }
   restoreDraft(promptEl);
   const start = async () => {
     const text = promptEl.value.trim();
@@ -1283,7 +1308,10 @@ export async function showRouter(fresh) {
       const res = await fetch('/api/router', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initial_message: text }),
+        // A choice made here becomes the router setting.
+        body: JSON.stringify(catalog && backendEl.value
+          ? { initial_message: text, backend: backendEl.value, model: modelEl.value }
+          : { initial_message: text }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);

@@ -2027,8 +2027,9 @@ pre.raw-markdown {
 .tool-sessions { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: var(--font-meta); }
 .chat-message.routed.pending .role { color: var(--text-faint); }
 .router-empty { padding: 0.5rem; }
-.cfg-router { display: flex; align-items: center; gap: 0.75rem; }
-.cfg-router select { flex: 1; min-width: 0; font-size: 16px; }
+.settings-row-selects { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
+.settings-row-selects select, .router-model select { font-size: 16px; max-width: 12rem; }
+.router-model { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .cfg-field-hint {
   color: var(--text-faint);
   line-height: 1.5;

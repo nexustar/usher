@@ -72,25 +72,23 @@ GUI and API changes are written atomically and take effect immediately.
 Unknown agent names, unavailable backends, and invalid models cause session
 creation to fail rather than falling back silently.
 
-## The router agent
+## The router session
 
 usher has one **router session**: it holds the session-routing MCP tools
 (`list_sessions`, `send_to_session`, `create_session`, …) on top of the ordinary
 `show_image`, and every session it routes work to delivers its reply back into
-it. Which agent it is created from is an instance setting, not a property of
-the agent: pick it under Settings → Agents, or
+it. It is not created from an agent. usher gives it a routing persona and takes
+its backend's local tools away (the recipes below), so it can only route; what
+is left to choose is the backend and model it runs on, under Settings → General
+or
 
 ```sh
 curl -sS -X PUT localhost:8080/api/router \
-  -H 'Content-Type: application/json' -d '{"agent":"main"}'
+  -H 'Content-Type: application/json' -d '{"backend":"claude","model":"haiku"}'
 ```
 
-With no agent set, usher uses a built-in one: the default backend, a routing
-persona, and that backend's local tools taken away (the recipes below), so it
-can only route. An agent of your own needs the persona in its
-`append_system_prompt` — the tools describe themselves, but only the prompt
-keeps the model from answering questions instead of handing them to a session.
-An agent that names no `cwd` runs in `router/` under the data directory.
+Unset, it runs on the default backend and that backend's default model. It runs
+in `router/` under the data directory.
 
 Starting a router session replaces the current one, which becomes an ordinary
 session from its next cold start. The setting and the current router session
@@ -102,10 +100,12 @@ what the tools promise.
 
 ### Restricting local tools
 
-A router should not be able to answer questions itself, and a
-"read-only analyst" should not write. Both are per-backend `extra_args`
-recipes — supervision of the model, not a security boundary against the
-authenticated user:
+The router cannot answer questions itself: on Claude it gets no built-in tool
+and no MCP server but usher's own (`--tools "" --strict-mcp-config`), on Codex
+and pi the recipes below. An agent of your own — a "read-only analyst", say —
+is restricted the same way, through per-backend `extra_args`. This is
+supervision of the model, not a security boundary against the authenticated
+user:
 
 - **Claude**: `["--disallowedTools", "Bash,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,Agent,WebFetch,WebSearch"]`
   removes tools by name; `mcp__usher__*` tools are unaffected. Drop entries to

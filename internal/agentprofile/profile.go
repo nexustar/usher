@@ -248,29 +248,6 @@ func (s *Store) persistLocked() error {
 	return nil
 }
 
-// routerPrompt and builtinRouterArgs make the built-in router agent: a session
-// that can only route, because each backend's local tools are taken away.
-const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
-	"route it to a session with the usher tools, creating one when none fits."
-
-var builtinRouterArgs = map[string][]string{
-	"claude": {"--disallowedTools", "Bash,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,Agent,WebFetch,WebSearch"},
-	"codex":  {"--sandbox", "read-only", "--ask-for-approval", "never"},
-	"pi":     {"--no-builtin-tools"},
-}
-
-// ResolveRouter returns the options for a new router session: the agent called
-// name, or the built-in router agent on backend when name is empty.
-func (s *Store) ResolveRouter(name, backend string) (core.CreateOptions, error) {
-	if name != "" {
-		return s.Resolve(name, "", "", "")
-	}
-	return core.CreateOptions{
-		Backend: backend, AppendSystemPrompt: routerPrompt,
-		ExtraArgs: append([]string(nil), builtinRouterArgs[backend]...),
-	}, nil
-}
-
 // Resolve turns one create request into session options: non-empty request
 // fields override the named agent's defaults, and an empty name passes them
 // through unchanged. The "default" model sentinel is normalized last, so it

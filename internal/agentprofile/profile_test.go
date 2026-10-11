@@ -78,24 +78,6 @@ func TestResolveCarriesAutoApprove(t *testing.T) {
 	}
 }
 
-// With no agent named, the router is the built-in one: the backend's local
-// tools are taken away, so it can only route.
-func TestResolveRouter(t *testing.T) {
-	store := New([]Profile{{Name: "main", Cwd: "/w", Backend: "codex"}})
-	got, err := store.ResolveRouter("main", "claude")
-	if err != nil || got.Backend != "codex" || got.Cwd != "/w" {
-		t.Fatalf("ResolveRouter(main) = %+v, %v", got, err)
-	}
-	builtin, err := store.ResolveRouter("", "claude")
-	if err != nil || builtin.Backend != "claude" || builtin.AppendSystemPrompt == "" ||
-		len(builtin.ExtraArgs) != 2 || builtin.ExtraArgs[0] != "--disallowedTools" {
-		t.Fatalf("ResolveRouter() = %+v, %v", builtin, err)
-	}
-	if _, err := store.ResolveRouter("missing", "claude"); err == nil {
-		t.Fatal("an unknown router agent resolved")
-	}
-}
-
 func TestResolveUnknown(t *testing.T) {
 	_, err := New(nil).Resolve("missing", "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "unknown agent") {

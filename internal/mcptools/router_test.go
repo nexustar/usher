@@ -304,3 +304,36 @@ func TestCallRouterCannotApproveItself(t *testing.T) {
 		t.Fatal("approving another session was refused")
 	}
 }
+
+// A session whose title mentions another session's id must not make that id
+// ambiguous.
+func TestResolvePrefersIDOverTitle(t *testing.T) {
+	f := pluginapitest.NewFakeRouter()
+	f.AddSession(core.Session{ID: "6304903c-aaaa", Title: "worker"})
+	f.AddSession(core.Session{ID: "a692bb2c-bbbb", Title: "Ask session 6304903c to reply"})
+	r := start(t, f)
+	got := call(t, r, "resolve_session", `{"session_id":"6304903c"}`).(map[string]any)
+	if got["session_id"] != "6304903c-aaaa" {
+		t.Fatalf("resolved %v", got)
+	}
+}
+
+// Every tool that names a session takes what the user types: usually the
+// first characters of its id.
+func TestCallsAcceptAnIDPrefix(t *testing.T) {
+	f := pluginapitest.NewFakeRouter()
+	f.AddSession(core.Session{ID: "5b6434b5-aaaa", Title: "deploy notes"})
+	r := start(t, f)
+
+	if page := call(t, r, "read_session_transcript", `{"session_id":"5b6434b5"}`).(transcriptPage); len(page.Turns) != 1 {
+		t.Fatalf("transcript by prefix = %+v", page)
+	}
+	if found := call(t, r, "search_sessions", `{"session_id":"5b6434b5","query":"deploy"}`).(pluginapi.SearchResult); found.SessionID != "5b6434b5-aaaa" {
+		t.Fatalf("search by prefix = %+v", found)
+	}
+	call(t, r, "set_archived", `{"session_id":"5b6434b5","archived":true}`)
+	call(t, r, "set_auto_approve", `{"session_id":"5b6434b5","enabled":true}`)
+	if !f.IsArchived("5b6434b5-aaaa") || !f.IsAutoApprove("5b6434b5-aaaa") {
+		t.Fatal("flags set by prefix did not reach the session")
+	}
+}

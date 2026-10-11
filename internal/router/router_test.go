@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1045,16 +1046,24 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 	routerDir := filepath.Join(t.TempDir(), "router")
 	r.SetSettings(settings.New(settingsPath), routerDir)
 
-	// A router agent that names no cwd runs in usher's own router directory.
-	id, err := r.StartRouter(core.CreateOptions{InitialMessage: "hi"})
+	// The router runs in usher's own directory, on the configured model, with
+	// its routing persona and without the backend's local tools.
+	if err := r.SetRouterModel("codex", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetRouterModel("nope", ""); err == nil {
+		t.Fatal("an unavailable router backend was accepted")
+	}
+	id, err := r.StartRouter("hi")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !rt.req.Router {
 		t.Fatal("StartRequest.Router was not passed to the backend")
 	}
-	if rt.req.Cwd != routerDir {
-		t.Fatalf("router cwd = %q, want %q", rt.req.Cwd, routerDir)
+	if rt.req.Cwd != routerDir || rt.req.Model != "" || rt.req.AppendSystemPrompt == "" ||
+		!slices.Equal(rt.req.ExtraArgs, routerArgs["codex"]) {
+		t.Fatalf("router start request = %+v", rt.req)
 	}
 	if got := r.RouterSession(); got != id {
 		t.Fatalf("designated router = %q, want %q", got, id)
