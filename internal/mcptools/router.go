@@ -119,15 +119,16 @@ func RouterTools() []Tool {
 		},
 		{
 			Name: "create_session",
-			Description: "Create a coding-agent session in an explicit cwd and send its initial instruction. " +
-				"Use when the work fits no existing session. The cwd must already exist. " +
-				"Returns the new session id immediately. " + deliver,
+			Description: "Create a coding-agent session and send its initial instruction. " +
+				"Use when the work fits no existing session. Pass cwd when the user names a directory or the work " +
+				"belongs to a project — it must already exist; leave it out for work tied to no project, which then " +
+				"runs in the system temp directory. Returns the new session id immediately. " + deliver,
 			InputSchema: object(map[string]any{
 				"cwd":             map[string]any{"type": "string"},
 				"initial_message": map[string]any{"type": "string"},
 				"backend":         map[string]any{"type": "string", "enum": []string{"claude", "codex", "pi"}},
 				"model":           map[string]any{"type": "string"},
-			}, "cwd", "initial_message"),
+			}, "initial_message"),
 		},
 		{
 			Name:        "list_pending_interactions",
@@ -330,8 +331,8 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 		if err := decode(raw, &args); err != nil {
 			return nil, err
 		}
-		if args.Cwd == "" || args.InitialMessage == "" {
-			return nil, errors.New("cwd and initial_message are required")
+		if args.InitialMessage == "" {
+			return nil, errors.New("initial_message is required")
 		}
 		out, err := api.RouteNewSession(pluginapi.CreateRequest{
 			Cwd: args.Cwd, InitialMessage: args.InitialMessage,

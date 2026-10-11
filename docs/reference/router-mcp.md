@@ -13,9 +13,8 @@ ordinary coding sessions. Only the session designated as usher's router gets a
 registration with it: for Claude a second config file — `mcp-router.json`,
 next to `mcp.json` in the data dir — passed as spawn arguments; for Codex the
 same registration as config overrides in its thread/start and thread/resume
-params; for pi a generated bridge extension (pi has no MCP) that bakes in the
-tool catalog and forwards each call to a spawned
-`usher mcp-stdio --router-tools`. What the router runs on is
+params; for pi a generated extension that registers it with pi's own MCP
+support, its tools declared to the model directly. What the router runs on is
 [an instance setting](agents.md#the-router-session); the flag stays available by
 hand for driving a `claude` started outside usher.
 

@@ -1088,11 +1088,6 @@ pre.raw-markdown {
 }
 .chat-message.system.compaction > span { white-space: nowrap; }
 .chat-message.system.compaction .ts { margin-left: 0.4rem; }
-/* Relay: a routed session's reply, shown verbatim in the router conversation.
-   The source link names the session that is speaking. */
-.chat-message.relay { border-left: 2px solid var(--claude); padding-left: 0.5rem; }
-.chat-message.relay .role a.relay-source { color: var(--claude); text-decoration: none; text-transform: none; letter-spacing: 0; }
-.chat-message.relay .role a.relay-source:hover { text-decoration: underline; }
 /* Grouped assistant turn: tool parts render as collapsible <details> within the
    single assistant card. Edit/Write expand by default; others collapse. */
 .chat-message.assistant .tool-details {
@@ -1493,6 +1488,8 @@ pre.raw-markdown {
 .interaction { padding: 0.75rem 0; border-top: 1px solid var(--border-muted); }
 .interaction:first-of-type { border-top: 0; }
 .interaction .meta { margin-bottom: 0.4rem; }
+.interaction .meta .interaction-source { margin-left: 0.5rem; color: var(--text-muted); font-size: var(--font-sm); text-decoration: none; }
+.interaction .meta .interaction-source:hover { text-decoration: underline; }
 .interaction .meta .muted { margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--font-sm); }
 .interaction .tool-input {
   background: var(--bg-subtle);
@@ -2019,13 +2016,92 @@ pre.raw-markdown {
 }
 .cfg-form-advanced[open] summary { margin-bottom: 1.15rem; }
 .cfg-form-advanced label + label { margin-top: 1.15rem; }
-/* Work handed to another session: a marker where it was routed, and the reply
- * as its own message where it landed. */
-.routed-part { color: var(--text-muted); font-size: var(--font-meta); }
-.routed-open { color: var(--text-faint); }
-.routed-part .routed-open { margin-left: 0.25rem; }
-.tool-sessions { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: var(--font-meta); }
-.chat-message.routed.pending .role { color: var(--text-faint); }
+/* Work handed to another session. The marker is a row in the tool-block
+ * family; the reply is a card that names its speaker first, as the user's
+ * bubble does by sitting on the right. */
+.routed-part {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border-muted);
+  border-radius: 12px;
+  color: var(--text-muted);
+  font-size: var(--font-meta);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.routed-part:hover { background: var(--bg-hover); }
+.routed-arrow { color: var(--text-faint); }
+.tool-sessions { display: flex; flex-direction: column; margin: 0.25rem 0 0.5rem; }
+.tool-session {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  min-width: 0;
+}
+.tool-session:hover { background: var(--bg-hover); }
+.tool-session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tool-session-cwd {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--font-meta);
+}
+.chat-message.routed {
+  width: fit-content;
+  max-width: min(92%, 760px);
+  margin: 0.5rem 0.25rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+}
+.routed-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--font-meta);
+  color: var(--text-faint);
+  min-width: 0;
+}
+.routed-head .relay-source {
+  color: var(--text-muted);
+  font-weight: 600;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.routed-head .relay-source:hover { text-decoration: underline; }
+.routed-head .ts { flex-shrink: 0; }
+.routed-body { margin-top: 0.3rem; max-height: 14rem; overflow: hidden; }
+.chat-message.routed.open .routed-body { max-height: none; }
+.chat-message.routed.clipped:not(.open) .routed-body {
+  -webkit-mask-image: linear-gradient(#000 75%, transparent);
+  mask-image: linear-gradient(#000 75%, transparent);
+}
+.routed-more {
+  margin-top: 0.3rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: var(--font-meta);
+  cursor: pointer;
+}
+.routed-state { margin-top: 0.3rem; color: var(--text-faint); font-size: var(--font-meta); }
 .router-empty { padding: 0.5rem; }
 .settings-row-selects { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
 .settings-row-selects select, .router-model select { font-size: 16px; max-width: 12rem; }

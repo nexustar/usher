@@ -3,7 +3,7 @@
 import {
   esc, root, subtitle, closeES, closeTerminalES, clearListInterval,
   currentDetailId, setCurrentDetailId, setCurrentDraftKey,
-  setSuppressAppendScroll,
+  setSuppressAppendScroll, setRoutedTargets,
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
   registerRefreshSubtitle,
@@ -11,7 +11,7 @@ import {
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
   forkBtnHTML, updateMessageTs,
-  backendMark,
+  backendMark, statusDot,
 } from './render.js';
 import { openTerminalScreen, wireTerminalControls, measureCols } from './terminal.js';
 import { loadSidebar } from './sidebar.js';
@@ -641,6 +641,7 @@ export async function showDetail(id) {
   detailStreaming = false;
   routedSig = '';
   clearTimeout(routedTimer);
+  setRoutedTargets([]);
   subtitle.textContent = 'session detail';
 
   let sess;
@@ -1712,22 +1713,40 @@ const ROUTING_TOOL = /(^|__)(send_to_session|create_session)$/;
 let routedSig = '';
 let routedTimer = null;
 
+// Replies the reader expanded, so re-placing them does not fold them again.
+const routedOpen = new Set();
+
 function routedReplyNode(rr) {
   const div = document.createElement('div');
   const done = rr.done && rr.reply;
-  div.className = 'chat-message relay routed' + (done ? '' : ' pending');
+  div.className = 'chat-message routed' + (done ? '' : ' pending');
   const name = esc(rr.title || 'session ' + rr.session_id.slice(0, 8));
-  const source = `<a class="relay-source" href="#/s/${esc(encodeURIComponent(rr.session_id))}">${name}</a>`;
+  const href = '#/s/' + esc(encodeURIComponent(rr.session_id));
+  const ts = done && rr.ts ? `<span class="ts">${esc(new Date(rr.ts).toLocaleString())}</span>` : '';
+  const head = `<div class="routed-head">${backendMark(rr.backend)}<a class="relay-source" href="${href}">${name}</a>${ts}</div>`;
   if (!done) {
-    div.innerHTML = `<div class="role">${source} is working…</div>`;
+    const state = rr.status === 'awaiting_permission' ? 'waiting for approval' : 'working…';
+    div.innerHTML = head + `<div class="routed-state">${statusDot('running')} ${state}</div>`;
     return div;
   }
-  const ts = rr.ts ? `<span class="ts">${esc(new Date(rr.ts).toLocaleString())}</span>` : '';
-  div.innerHTML =
-    `<div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div>` +
-    `<div class="role">${source}${ts}</div>`;
+  const key = rr.turn + ':' + rr.part;
+  div.dataset.key = key;
+  if (routedOpen.has(key)) div.classList.add('open');
+  div.innerHTML = head +
+    `<div class="routed-body"><div class="content" data-raw="${esc(rr.reply)}">${renderMarkdown(rr.reply)}</div></div>` +
+    `<button class="routed-more" type="button" hidden>show more</button>`;
   return div;
 }
+
+// A long reply is folded; the control appears only when there is more to see.
+document.addEventListener('click', (e) => {
+  const more = e.target.closest?.('.routed-more');
+  if (!more) return;
+  const card = more.closest('.routed');
+  const open = card.classList.toggle('open');
+  more.textContent = open ? 'show less' : 'show more';
+  if (open) routedOpen.add(card.dataset.key); else routedOpen.delete(card.dataset.key);
+});
 
 async function syncRouted(id) {
   clearTimeout(routedTimer);
@@ -1737,6 +1756,7 @@ async function syncRouted(id) {
   if (!routes) {
     el.querySelectorAll(':scope > .routed').forEach(n => n.remove());
     routedSig = '';
+    setRoutedTargets([]);
     return;
   }
   const first = renderedTurns.find(r => r.cursor);
@@ -1748,6 +1768,7 @@ async function syncRouted(id) {
     replies = await res.json();
   } catch { return; }
   if (id !== currentDetailId) return;
+  setRoutedTargets(replies.map(rr => rr.session_id));
   // Placement depends on the turns around a reply, so they are part of what
   // "unchanged" means.
   const sig = JSON.stringify(replies) + '|' + renderedTurns.map(r => r.cursor || '').join(',');
@@ -1766,9 +1787,24 @@ async function syncRouted(id) {
         const landed = Date.parse(rr.ts || '') || 0;
         before = renderedTurns.slice(at + 1).find(r => (Date.parse(r.time || '') || 0) > landed);
       }
-      el.insertBefore(routedReplyNode(rr), before ? before.node : anchor);
+      const node = routedReplyNode(rr);
+      el.insertBefore(node, before ? before.node : anchor);
+      const body = node.querySelector('.routed-body');
+      const more = node.querySelector('.routed-more');
+      if (body && more) {
+        more.hidden = !node.classList.contains('open') && body.scrollHeight <= body.clientHeight + 1;
+        node.classList.toggle('clipped', !more.hidden);
+        if (node.classList.contains('open')) more.textContent = 'show less';
+      }
     }
     if (wasAtBottom) el.scrollTop = el.scrollHeight;
+  }
+  // Markers are part of their turn, which may have been re-rendered since.
+  for (const rr of replies) {
+    if (!rr.title) continue;
+    el.querySelectorAll('.routed-part').forEach(a => {
+      if (a.dataset.session === rr.session_id) a.querySelector('.routed-title').textContent = rr.title;
+    });
   }
   // No event announces a reply that was not relayed, or the moment a landed
   // one stops being "still running" — look again while anything is pending.

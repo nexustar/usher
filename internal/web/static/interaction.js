@@ -3,7 +3,23 @@
 
 import {
   esc, currentDetailId, setPendingInteractionCounts, growPrompt,
+  routedTargets, getLastSessions,
 } from './state.js';
+
+// The open session's own interactions, and those of the sessions it routed
+// work to: a router conversation is where that work is being watched.
+function shownHere(p) {
+  return p.session_id === currentDetailId || (currentDetailId && routedTargets.has(p.session_id));
+}
+
+// sourceHTML names the session an interaction comes from when it is not the
+// open one.
+function sourceHTML(p) {
+  if (!p.session_id || p.session_id === currentDetailId) return '';
+  const known = getLastSessions().find(s => s.id === p.session_id);
+  const name = (known && known.title) || 'session ' + p.session_id.slice(0, 8);
+  return `<a class="interaction-source" href="#/s/${esc(encodeURIComponent(p.session_id))}">${esc(name)}</a>`;
+}
 
 // --- interaction-private state ---
 let pendingInteractions = [];
@@ -72,7 +88,7 @@ function renderQuestions(p, sid) {
     <div class="interaction ask" data-id="${esc(p.id)}">
       <div class="meta">
         <strong>question</strong>
-        <span class="muted">session ${esc(sid)}</span>
+        ${sourceHTML(p) || `<span class="muted">session ${esc(sid)}</span>`}
         <span class="muted q-position">${p.tool_input.questions.length > 1 ? `1 of ${p.tool_input.questions.length}` : ''}</span>
       </div>
       ${blocks}
@@ -95,6 +111,7 @@ function renderPermission(p, position, total) {
     <div class="interaction" data-id="${esc(p.id)}">
       <div class="meta">
         <strong>${esc(p.tool_name || p.kind)}</strong>
+        ${sourceHTML(p)}
         ${total > 1 ? `<span class="muted">${position} of ${total}</span>` : ''}
       </div>
       <pre class="tool-input">${esc(inputJSON)}</pre>
@@ -188,7 +205,7 @@ function renderInteractions() {
   setPendingInteractionCounts(counts);
 
   // Preserve an unchanged node so polling does not reset its scroll position.
-  const here = permissions.filter(p => p.session_id === currentDetailId);
+  const here = permissions.filter(shownHere);
   const composer = document.querySelector('.send-anchor > .composer');
   const existing = document.getElementById('session-permission');
   const shownID = existing?.querySelector('.interaction')?.dataset.id;
@@ -206,7 +223,7 @@ function renderInteractions() {
 
   // Questions belong to the session that raised them, just like permissions.
   // Preserve an unchanged card so polling does not clear choices or typed text.
-  const asks = pendingInteractions.filter(p => isQuestion(p) && p.session_id === currentDetailId);
+  const asks = pendingInteractions.filter(p => isQuestion(p) && shownHere(p));
   const existingQuestions = document.getElementById('session-questions');
   // Show one queued question at a time. Key only by the visible interaction so
   // a newly queued question does not reset an answer already in progress.

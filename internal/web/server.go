@@ -584,11 +584,13 @@ type routerConfig struct {
 	Backend   string `json:"backend"`
 	Model     string `json:"model"`
 	SessionID string `json:"session_id"`
+	// Dir is the cwd router sessions run in, current and replaced alike.
+	Dir string `json:"dir"`
 }
 
 func (s *Server) routerConfig() routerConfig {
 	backend, model := s.router.RouterModel()
-	return routerConfig{backend, model, s.router.RouterSession()}
+	return routerConfig{backend, model, s.router.RouterSession(), s.router.RouterDir()}
 }
 
 // startRouterRequest opens a router conversation. Backend and Model, when

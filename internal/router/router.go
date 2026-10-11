@@ -596,13 +596,16 @@ func (r *Router) RouterSession() string {
 // backend: a session that can only route, because its local tools are taken
 // away.
 const routerPrompt = "You are usher's session router. Never answer a substantive question yourself — " +
-	"route it to a session with the usher tools, creating one when none fits."
+	"route it to a session with the usher tools, creating one when none fits. " +
+	"Your own working directory is not a workspace: never pass it as a cwd or mention it in what you send. " +
+	"When the user names no directory and the work belongs to no existing session's project, create the session without a cwd."
 
 var routerArgs = map[string][]string{
 	// No built-in tool at all, and no MCP server but usher's own.
 	"claude": {"--tools", "", "--strict-mcp-config"},
 	"codex":  {"--sandbox", "read-only", "--ask-for-approval", "never"},
-	"pi":     {"--no-builtin-tools"},
+	// An allowlist: without it a user-level MCP server switches codemode on.
+	"pi": {"--tools", "mcp__usher__*,show_image"},
 }
 
 // StartRouter creates the router session with prompt as its first message,
@@ -625,8 +628,16 @@ func (r *Router) StartRouter(prompt string) (string, error) {
 	return r.StartSession(core.CreateOptions{
 		Backend: backend, Model: model, Cwd: r.routerDir, InitialMessage: prompt,
 		AppendSystemPrompt: routerPrompt, ExtraArgs: slices.Clone(routerArgs[backend]),
-		Router: true,
+		// Its tools are usher's own: asking the user to approve each routing
+		// call would gate usher's control surface behind itself.
+		AutoApprove: true,
+		Router:      true,
 	})
+}
+
+// RouterDir is the cwd router sessions run in.
+func (r *Router) RouterDir() string {
+	return r.routerDir
 }
 
 // RouterModel is the backend and model new router sessions run on; empty
@@ -1885,6 +1896,10 @@ func validateCreateInputs(cwd, initialMsg string) (string, error) {
 // here — without a designation this is a plain StartSession, reported by the
 // returned bool.
 func (r *Router) RouteNewSession(o core.CreateOptions) (string, bool, error) {
+	// Work tied to no project runs in the temp directory.
+	if o.Cwd == "" {
+		o.Cwd = os.TempDir()
+	}
 	inbox := r.routerInbox()
 	if inbox == "" {
 		id, err := r.StartSession(o)

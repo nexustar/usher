@@ -33,7 +33,7 @@ func (r *Router) RoutedReplies(turns []core.Turn) []core.RoutedReply {
 			}
 			rr := core.RoutedReply{Turn: t.Cursor, Part: i, SessionID: target}
 			if sess, ok := r.GetSession(target); ok {
-				rr.Title = sess.Title
+				rr.Title, rr.Backend, rr.Status = sess.Title, sess.Backend, sess.Status
 			}
 			prompt := jsonField(p.ToolInput, "text")
 			if prompt == "" {

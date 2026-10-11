@@ -88,24 +88,27 @@ curl -sS -X PUT localhost:8080/api/router \
 ```
 
 Unset, it runs on the default backend and that backend's default model. It runs
-in `router/` under the data directory.
+in `router/` under the data directory, which the session lists show last; a
+session it creates without naming a directory runs in the system temp
+directory instead.
 
 Starting a router session replaces the current one, which becomes an ordinary
 session from its next cold start. The setting and the current router session
 are kept in `settings.json`, so both survive a restart. Every backend can host
 the router: Claude receives the tools as spawn arguments (`mcp-router.json`),
-Codex in its thread/start config params, and pi through a generated bridge
-extension that spawns the same MCP server. See [Router MCP](router-mcp.md) for
+Codex in its thread/start config params, and pi (1.0 or later) through a
+generated extension that registers the same MCP server. See [Router MCP](router-mcp.md) for
 what the tools promise.
 
 ### Restricting local tools
 
-The router cannot answer questions itself: on Claude it gets no built-in tool
-and no MCP server but usher's own (`--tools "" --strict-mcp-config`), on Codex
-and pi the recipes below. An agent of your own — a "read-only analyst", say —
-is restricted the same way, through per-backend `extra_args`. This is
-supervision of the model, not a security boundary against the authenticated
-user:
+The router cannot answer questions itself: it gets usher's tools and nothing
+else — on Claude no built-in tool and no other MCP server (`--tools ""
+--strict-mcp-config`), on pi an allowlist (`--tools "mcp__usher__*,show_image"`),
+on Codex the recipe below — and its calls to them are approved without asking.
+An agent of your own — a "read-only analyst", say — is restricted through
+per-backend `extra_args`. This is supervision of the model, not a security
+boundary against the authenticated user:
 
 - **Claude**: `["--disallowedTools", "Bash,Edit,Write,NotebookEdit,Read,Glob,Grep,Task,Agent,WebFetch,WebSearch"]`
   removes tools by name; `mcp__usher__*` tools are unaffected. Drop entries to

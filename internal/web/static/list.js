@@ -3,7 +3,7 @@
 import {
   esc, fmt, root, subtitle, closeES,
   setCurrentDetailId, setCurrentDraftKey,
-  listInterval, clearListInterval, setListInterval,
+  listInterval, clearListInterval, setListInterval, routerDir,
 } from './state.js';
 import { statusDot, backendMark } from './render.js';
 
@@ -82,9 +82,10 @@ export async function loadList() {
     // client-side, so toggling "show archived" needs no refetch.
     const res = await fetch('/api/sessions?include_archived=1');
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = ((await res.json()) || []).filter(s => !s.router);
-    const sorted = data.slice().sort((a, b) =>
-      (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+    const data = (await res.json()) || [];
+    // Pinned first; the router's own directory last.
+    const rank = s => (s.pinned ? 0 : 1) + (routerDir && s.cwd === routerDir ? 2 : 0);
+    const sorted = data.slice().sort((a, b) => rank(a) - rank(b));
     const html = sorted.length ? sorted.map(s => {
       const title = s.title || '(untitled)';
       const dot = statusDot(s.status);

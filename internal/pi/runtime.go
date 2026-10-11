@@ -625,7 +625,7 @@ func (r *Runtime) SetExtraArgsLookup(lookup func(string) []string) {
 	r.mu.Unlock()
 }
 
-// SetRouterExtension supplies the generated routing-tools bridge extension,
+// SetRouterExtension supplies the generated routing-tools extension,
 // loaded via an extra --extension only by usher's router session. Empty
 // leaves routers indistinguishable from ordinary sessions.
 func (r *Runtime) SetRouterExtension(path string) {

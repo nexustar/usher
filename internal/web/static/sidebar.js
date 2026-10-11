@@ -7,7 +7,7 @@ import {
   updateTabBadge,
   registerRenderSidebarSessions,
   refreshSubtitle, currentDetailId,
-  editorUrl, pendingInteractionCount,
+  editorUrl, pendingInteractionCount, routerDir,
 } from './state.js';
 import { statusDot, backendMark } from './render.js';
 import { loadList } from './list.js';
@@ -49,8 +49,7 @@ export async function loadSidebar() {
 export function renderSidebarSessions(allSessions) {
   const wrap = document.getElementById('sidebar-sessions');
   const count = document.getElementById('sidebar-session-count');
-  // The router session lives behind the Router entry, not in the list.
-  const roots = allSessions.filter(s => !s.is_subagent && !s.router);
+  const roots = allSessions.filter(s => !s.is_subagent);
   const children = new Map();
   for (const s of allSessions) {
     if (!s.is_subagent || !s.parent_id) continue;
@@ -97,9 +96,12 @@ export function renderSidebarSessions(allSessions) {
   const recencyKey = s => Date.parse(s.last_input_at) || Date.parse(s.last_event_at) || 0;
   const recencyOf = arr => Math.max(...arr.map(recencyKey));
   const byRecent = (a, b) => recencyKey(b) - recencyKey(a);
-  // Sort cwd groups by their most-recent visible activity, not absolute
+  // Sort cwd groups by their most-recent visible activity, not absolute —
+  // after which comes the router's own directory, whatever its activity.
+  //
   // — stale cwds with one expanded archived row shouldn't jump to the top.
   cwds.sort((a, b) => {
+    if ((a === routerDir) !== (b === routerDir)) return a === routerDir ? 1 : -1;
     const av = groups.get(a).filter(s => !s.archived);
     const bv = groups.get(b).filter(s => !s.archived);
     return recencyOf(bv) - recencyOf(av);

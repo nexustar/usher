@@ -1245,3 +1245,29 @@ func TestRoutedRepliesMatchByContent(t *testing.T) {
 }
 
 func (r *routerDesignationRuntime) LiveSessions() []backend.LiveSession { return nil }
+
+// A session the router creates without a cwd runs in the system temp
+// directory; a cwd it names is used as given.
+func TestRouteNewSessionDefaultsToTheTempDir(t *testing.T) {
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &routerDesignationRuntime{newID: "worker-1"}
+	r := New(d, map[string]backend.Backend{"claude": {Runtime: rt, Transcript: transcript.Claude{}}}, "claude",
+		broker.New(), nil, sessionmeta.New("", 0), nil)
+
+	if _, _, err := r.RouteNewSession(core.CreateOptions{InitialMessage: "quicksort"}); err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := filepath.EvalSymlinks(os.TempDir()); rt.req.Cwd != want {
+		t.Fatalf("no cwd ran in %q, want %q", rt.req.Cwd, want)
+	}
+	project := t.TempDir()
+	if _, _, err := r.RouteNewSession(core.CreateOptions{Cwd: project, InitialMessage: "fix it"}); err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := filepath.EvalSymlinks(project); rt.req.Cwd != want {
+		t.Fatalf("a named cwd ran in %q, want %q", rt.req.Cwd, want)
+	}
+}

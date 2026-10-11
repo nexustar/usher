@@ -2,7 +2,7 @@
 
 import {
   esc, renderMode, setRenderModeValue, renderPillMd, renderPillRaw,
-  isNearBottom, suppressAppendScroll, currentDetailId,
+  isNearBottom, suppressAppendScroll, currentDetailId, getLastSessions,
 } from './state.js';
 
 // renderMarkdown turns assistant/user content into safe HTML using the
@@ -182,8 +182,17 @@ function parseRoutedSession(content) {
 function renderRoutedPart(p) {
   const id = parseRoutedSession(p.content);
   if (!id) return '';
-  return '<div class="routed-part">routed to <a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) +
-    '" title="Open this session">' + esc(id.slice(0, 8)) + ' ↗</a></div>';
+  // The title is filled in once the detail view knows the session's name.
+  return '<a class="routed-part" href="#/s/' + esc(encodeURIComponent(id)) + '" data-session="' + esc(id) +
+    '" title="Open this session"><span class="routed-arrow" aria-hidden="true">→</span>' +
+    '<span class="routed-title">' + esc(sessionTitle(id)) + '</span></a>';
+}
+
+// sessionTitle is a session's title as the sidebar last saw it, else its
+// short id.
+function sessionTitle(id) {
+  const known = getLastSessions().find(s => s.id === id);
+  return (known && known.title) || id.slice(0, 8);
 }
 
 // sessionLinksHTML lists the sessions a routing tool's result names, so the
@@ -198,14 +207,18 @@ function sessionLinksHTML(content) {
   const add = (x) => {
     const id = x && (x.session_id || x.id);
     // The session doing the asking is not one it was looking for.
-    if (typeof id === 'string' && id && id !== currentDetailId && !found.some(f => f.id === id)) found.push({ id, title: x.title || '' });
+    if (typeof id === 'string' && id && id !== currentDetailId && !found.some(f => f.id === id)) found.push({ id, title: x.title || '', cwd: x.cwd || '' });
   };
   add(o);
   for (const key of ['results', 'sessions']) (Array.isArray(o[key]) ? o[key] : []).forEach(add);
   if (!found.length) return '';
-  return '<div class="tool-sessions">' + found.slice(0, 8).map(f =>
-    '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(f.id)) + '">' +
-    esc(f.title || f.id.slice(0, 8)) + ' ↗</a>').join('') + '</div>';
+  return '<div class="tool-sessions">' + found.slice(0, 8).map(f => {
+    const known = getLastSessions().find(s => s.id === f.id) || {};
+    const dot = statusDot(known.status);
+    return '<a class="tool-session" href="#/s/' + esc(encodeURIComponent(f.id)) + '">' +
+      '<span class="tool-session-title">' + (dot ? dot + ' ' : '') + esc(known.title || f.title || f.id.slice(0, 8)) + '</span>' +
+      '<span class="tool-session-cwd">' + esc(known.cwd || f.cwd) + '</span></a>';
+  }).join('') + '</div>';
 }
 
 export function renderToolPart(p) {

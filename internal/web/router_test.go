@@ -49,7 +49,7 @@ func TestRouterModelSetting(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Router != (routerConfig{Backend: "claude", Model: "haiku"}) {
+	if cfg.Router != (routerConfig{Backend: "claude", Model: "haiku", Dir: filepath.Join(dir, "router")}) {
 		t.Fatalf("config router = %+v", cfg.Router)
 	}
 }

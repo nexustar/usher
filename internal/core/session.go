@@ -164,9 +164,12 @@ type RoutedReply struct {
 	// Turn and Part locate the call: its turn's cursor and its index there.
 	Turn string `json:"turn"`
 	Part int    `json:"part"`
-	// SessionID and Title are the session the work went to.
+	// SessionID, Title, Backend and Status are the session the work went to,
+	// as it is now.
 	SessionID string `json:"session_id"`
 	Title     string `json:"title,omitempty"`
+	Backend   string `json:"backend,omitempty"`
+	Status    Status `json:"status,omitempty"`
 	// Reply is empty until the session has answered; Done is false while that
 	// answer is still being written.
 	Reply string    `json:"reply,omitempty"`

@@ -1,7 +1,7 @@
 // usher SPA: entry point.
 // Hash-based routing between session list, detail view, new session, and the router.
 
-import { closeES, clearListInterval, setEditorUrl } from './state.js';
+import { closeES, clearListInterval, setEditorUrl, setRouterDir } from './state.js';
 import './render.js'; // side-effect: sets up marked, render-pill listeners
 import { loadSidebar, updateSidebarActive } from './sidebar.js';
 import { showList, loadList } from './list.js';
@@ -80,7 +80,12 @@ route();
 
 fetch('/api/config')
   .then(r => (r.ok ? r.json() : null))
-  .then(c => { if (c) setEditorUrl(c.editor_url || ''); })
+  .then(c => {
+    if (!c) return;
+    setEditorUrl(c.editor_url || '');
+    setRouterDir((c.router || {}).dir);
+    loadSidebar();
+  })
   .catch(() => {});
 
 initServiceWorker();

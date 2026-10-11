@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// The generated bridge extension must carry the baked catalog and instance
-// paths, with no template placeholder left behind.
+// The generated extension must carry the instance paths, with no template
+// placeholder left behind.
 func TestPrepareUsherRouterExtension(t *testing.T) {
 	dataDir := t.TempDir()
 	path, err := PrepareUsherRouterExtension(dataDir, filepath.Join(dataDir, "hook.sock"))
@@ -20,10 +20,7 @@ func TestPrepareUsherRouterExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(data)
-	for _, want := range []string{
-		`"send_to_session"`, `"create_session"`, `"resolve_session"`,
-		`"--router-tools"`, "hook.sock",
-	} {
+	for _, want := range []string{`registerMcpServer("usher"`, `"--router-tools"`, "hook.sock", `exposure: "direct"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("generated extension missing %s", want)
 		}
@@ -33,7 +30,7 @@ func TestPrepareUsherRouterExtension(t *testing.T) {
 	}
 }
 
-// TestSpawnArgsRouterSelection: only the router worker loads the bridge
+// TestSpawnArgsRouterSelection: only the router worker loads the routing
 // extension — fresh by intent, cold resume by the designated id.
 func TestSpawnArgsRouterSelection(t *testing.T) {
 	r := NewRuntime("pi", t.TempDir(), []string{"--extension", "/x/base.ts"}, 1, Models{}, nil, nil)
