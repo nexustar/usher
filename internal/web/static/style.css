@@ -189,7 +189,14 @@ body {
   justify-content: space-between;
   gap: 0.4rem;
 }
-.sidebar-new {
+.sidebar-group-toggle {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.sidebar-new, .sidebar-group-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -202,7 +209,7 @@ body {
   font-size: var(--glyph);
   font-weight: 400;
 }
-.sidebar-new:hover { background: var(--bg-hover); color: var(--text); }
+.sidebar-new:hover, .sidebar-group-toggle:hover { background: var(--bg-hover); color: var(--text); }
 .sidebar-new.active { background: var(--bg-accent); color: var(--accent); }
 .sidebar-list {
   list-style: none;
@@ -234,6 +241,16 @@ body {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+.sidebar-list li.sidebar-item a:has(.row-cwd) { display: flex; gap: 0.5rem; }
+.row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row-cwd {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--font-sm);
+  color: var(--text-disabled);
 }
 .sidebar-list li.sidebar-item a.active { background: var(--bg-accent); color: var(--accent); }
 .sidebar-list li.sidebar-item a .running-dot {
@@ -288,6 +305,9 @@ body {
     pointer-events: auto;
     transition: opacity 0.1s ease;
   }
+  /* Make way for the kebab. */
+  .sidebar-list li.sidebar-item:hover .row-cwd,
+  .sidebar-list li.sidebar-item:has(.kebab-btn:is(:focus, .open)) .row-cwd { opacity: 0; }
   .kebab-btn:hover { color: var(--text); }
   .sidebar-list li.sidebar-item a.active ~ .kebab-btn:hover { color: var(--accent); }
 }

@@ -20,11 +20,24 @@ let lastSidebarHtml = '';
 let lastPinnedHtml = '';
 const subagentExpanded = new Set();
 const archivedPageSize = 20;
+let groupByDate = false;
+try { groupByDate = localStorage.getItem('usher.sidebarGroup') === 'date'; } catch {/* private mode */}
+
+function dateBucket(ms) {
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const days = Math.ceil((midnight.getTime() - ms) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days <= 7) return 'Previous 7 days';
+  if (days <= 30) return 'Previous 30 days';
+  return 'Older';
+}
 
 // ---------- Sidebar ----------
 //
 // Polled every 5s independently of the active route. Renders Claude Code
-// sessions grouped by cwd, recent activity first. The Router entry is static
+// sessions grouped by cwd or by date, recent activity first. The Router entry is static
 // markup in index.html; which session it opens is resolved when it is opened.
 
 export async function loadSidebar() {
@@ -72,11 +85,18 @@ export function renderSidebarSessions(allSessions) {
     lastSidebarHtml = '';
     return;
   }
+  // Order by last user input, not file mtime, so a session doesn't jump on
+  // streaming or on pause/kill. Falls back to last_event_at when unset.
+  const recencyKey = s => Date.parse(s.last_input_at) || Date.parse(s.last_event_at) || 0;
   // Group ALL sessions by cwd (incl. archived) so each group's tail can
   // offer a "└[ N archived ]" disclosure without a separate count lookup.
+  // By date, the router's own directory is still a group of its own.
+  const inRouterDir = s => !!routerDir && s.cwd === routerDir;
   const groups = new Map();
   for (const s of roots) {
-    const cwd = s.cwd || '(unknown)';
+    const cwd = groupByDate && !inRouterDir(s)
+      ? dateBucket(recencyKey(s))
+      : s.cwd || '(unknown)';
     if (!groups.has(cwd)) groups.set(cwd, []);
     groups.get(cwd).push(s);
   }
@@ -91,9 +111,6 @@ export function renderSidebarSessions(allSessions) {
     lastSidebarHtml = '';
     return;
   }
-  // Order by last user input, not file mtime, so a session doesn't jump on
-  // streaming or on pause/kill. Falls back to last_event_at when unset.
-  const recencyKey = s => Date.parse(s.last_input_at) || Date.parse(s.last_event_at) || 0;
   const recencyOf = arr => Math.max(...arr.map(recencyKey));
   const byRecent = (a, b) => recencyKey(b) - recencyKey(a);
   // Sort cwd groups by their most-recent visible activity, not absolute
@@ -118,6 +135,8 @@ export function renderSidebarSessions(allSessions) {
         ? '<span class="running-dot unread" title="new response">●</span>'
         : statusDot(s.status);
     const title = s.title || '(untitled)';
+    const showCwd = groupByDate && !!s.cwd;
+    const tip = showCwd ? title + '\n' + s.cwd : title;
     if (child) {
       return `<li class="sidebar-item subagent-row">
         <a href="${esc(href)}" data-route="s:${esc(s.id)}" title="${esc(title)}">${dot}${esc(title)}</a>
@@ -126,7 +145,10 @@ export function renderSidebarSessions(allSessions) {
     const liClass = s.archived ? 'sidebar-item archived-row' : 'sidebar-item';
     const subs = children.get(s.id) || [];
     return `<li class="${liClass}">
-      <a href="${esc(href)}" data-route="s:${esc(s.id)}" title="${esc(title)}">${dot}${esc(title)}</a>
+      <a href="${esc(href)}" data-route="s:${esc(s.id)}" title="${esc(tip)}">${
+        showCwd
+          ? `<span class="row-title">${dot}${esc(title)}</span><span class="row-cwd">${esc(s.cwd.replace(/\/+$/, '').split('/').pop())}</span>`
+          : dot + esc(title)}</a>
       <button class="kebab-btn" type="button"
         data-id="${esc(s.id)}" data-archived="${s.archived ? '1' : '0'}"
         data-pinned="${s.pinned ? '1' : '0'}"
@@ -180,7 +202,7 @@ export function renderSidebarSessions(allSessions) {
             <button class="cwd-toggle-archived" type="button" data-cwd="${esc(cwd)}"
               data-action="collapse">${archivedRemaining ? '' : '└ '}[ collapse ]</button>
           </div>`;
-    const newHere = cwd === '(unknown)'
+    const newHere = cwd === '(unknown)' || (groupByDate && cwd !== routerDir)
       ? ''
       : `<a class="sidebar-new cwd-new" href="${esc('#/new/' + encodeURIComponent(cwd))}"
            title="new session here" aria-label="new session here">+</a>`;
@@ -488,6 +510,26 @@ document.addEventListener('click', (e) => {
     e.stopPropagation();
   }
 }, true);
+
+const groupToggle = document.getElementById('sidebar-group-toggle');
+if (groupToggle) {
+  const label = () => {
+    const text = groupByDate ? 'group by folder' : 'group by date';
+    groupToggle.title = text;
+    groupToggle.setAttribute('aria-label', text);
+  };
+  label();
+  groupToggle.addEventListener('click', () => {
+    groupByDate = !groupByDate;
+    try { localStorage.setItem('usher.sidebarGroup', groupByDate ? 'date' : 'cwd'); } catch {/* private mode */}
+    label();
+    // Archived disclosures are keyed by group.
+    cwdExpanded.clear();
+    cwdArchivedVisible.clear();
+    renderSidebarSessions(getLastSessions());
+    updateSidebarActive();
+  });
+}
 
 const settingsBtn = document.getElementById('settings-btn');
 const settingsMenu = document.getElementById('settings-menu');
