@@ -246,7 +246,7 @@ func serve(args []string) error {
 		modelsPath := filepath.Join(filepath.Dir(dir), "models_cache.json")
 		codexRuntime := sender.NewCodex(*codexCmd, dir, hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, !*disableUsherTools, h, logger)
 		codexRuntime.SetAutoPause(*autoPause)
-		backends["codex"] = backend.Backend{Runtime: codexRuntime, Transcript: transcript.Codex{}, Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}}
+		backends["codex"] = backend.Backend{Runtime: codexRuntime, Transcript: transcript.Codex{}, Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}, Replier: transcript.Codex{}}
 		// codex's per-account model catalog sits next to the sessions dir.
 		if defaultBackend == "" {
 			defaultBackend = "codex"

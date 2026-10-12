@@ -37,6 +37,9 @@ func (Codex) ReadBefore(path, before string, limit int) ([]core.Turn, bool, erro
 func (Codex) ReadFrom(path, from string) ([]core.Turn, error) { return codexLog.From(path, from) }
 func (Codex) NewAssembler() backend.Assembler                 { return rollout.NewAssembler() }
 func (Codex) IsTurnComplete(raw []byte) bool                  { return rollout.IsTurnComplete(raw) }
+func (Codex) QuestionReply(questions []core.Question, answers map[string]string) string {
+	return rollout.QuestionReply(questions, answers)
+}
 
 type ClaudeForker struct{}
 

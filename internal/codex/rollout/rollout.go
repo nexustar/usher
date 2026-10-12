@@ -390,7 +390,7 @@ func (a *Assembler) feedEvent(l line) (completed []core.Turn, part *core.TurnPar
 		if p.Message != "" {
 			completed = append(completed, core.Turn{
 				Role:    "user",
-				Content: p.Message,
+				Content: userText(p.Message),
 				Time:    l.Timestamp,
 			})
 		}
@@ -720,7 +720,7 @@ func (a *Assembler) feedItemCompleted(l line) (completed []core.Turn, part *core
 			completed = append(completed, *t)
 		}
 		if msg := itemMessageText(p.Item); msg != "" {
-			completed = append(completed, core.Turn{Role: "user", Content: msg, Time: l.Timestamp})
+			completed = append(completed, core.Turn{Role: "user", Content: userText(msg), Time: l.Timestamp})
 		}
 		return completed, nil
 	case "AgentMessage":
@@ -729,7 +729,7 @@ func (a *Assembler) feedItemCompleted(l line) (completed []core.Turn, part *core
 			return nil, nil
 		}
 		a.ensureTurn(l.Timestamp)
-		tp := core.TurnPart{Type: "text", Content: msg}
+		tp := core.TurnPart{Type: "text", Content: msg, Questions: itemQuestions(p.Item)}
 		a.cur.Parts = append(a.cur.Parts, tp)
 		return nil, &tp
 	case "CommandExecution":
@@ -902,6 +902,11 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 		if stash.mcp && !a.markMCP(p.CallID) {
 			return nil
 		}
+		// An async message or question to the user is its own AgentMessage
+		// item; the call's output only acknowledges it.
+		if stash.name == asyncQuestionTool || stash.name == asyncMessageTool {
+			return nil
+		}
 		return a.appendTool(l.Timestamp, stash.name, stash.target, stash.input, renderOutputBody(p.Output))
 	case "custom_tool_call_output":
 		stash, ok := a.pending[p.CallID]
@@ -975,7 +980,7 @@ func userMessage(payload json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(payload, &p); err != nil || p.Type != "user_message" {
 		return "", false
 	}
-	return p.Message, p.Message != ""
+	return userText(p.Message), p.Message != ""
 }
 
 // cleanUserPrompt returns the user's typed prompt from an event_msg payload,
@@ -998,7 +1003,7 @@ func cleanUserPrompt(payload json.RawMessage) (string, bool) {
 			Type string `json:"type"`
 		}
 		if json.Unmarshal(p.Item, &it) == nil && it.Type == "UserMessage" {
-			msg := itemMessageText(p.Item)
+			msg := userText(itemMessageText(p.Item))
 			return msg, msg != ""
 		}
 	}

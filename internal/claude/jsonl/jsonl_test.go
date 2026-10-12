@@ -3,6 +3,7 @@ package jsonl
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -661,7 +662,7 @@ func TestAssembler_MatchesReadTurns(t *testing.T) {
 				continue
 			}
 			for j := range a.Parts {
-				if a.Parts[j] != b.Parts[j] {
+				if !reflect.DeepEqual(a.Parts[j], b.Parts[j]) {
 					t.Errorf("%s: turn %d part %d differs:\n batch %+v\nstream %+v",
 						fixture, i, j, a.Parts[j], b.Parts[j])
 				}
@@ -678,7 +679,7 @@ func TestAssembler_MatchesReadTurns(t *testing.T) {
 			t.Fatalf("%s: emitted %d parts, turns hold %d", fixture, len(parts), len(want))
 		}
 		for i := range want {
-			if want[i] != parts[i] {
+			if !reflect.DeepEqual(want[i], parts[i]) {
 				t.Errorf("%s: part %d differs:\n turn %+v\nemitted %+v", fixture, i, want[i], parts[i])
 			}
 		}

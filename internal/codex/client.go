@@ -457,7 +457,7 @@ func (c *Client) handleServerRequest(m rpcMessage) {
 	case "mcpServer/elicitation/request":
 		c.mcpElicitation(m)
 	case "item/tool/requestUserInput":
-		c.replyError(m.ID, -32000, "request_user_input is not supported by this usher client")
+		c.requestUserInput(m)
 	case "item/tool/call":
 		c.replyError(m.ID, -32000, "dynamic client tools are not supported by this usher client")
 	case "currentTime/read":
@@ -512,6 +512,69 @@ func (c *Client) mcpElicitation(m rpcMessage) {
 		}
 	}
 	c.replyResult(m.ID, map[string]any{"action": action, "content": content})
+}
+
+// requestUserInput answers the model's request_user_input tool through the
+// AskUserQuestion control. Codex waits for the response whatever isBlocking
+// says; a typed answer goes back as a user_note, no answers means skipped.
+func (c *Client) requestUserInput(m rpcMessage) {
+	type option struct {
+		Label       string `json:"label"`
+		Description string `json:"description"`
+	}
+	var p struct {
+		ThreadID  string `json:"threadId"`
+		ItemID    string `json:"itemId"`
+		Questions []struct {
+			ID       string   `json:"id"`
+			Header   string   `json:"header"`
+			Question string   `json:"question"`
+			Options  []option `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(m.Params, &p); err != nil || len(p.Questions) == 0 {
+		c.replyError(m.ID, -32602, "invalid request_user_input parameters")
+		return
+	}
+
+	c.mu.Lock()
+	h := c.interactions
+	cwd := c.threads[p.ThreadID]
+	c.mu.Unlock()
+
+	answers := map[string]any{}
+	if h != nil {
+		questions := make([]map[string]any, 0, len(p.Questions))
+		for _, q := range p.Questions {
+			questions = append(questions, map[string]any{"header": q.Header, "question": q.Question, "options": q.Options})
+		}
+		input, _ := json.Marshal(map[string]any{"questions": questions})
+		r, err := h.Submit(context.Background(), interaction.Request{
+			SessionID: p.ThreadID,
+			ToolUseID: p.ItemID,
+			Kind:      interaction.KindChoice,
+			ToolName:  "request_user_input",
+			ToolInput: input,
+			Cwd:       cwd,
+		})
+		if err == nil && r.Behavior == "allow" {
+			for _, q := range p.Questions {
+				a := r.Answers[q.Question]
+				if a == "" {
+					continue
+				}
+				picked := false
+				for _, o := range q.Options {
+					picked = picked || o.Label == a
+				}
+				if !picked {
+					a = "user_note: " + a
+				}
+				answers[q.ID] = map[string]any{"answers": []string{a}}
+			}
+		}
+	}
+	c.replyResult(m.ID, map[string]any{"answers": answers})
 }
 
 func (c *Client) replyResult(id json.RawMessage, result any) {
@@ -800,6 +863,21 @@ func (c *Client) startOperation(ctx context.Context, id, method string, params a
 		return nil, nil, err
 	}
 	return stream.done, stream.deltas, nil
+}
+
+// Steer adds text to the thread's running turn; the model reads it at its
+// next step. app-server rejects it once the turn has ended.
+func (c *Client) Steer(ctx context.Context, id, text string) error {
+	c.mu.Lock()
+	turnID := c.active[id]
+	c.mu.Unlock()
+	if turnID == "" {
+		return errors.New("no running turn to steer")
+	}
+	return c.call(ctx, "turn/steer", map[string]any{
+		"threadId": id, "expectedTurnId": turnID,
+		"input": []map[string]string{{"type": "text", "text": text}},
+	}, nil)
 }
 
 func (c *Client) Compact(ctx context.Context, id string) (<-chan TurnResult, <-chan Delta, error) {

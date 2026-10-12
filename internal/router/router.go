@@ -61,6 +61,9 @@ type Router struct {
 	creating   map[string]core.Session  // sessions usher is spawning, not yet on disk
 	relayIn    map[string][]relayNote   // router sessionID -> replies to fold into its next prompt
 
+	askMu sync.Mutex
+	asks  map[string]map[*askToken]struct{} // sessionID -> open in-place questions (questions.go)
+
 	// Foreign-turn watcher state (see foreignwatch.go): per-session log-size
 	// baseline (guarded by sendMu) and the completion handler.
 	foreignBase   map[string]int64
@@ -839,6 +842,7 @@ func (r *Router) ResumeSession(ctx context.Context, id string) error {
 // sends, and stops its live worker. Best-effort; idempotent. Shared by
 // PauseSession/DeleteSession.
 func (r *Router) stopLive(id string) {
+	r.withdrawQuestions(id)
 	r.flushSendQueue(id, errors.New("session stopped"))
 	r.sendMu.Lock()
 	tok := r.activeSend[id]
@@ -862,6 +866,7 @@ func (r *Router) stopLive(id string) {
 // A router session's prompt carries any replies that landed since it last
 // spoke — see queueRelay.
 func (r *Router) SendToSession(id, text string) error {
+	r.withdrawQuestions(id)
 	folded, notes := r.foldRelays(id, text)
 	err := r.enqueueSend(id, folded, nil, nil)
 	if err != nil && len(notes) > 0 {
@@ -1138,6 +1143,9 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 		})
 		if mErr == nil {
 			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventPart, Raw: raw})
+		}
+		if len(part.Questions) > 0 {
+			r.askInPlace(sessionID, part.Questions)
 		}
 	}
 	return parts
@@ -1687,6 +1695,7 @@ func (r *Router) RouteToSession(id, text string) (bool, error) {
 // observed — onDone is NOT called: a day-late "(relay: timeout)" message is
 // noise, and the reply, if any, is in the transcript.
 func (r *Router) SendToSessionRelayed(id, text string, onDone func(sessionID, reply string, err error)) error {
+	r.withdrawQuestions(id)
 	return r.enqueueSend(id, text,
 		func() {
 			ch, cancel := r.broker.Subscribe(id)

@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -512,6 +513,17 @@ func (m *Manager) Interrupt(ctx context.Context, id string) error {
 		return nil
 	}
 	return w.client.Interrupt(ctx, id)
+}
+
+// Steer adds text to the session's running turn (Client.Steer).
+func (m *Manager) Steer(ctx context.Context, id, text string) error {
+	m.mu.Lock()
+	w := m.workers[id]
+	m.mu.Unlock()
+	if w == nil || w.ready != nil {
+		return errors.New("session has no live worker")
+	}
+	return w.client.Steer(ctx, id, text)
 }
 
 func (m *Manager) Has(id string) bool {

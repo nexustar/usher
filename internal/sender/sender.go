@@ -573,6 +573,14 @@ func (s *Sender) ComposerItems(ctx context.Context, sessionID, cwd string) (back
 	return backend.ComposerCatalog{Items: out, Available: available}, nil
 }
 
+// Steer adds text to the session's running turn; only Codex can.
+func (s *Sender) Steer(ctx context.Context, sessionID, text string) error {
+	if s.app == nil {
+		return errors.New("backend cannot steer a running turn")
+	}
+	return s.app.Steer(ctx, sessionID, text)
+}
+
 // Interrupt stops the in-flight turn for sessionID without killing its worker.
 func (s *Sender) Interrupt(sessionID string) error {
 	if s.app != nil {

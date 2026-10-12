@@ -44,6 +44,17 @@ type TurnPart struct {
 	// ToolUseID is parser bookkeeping used to join metadata follow-ups to the
 	// tool part they enrich. It is never part of the public transcript shape.
 	ToolUseID string `json:"-"`
+	// Questions a text part asks without waiting for the answer; the router
+	// raises them as an interaction. Content already carries them as text.
+	Questions []Question `json:"-"`
+}
+
+// Question is asked in place: ID names it in the backend's reply, Options are
+// suggested answers.
+type Question struct {
+	ID      string
+	Title   string
+	Options []string
 }
 
 const (

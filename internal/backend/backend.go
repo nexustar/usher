@@ -216,6 +216,19 @@ type ModelProvider interface {
 	DefaultEffort(context.Context, string) (string, error)
 }
 
+// Replier is an optional capability: the prompt that answers questions a text
+// part asked in place (core.TurnPart.Questions). answers is keyed by title;
+// "" when nothing was answered.
+type Replier interface {
+	QuestionReply(questions []core.Question, answers map[string]string) string
+}
+
+// Steerer is an optional runtime capability: text added to a session's
+// running turn, read by the model at its next step. Fails when no turn runs.
+type Steerer interface {
+	Steer(ctx context.Context, sessionID, text string) error
+}
+
 // Backend explicitly composes the capabilities registered for one agent CLI.
 // Main constructs these values; there is deliberately no global init registry.
 type Backend struct {
@@ -224,4 +237,5 @@ type Backend struct {
 	Forker     Forker
 	Renamer    Renamer
 	Models     ModelProvider
+	Replier    Replier
 }
