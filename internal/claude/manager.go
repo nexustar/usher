@@ -512,6 +512,9 @@ func (m *Manager) Send(ctx context.Context, id, prompt, cwd, model, appendSystem
 	}
 	defer releaseProcess(p)
 	if command, _, ok := backend.ParseSlashCommand(prompt); ok {
+		if command == "/"+clearCommand {
+			return nil, nil, fresh, 0, errors.New("/clear is not available here: start a new session instead")
+		}
 		commands, err := waitForCommands(ctx, p)
 		if err != nil {
 			return nil, nil, fresh, 0, err
@@ -559,6 +562,9 @@ func releaseProcess(p *process) {
 	p.lastUsed = time.Now()
 	p.mu.Unlock()
 }
+
+// clearCommand moves a headless claude onto a new session id and log.
+const clearCommand = "clear"
 
 func hasCommand(commands []Command, name string) bool {
 	for _, command := range commands {
@@ -687,7 +693,7 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			seen := make(map[string]struct{}, len(e.SlashCommands))
 			for _, name := range e.SlashCommands {
 				name = strings.TrimPrefix(strings.TrimSpace(name), "/")
-				if name == "" {
+				if name == "" || name == clearCommand {
 					continue
 				}
 				if _, ok := seen[name]; ok {

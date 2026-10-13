@@ -483,7 +483,7 @@ func TestInitAdvertisesSlashCommands(t *testing.T) {
 		t.Fatalf("catalog before init = (%#v, %v), want (nil, false)", commands, complete)
 	}
 
-	_, _ = io.WriteString(w, `{"type":"system","subtype":"init","slash_commands":["compact","/review","simplify","compact",""],"skills":["simplify"]}`+"\n")
+	_, _ = io.WriteString(w, `{"type":"system","subtype":"init","slash_commands":["compact","/review","simplify","compact","","clear"],"skills":["simplify"]}`+"\n")
 	deadline := time.Now().Add(time.Second)
 	for len(m.Commands("s")) != 3 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
