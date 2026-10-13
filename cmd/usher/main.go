@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -112,19 +113,21 @@ func newLogger(level, format string) (*slog.Logger, error) {
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:7777", "listen address")
-	projectsDir := fs.String("projects-dir", defaultProjectsDir(), "Claude Code projects directory")
+	projectsDir := fs.String("claude-sessions-dir", defaultProjectsDir(),
+		"Claude Code projects directory; the Claude backend auto-enables when it exists or claude is installed")
+	fs.StringVar(projectsDir, "projects-dir", defaultProjectsDir(), "alias for --claude-sessions-dir")
 	dataDir := fs.String("data-dir", defaultDataDir(), "usher data directory (XDG_DATA_HOME/usher)")
 	claudeCmd := fs.String("claude", "claude", "path to the claude binary")
 	codexCmd := fs.String("codex", "codex", "path to the codex binary (Codex backend)")
 	codexSessionsDir := fs.String("codex-sessions-dir", defaultCodexSessionsDir(),
-		"Codex rollout sessions directory; the Codex backend auto-enables when it exists")
+		"Codex rollout sessions directory; the Codex backend auto-enables when it exists or codex is installed")
 	codexArgs := fs.String("codex-args", "",
 		"extra flags for spawned codex (space-separated). Empty uses codex's own approval "+
 			"policy (usher gates whatever codex natively escalates); e.g. \"-c approval_policy=untrusted\" "+
 			"to route most commands through usher like Claude.")
 	piCmd := fs.String("pi", defaultPiCmd(), "path to the pi binary (pi backend)")
 	piSessionsDir := fs.String("pi-sessions-dir", defaultPiSessionsDir(),
-		"pi coding-agent sessions directory; the pi backend auto-enables when it exists")
+		"pi coding-agent sessions directory; the pi backend auto-enables when it exists or pi is installed")
 	piArgs := fs.String("pi-args", "", "extra flags for spawned pi RPC workers (space-separated)")
 	permissionMode := fs.String("permission-mode", "default",
 		"--permission-mode passed to claude (default|acceptEdits|bypassPermissions|plan)")
@@ -225,23 +228,23 @@ func serve(args []string) error {
 		logger.Warn("binding non-loopback address without a password (--insecure)", "addr", *addr)
 	}
 
-	// Each backend is enabled only when its session dir exists (created once that
-	// CLI has run). usher works with either or both; at least one is required.
-	// defaultBackend (new-session/fallback) prefers Claude.
+	// Each backend is enabled when its session dir exists or its CLI is
+	// installed; at least one is required. defaultBackend (new-session/fallback)
+	// prefers Claude.
 	sources := []discovery.Source{}
 	backends := map[string]backend.Backend{}
 	h := interaction.New(filepath.Join(*dataDir, "auto-approve.json"))
 	defaultBackend := ""
 
-	if dir := *projectsDir; dir != "" && isDir(dir) {
+	if dir := *projectsDir; sessionsDir(dir, *claudeCmd, logger) {
 		sources = append(sources, discovery.NewClaudeSource(dir))
 		claudeRuntime := sender.New(*claudeCmd, *permissionMode, dir, hookSockPath(*dataDir), *maxLiveSessions, !*disableUsherTools, h, logger)
 		claudeRuntime.SetAutoPause(*autoPause)
 		backends["claude"] = backend.Backend{Runtime: claudeRuntime, Transcript: transcript.Claude{}, Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: modelcatalog.Claude{}}
 		defaultBackend = "claude"
-		logger.Info("claude backend enabled", "projects_dir", dir)
+		logger.Info("claude backend enabled", "sessions_dir", dir)
 	}
-	if dir := *codexSessionsDir; dir != "" && isDir(dir) {
+	if dir := *codexSessionsDir; sessionsDir(dir, *codexCmd, logger) {
 		sources = append(sources, discovery.NewCodexSource(dir))
 		modelsPath := filepath.Join(filepath.Dir(dir), "models_cache.json")
 		codexRuntime := sender.NewCodex(*codexCmd, dir, hookSockPath(*dataDir), strings.Fields(*codexArgs), *maxLiveSessions, !*disableUsherTools, h, logger)
@@ -253,7 +256,7 @@ func serve(args []string) error {
 		}
 		logger.Info("codex backend enabled", "sessions_dir", dir)
 	}
-	if dir := *piSessionsDir; dir != "" && isDir(dir) {
+	if dir := *piSessionsDir; sessionsDir(dir, *piCmd, logger) {
 		sources = append(sources, discovery.NewPiSource(dir))
 		extra := strings.Fields(*piArgs)
 		// Read-only never spawns pi, and skipping the writes keeps a shared
@@ -285,9 +288,10 @@ func serve(args []string) error {
 	}
 
 	if len(backends) == 0 {
-		return fmt.Errorf("no backend found: Claude %q, Codex %q, and pi %q do not exist.\n"+
-			"  run a supported agent once first, or pass its sessions-directory flag.",
-			*projectsDir, *codexSessionsDir, *piSessionsDir)
+		return fmt.Errorf("no backend found: none of %q, %q, %q is installed, and the sessions directories "+
+			"%q, %q, and %q do not exist.\n"+
+			"  install a supported agent, or pass its binary or sessions-directory flag.",
+			*claudeCmd, *codexCmd, *piCmd, *projectsDir, *codexSessionsDir, *piSessionsDir)
 	}
 
 	d, err := discovery.NewMulti(logger, sources...)
@@ -485,6 +489,9 @@ func defaultProjectsDir() string {
 }
 
 func defaultCodexSessionsDir() string {
+	if dir := os.Getenv("CODEX_HOME"); dir != "" {
+		return filepath.Join(dir, "sessions")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -532,6 +539,25 @@ func defaultPiCmd() string {
 func isDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
+}
+
+// sessionsDir reports whether dir exists, creating it when cmd is installed.
+func sessionsDir(dir, cmd string, logger *slog.Logger) bool {
+	if dir == "" {
+		return false
+	}
+	if isDir(dir) {
+		return true
+	}
+	if _, err := exec.LookPath(cmd); err != nil {
+		return false
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		logger.Warn("sessions directory: create failed", "dir", dir, "err", err)
+		return false
+	}
+	logger.Info("sessions directory created", "dir", dir)
+	return true
 }
 
 func defaultDataDir() string { return pluginapi.DefaultDataDir() }
