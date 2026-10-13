@@ -48,7 +48,8 @@ func ForkCopy(srcPath, dstPath, afterUUID, newID string) error {
 // forkPrefix scans srcPath once and returns the fork's content: every line
 // through the turn containing afterUUID — up to the next top-level user
 // prompt (a prompt only lands once the previous turn finished) or, for the
-// last turn, EOF when a system/turn_duration line proves it completed.
+// last turn, EOF when a system/turn_duration line (never written headless)
+// or a final assistant message that asks for no tool proves it completed.
 //
 // The sessionId rewrite is a literal token replacement, never a bare uuid
 // (the id can appear inside message content). It aborts when the rewrite
@@ -68,13 +69,14 @@ func forkPrefix(srcPath, afterUUID, oldID, newID string) ([]byte, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	var buf bytes.Buffer
-	var seen, completed bool
+	var seen, completed, stopped bool
 	parsed, replaced := 0, 0
 	for sc.Scan() {
 		line := sc.Bytes()
-		// Malformed lines are copied as-is (every reader here skips them).
+		// Malformed lines are copied as-is and not counted (readers skip them).
 		var ev Event
-		if err := json.Unmarshal(line, &ev); err == nil {
+		wellFormed := json.Unmarshal(line, &ev) == nil
+		if wellFormed {
 			if seen {
 				if ev.Type == "user" && !hasToolResult(ev.Message) {
 					completed = true
@@ -90,10 +92,20 @@ func forkPrefix(srcPath, afterUUID, oldID, newID string) ([]byte, error) {
 			if ev.UUID == afterUUID {
 				seen = true
 			}
+			if seen {
+				switch ev.Type {
+				case "assistant":
+					stopped = modelStopped(ev.Message)
+				case "user":
+					stopped = false
+				}
+			}
 		}
 		if bytes.Contains(line, needle) {
 			line = bytes.ReplaceAll(line, needle, repl)
-			replaced++
+			if wellFormed {
+				replaced++
+			}
 		}
 		buf.Write(line)
 		buf.WriteByte('\n')
@@ -104,11 +116,44 @@ func forkPrefix(srcPath, afterUUID, oldID, newID string) ([]byte, error) {
 	if !seen {
 		return nil, fmt.Errorf("fork point %s not found in session", afterUUID)
 	}
-	if !completed {
+	if !completed && !stopped {
 		return nil, fmt.Errorf("fork point is in a turn that has not completed")
 	}
 	if replaced != parsed {
 		return nil, fmt.Errorf("sessionId rewrite mismatch (%d parsed, %d rewritten): jsonl format changed", parsed, replaced)
 	}
 	return buf.Bytes(), nil
+}
+
+// TurnEnded reports whether the log ending in tail finished its last turn:
+// bookkeeping lines trail the message that decides it.
+func TurnEnded(tail []byte) bool {
+	lines := bytes.Split(bytes.TrimRight(tail, "\r\n"), []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if IsTurnComplete(lines[i]) {
+			return true
+		}
+		var ev Event
+		if json.Unmarshal(lines[i], &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "assistant":
+			return modelStopped(ev.Message)
+		case "user":
+			return false
+		}
+	}
+	return false
+}
+
+// modelStopped reports whether an assistant message ended the model's turn.
+func modelStopped(msg json.RawMessage) bool {
+	var m struct {
+		StopReason string `json:"stop_reason"`
+	}
+	if json.Unmarshal(msg, &m) != nil {
+		return false
+	}
+	return m.StopReason != "" && m.StopReason != "tool_use" && m.StopReason != "pause_turn"
 }

@@ -91,10 +91,10 @@ func (r *Router) checkForeignTurn(id string) {
 	}
 
 	// The file grew outside any usher send. The turn is only DONE when the
-	// last line is the end-of-turn marker; otherwise check again next tick.
-	line, err := lastFileLine(path, size)
+	// log's end says so; otherwise check again next tick.
+	tail, err := fileTail(path, base, size)
 	format, formatErr := r.transcriptForBackend(r.backendOf(id))
-	if err != nil || formatErr != nil || !format.IsTurnComplete(line) {
+	if err != nil || formatErr != nil || !format.TurnEnded(tail) {
 		return
 	}
 
@@ -228,27 +228,19 @@ func (r *Router) bumpForeignBaseLocked(sessionID string) {
 	}
 }
 
-// lastFileLine returns the file's final non-empty line, reading at most the
-// trailing 8KB (end-of-turn markers are small single lines).
-func lastFileLine(path string, size int64) ([]byte, error) {
+// fileTail returns what the file gained since base, at most its last 1 MiB.
+func fileTail(path string, base, size int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	const window = 8 * 1024
-	off := size - window
-	if off < 0 {
-		off = 0
-	}
+	const window = 1 << 20
+	off := max(base, size-window)
 	buf := make([]byte, size-off)
 	if _, err := f.ReadAt(buf, off); err != nil {
 		return nil, err
-	}
-	buf = bytes.TrimRight(buf, "\r\n")
-	if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
-		buf = buf[i+1:]
 	}
 	return buf, nil
 }

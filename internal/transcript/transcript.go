@@ -25,7 +25,7 @@ func (Claude) ReadBefore(path, before string, limit int) ([]core.Turn, bool, err
 }
 func (Claude) ReadFrom(path, from string) ([]core.Turn, error) { return claudeLog.From(path, from) }
 func (Claude) NewAssembler() backend.Assembler                 { return jsonl.NewAssembler() }
-func (Claude) IsTurnComplete(raw []byte) bool                  { return jsonl.IsTurnComplete(raw) }
+func (Claude) TurnEnded(tail []byte) bool                      { return jsonl.TurnEnded(tail) }
 
 type Codex struct{}
 
@@ -36,7 +36,9 @@ func (Codex) ReadBefore(path, before string, limit int) ([]core.Turn, bool, erro
 }
 func (Codex) ReadFrom(path, from string) ([]core.Turn, error) { return codexLog.From(path, from) }
 func (Codex) NewAssembler() backend.Assembler                 { return rollout.NewAssembler() }
-func (Codex) IsTurnComplete(raw []byte) bool                  { return rollout.IsTurnComplete(raw) }
+func (Codex) TurnEnded(tail []byte) bool {
+	return rollout.IsTurnComplete(backend.LastLine(tail))
+}
 func (Codex) QuestionReply(questions []core.Question, answers map[string]string) string {
 	return rollout.QuestionReply(questions, answers)
 }

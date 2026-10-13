@@ -188,6 +188,9 @@ func TestTurnCompleteMarker(t *testing.T) {
 	}{
 		{"claude", `{"type":"system","subtype":"turn_duration","durationMs":12}`, true},
 		{"claude", `{"type":"assistant","message":{}}`, false},
+		{"claude", `{"type":"assistant","message":{"stop_reason":"end_turn"}}` + "\n" + `{"type":"system","subtype":"stop_hook_summary"}` + "\n" + `{"type":"cost-state"}`, true},
+		{"claude", `{"type":"assistant","message":{"stop_reason":"tool_use"}}` + "\n" + `{"type":"last-prompt"}`, false},
+		{"claude", `{"type":"assistant","message":{"stop_reason":"end_turn"}}` + "\n" + `{"type":"user","message":{"role":"user","content":"next"}}`, false},
 		{"codex", `{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}`, true},
 		{"codex", `{"type":"event_msg","payload":{"type":"turn_complete","turn_id":"t1"}}`, true}, // announced v2 rename
 		{"codex", `{"type":"event_msg","payload":{"type":"agent_message"}}`, false},
@@ -198,7 +201,7 @@ func TestTurnCompleteMarker(t *testing.T) {
 		if c.backend == "codex" {
 			format = transcript.Codex{}
 		}
-		if got := format.IsTurnComplete([]byte(c.line)); got != c.want {
+		if got := format.TurnEnded([]byte(c.line)); got != c.want {
 			t.Errorf("turnCompleteMarker(%s, %s) = %v, want %v", c.backend, c.line, got, c.want)
 		}
 	}

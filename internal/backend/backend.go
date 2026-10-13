@@ -3,6 +3,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -106,7 +107,16 @@ type Transcript interface {
 	// nothing when no turn starts there any more.
 	ReadFrom(path, from string) ([]core.Turn, error)
 	NewAssembler() Assembler
-	IsTurnComplete(raw []byte) bool
+	// TurnEnded reports whether the log ending in tail finished its last turn.
+	TurnEnded(tail []byte) bool
+}
+
+func LastLine(tail []byte) []byte {
+	tail = bytes.TrimRight(tail, "\r\n")
+	if i := bytes.LastIndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	}
+	return tail
 }
 
 // StartRequest describes the first turn of a new backend session. Runtimes

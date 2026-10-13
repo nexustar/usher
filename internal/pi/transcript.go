@@ -32,6 +32,8 @@ func (Transcript) NewAssembler() backend.Assembler { return NewAssembler() }
 // ends the turn — plus a "length" cutoff that carries no tool call: pi fails
 // truncated tool calls and keeps looping (agent-loop terminate:false), so a
 // length record with tool calls is still mid-turn and more records follow.
+func (t Transcript) TurnEnded(tail []byte) bool { return t.IsTurnComplete(backend.LastLine(tail)) }
+
 func (Transcript) IsTurnComplete(raw []byte) bool {
 	var e entry
 	if json.Unmarshal(raw, &e) != nil || e.Type != "message" {

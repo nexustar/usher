@@ -114,6 +114,55 @@ func TestForkCopy_RejectsInFlightTurn(t *testing.T) {
 	}
 }
 
+// A headless claude writes no turn_duration.
+func TestForkCopy_TipForkWithoutTurnDuration(t *testing.T) {
+	src, srcLines := forkFixture(t, true)
+	sid := `"sessionId":"` + srcID + `"`
+	add := func(line string) {
+		f, err := os.OpenFile(src, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		fmt.Fprintln(f, line)
+		srcLines = append(srcLines, line)
+	}
+	dst := filepath.Join(filepath.Dir(src), newID+".jsonl")
+
+	add(fmt.Sprintf(`{"type":"assistant",%s,"uuid":"a3","parentUuid":"a2","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`, sid))
+	if err := ForkCopy(src, dst, "a3", newID); err == nil || !strings.Contains(err.Error(), "not completed") {
+		t.Fatalf("want in-flight turn error for a pending tool call, got %v", err)
+	}
+	add(fmt.Sprintf(`{"type":"user",%s,"uuid":"r1","parentUuid":"a3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`, sid))
+	if err := ForkCopy(src, dst, "a3", newID); err == nil || !strings.Contains(err.Error(), "not completed") {
+		t.Fatalf("want in-flight turn error after a tool result, got %v", err)
+	}
+	add(fmt.Sprintf(`{"type":"assistant",%s,"uuid":"a4","parentUuid":"r1","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}`, sid))
+	add(fmt.Sprintf(`{"type":"last-prompt",%s,"lastPrompt":"second question","leafUuid":"a4"}`, sid))
+	if err := ForkCopy(src, dst, "a4", newID); err != nil {
+		t.Fatal(err)
+	}
+	if got := readLines(t, dst); len(got) != len(srcLines) {
+		t.Fatalf("tip fork should keep all %d lines, got %d", len(srcLines), len(got))
+	}
+}
+
+func TestForkCopy_ToleratesMalformedLine(t *testing.T) {
+	src, srcLines := forkFixture(t, false)
+	torn := "\x00\x00" + `{"type":"queue-operation","sessionId":"` + srcID + `"}`
+	lines := append([]string{srcLines[0], torn}, srcLines[1:]...)
+	if err := os.WriteFile(src, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(filepath.Dir(src), newID+".jsonl")
+	if err := ForkCopy(src, dst, "a2", newID); err != nil {
+		t.Fatal(err)
+	}
+	if got := readLines(t, dst); len(got) != len(lines) {
+		t.Fatalf("fork should keep all %d lines, got %d", len(lines), len(got))
+	}
+}
+
 func TestForkCopy_Errors(t *testing.T) {
 	src, _ := forkFixture(t, false)
 	dst := filepath.Join(filepath.Dir(src), newID+".jsonl")
