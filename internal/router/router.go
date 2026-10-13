@@ -1132,7 +1132,8 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			// transcript truth-up; no event needed.
 			continue
 		}
-		raw, mErr := json.Marshal(map[string]any{"role": "user", "content": r.userText(sessionID, t.Content), "ts": t.Time})
+		t.Content = r.userText(sessionID, t.Content)
+		raw, mErr := json.Marshal(userTurnEvent(t))
 		if mErr == nil {
 			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnUser, Raw: raw})
 		}
@@ -1196,6 +1197,14 @@ func (r *Router) enrichExitWithTurnTimestamps(sessionID string, raw json.RawMess
 		return raw
 	}
 	return b
+}
+
+func userTurnEvent(t core.Turn) map[string]any {
+	ev := map[string]any{"role": "user", "content": t.Content, "ts": t.Time}
+	if t.Origin != "" {
+		ev["origin"] = t.Origin
+	}
+	return ev
 }
 
 // applyTurnTimestamps stamps payload with the trailing user→assistant

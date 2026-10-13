@@ -126,7 +126,7 @@ func (s *MetaScanner) Feed(line []byte) {
 		// A genuine typed prompt — not a tool_result echo or the
 		// "[Request interrupted ...]" marker claude writes on Ctrl-C.
 		if !ev.Timestamp.IsZero() && !hasToolResult(ev.Message) &&
-			!ev.IsMeta &&
+			!ev.IsMeta && ev.injectedBy() == "" &&
 			!strings.HasPrefix(content, "[Request interrupted") {
 			meta.LastInputAt = ev.Timestamp
 		}
@@ -423,6 +423,7 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 				Role:    "user",
 				Content: compactTaskNotification(text),
 				Time:    ev.Timestamp,
+				Origin:  ev.injectedBy(),
 			})
 		}
 		return completed, nil
@@ -602,6 +603,14 @@ func renderToolResult(ev Event, b body, target string) (content, kind string) {
 func (ev Event) isBoilerplateMeta() bool {
 	return ev.IsMeta && ev.SourceToolUseID == "" &&
 		ev.Origin.Kind == "" && ev.PromptSource == ""
+}
+
+// injectedBy is the origin kind of a prompt the user did not type, or "".
+func (ev Event) injectedBy() string {
+	if ev.Origin.Kind == "human" {
+		return ""
+	}
+	return ev.Origin.Kind
 }
 
 func hasImageBlock(raw json.RawMessage) bool {

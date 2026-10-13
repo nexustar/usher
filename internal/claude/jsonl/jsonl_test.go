@@ -686,6 +686,32 @@ func TestAssembler_MatchesReadTurns(t *testing.T) {
 	}
 }
 
+// Only a typed prompt counts as input.
+func TestInjectedPromptOrigin(t *testing.T) {
+	lines := []string{
+		`{"type":"user","uuid":"u1","timestamp":"2026-10-01T00:00:01Z","promptSource":"sdk","message":{"role":"user","content":"typed"}}`,
+		`{"type":"user","uuid":"u2","timestamp":"2026-10-01T00:00:02Z","origin":{"kind":"human"},"message":{"role":"user","content":"typed too"}}`,
+		`{"type":"user","uuid":"u3","timestamp":"2026-10-01T00:00:03Z","promptSource":"system","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<summary>done</summary>\n</task-notification>"}}`,
+	}
+	a := NewAssembler()
+	s := NewMetaScanner("")
+	var got []core.Turn
+	for _, l := range lines {
+		turns, _ := a.FeedLine([]byte(l))
+		got = append(got, turns...)
+		s.Feed([]byte(l))
+	}
+	if len(got) != 3 || got[0].Origin != "" || got[1].Origin != "" || got[2].Origin != "task-notification" {
+		t.Fatalf("origins = %+v", got)
+	}
+	if got[2].Content != "[task notification] done" {
+		t.Errorf("content = %q", got[2].Content)
+	}
+	if want := time.Date(2026, 10, 1, 0, 0, 2, 0, time.UTC); !s.Meta().LastInputAt.Equal(want) {
+		t.Errorf("LastInputAt = %v, want %v", s.Meta().LastInputAt, want)
+	}
+}
+
 // Claude Code injects <task-notification> prompts when background work
 // (workflows, subagents) finishes — a one-line summary plus a machine
 // payload. Transcripts show the TUI-style summary, not the blob.

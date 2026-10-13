@@ -156,7 +156,7 @@ func (r *Router) publishForeignTurnEvents(sessionID string, turns []core.Turn) {
 	for _, tn := range turns {
 		switch tn.Role {
 		case "user":
-			raw, err := json.Marshal(map[string]any{"role": "user", "content": tn.Content, "ts": tn.Time})
+			raw, err := json.Marshal(userTurnEvent(tn))
 			if err == nil {
 				r.broker.Publish(broker.Event{SessionID: sessionID, Type: backend.EventTurnUser, Raw: raw})
 			}

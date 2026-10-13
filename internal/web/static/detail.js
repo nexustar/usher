@@ -1172,7 +1172,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       if (!d || !d.content) return;
       const el = document.getElementById('chat-scroll');
       if (!el) return;
-      const t = { role: 'user', content: d.content, ts: d.ts };
+      const t = { role: 'user', content: d.content, ts: d.ts, origin: d.origin };
       const echo = [...el.querySelectorAll(':scope > .chat-message.user.optimistic')]
         .reverse()
         .find(n => {

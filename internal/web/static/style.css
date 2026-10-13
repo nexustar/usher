@@ -1088,6 +1088,12 @@ pre.raw-markdown {
   max-width: min(85%, 640px);
   width: fit-content;
 }
+/* A prompt the user did not type. */
+.chat-message.user.injected .content {
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+}
 .chat-message.agent .role { color: var(--purple); }
 .chat-message.error .role { color: var(--danger); }
 .chat-message.system.compaction {

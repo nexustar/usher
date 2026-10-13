@@ -328,7 +328,7 @@ export function appendChatMessage(m, beforeNode) {
   const stick = !beforeNode && !suppressAppendScroll && isNearBottom(list);
   const div = document.createElement('div');
   const role = m.role || 'agent';
-  div.className = 'chat-message ' + role + (m._placeholder ? ' placeholder' : '');
+  div.className = 'chat-message ' + role + (m._placeholder ? ' placeholder' : '') + (m.origin ? ' injected' : '');
   const ts = m.ts ? `<span class="ts">${esc(new Date(m.ts).toLocaleString())}</span>` : '';
   const modelAttr = m.model ? ` title="${esc(m.model)}"` : '';
   let roleLabel = esc(role);

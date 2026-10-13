@@ -94,6 +94,9 @@ type Turn struct {
 	Time    time.Time  `json:"ts"`
 	Model   string     `json:"model,omitempty"`
 	UUID    string     `json:"uuid,omitempty"`
+	// Origin names what sent a user turn the user did not type, in the
+	// backend's own words (Claude: "task-notification").
+	Origin string `json:"origin,omitempty"`
 	// Cursor names a turn read back from a log; opaque, stable as the log grows.
 	Cursor  string    `json:"cursor,omitempty"`
 	EndTime time.Time `json:"-"`
