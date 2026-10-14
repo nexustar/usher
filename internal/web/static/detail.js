@@ -1107,11 +1107,6 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     onRunning();
   };
 
-  const setRoleText = (el, text) => {
-    const roleEl = el && el.querySelector('.role');
-    if (roleEl && roleEl.firstChild) roleEl.firstChild.textContent = text;
-  };
-
   const handlers = {
     // Mid-turn the dispatching turn is still a live bubble with no cursor to
     // hang a reply on; its end fetches the transcript, which places it.
@@ -1152,14 +1147,18 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     // via beginTurn so running-state UI is wired too, not just a bubble.
     'part': (d) => {
       if (!liveTurn) beginTurn();
+      setLiveWorkingText(liveTurn, 'Working…');
       appendLivePart(d);
     },
     'part.delta': (d) => {
       if (!liveTurn) beginTurn();
+      setLiveWorkingText(liveTurn, 'Working…');
       appendLiveDelta(d);
     },
-    'turn.status': () => {
+    'turn.status': (d) => {
       if (!liveTurn) beginTurn();
+      const retrying = d && d.status === 'retrying';
+      setLiveWorkingText(liveTurn, retrying ? 'Retrying…' + (d.detail ? ' ' + d.detail : '') : 'Working…');
     },
     // The canonical user prompt hit the jsonl. Adopt our optimistic echo
     // (stamp the persisted ts, commit it). No echo means the prompt came
@@ -1216,15 +1215,12 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       if (liveTurn) {
         clearLiveWorking(liveTurn);
         updateMessageTs(liveTurn.node, new Date().toISOString());
-        // Keep .optimistic: an error isn't a canonical transcript turn, so a
-        // full fetch should clear it. Streamed parts stay visible above the
-        // error text until then (they're canonical in the jsonl anyway).
+        // Keep .optimistic: the next full fetch replaces it with the
+        // transcript's error turn.
         liveTurn.node.className = 'chat-message error optimistic';
-        setRoleText(liveTurn.node, 'error');
         const div = document.createElement('div');
-        div.className = 'content';
-        div.dataset.raw = msg;
-        div.innerHTML = renderMarkdown(msg);
+        div.className = 'content turn-error';
+        div.textContent = msg;
         liveTurn.node.appendChild(div);
         liveTurn = null;
       } else {
@@ -1514,6 +1510,12 @@ function showLiveWorking(lt) {
     lt.working.textContent = 'Working…';
   }
   lt.node.insertAdjacentElement('afterend', lt.working);
+}
+
+function setLiveWorkingText(lt, text) {
+  if (!lt || !lt.working) return;
+  lt.working.textContent = text;
+  lt.working.title = text;
 }
 
 function clearLiveWorking(lt) {

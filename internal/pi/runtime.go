@@ -1153,6 +1153,8 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 					Error        string                       `json:"error"`
 					ErrorMessage string                       `json:"errorMessage"`
 					FinalError   string                       `json:"finalError"`
+					Attempt      int                          `json:"attempt"`
+					MaxAttempts  int                          `json:"maxAttempts"`
 					Success      bool                         `json:"success"`
 				}
 				if json.Unmarshal(raw, &e) != nil {
@@ -1182,7 +1184,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 					b, _ := json.Marshal(backend.ErrorPayload{Message: msg})
 					out <- backend.Event{Type: backend.EventError, Raw: b}
 				case "auto_retry_start":
-					b, _ := json.Marshal(backend.TurnStatusPayload{Status: "retrying"})
+					b, _ := json.Marshal(backend.TurnStatusPayload{Status: "retrying", Detail: backend.RetryDetail(e.Attempt, e.MaxAttempts, e.ErrorMessage)})
 					out <- backend.Event{Type: backend.EventTurnStatus, Raw: b}
 				case "compaction_start":
 					b, _ := json.Marshal(backend.TurnStatusPayload{Status: "compacting"})

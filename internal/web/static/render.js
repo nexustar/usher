@@ -349,8 +349,12 @@ export function appendChatMessage(m, beforeNode) {
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>` +
       (m.uuid ? forkBtnHTML(m.uuid) : '') +
       `</div>`;
+  } else if (role === 'error') {
+    div.innerHTML =
+      `<div class="content turn-error">${esc(m.content || '')}</div>` +
+      `<div class="role">${ts}</div>`;
   } else {
-    // User, error, or streaming placeholder (flat content).
+    // User or streaming placeholder (flat content).
     div.innerHTML =
       `<div class="content" data-raw="${esc(m.content || '')}">${renderMarkdown(m.content || '')}</div>` +
       `<div class="role"${modelAttr}>${roleLabel}${ts}</div>`;

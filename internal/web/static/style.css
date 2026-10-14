@@ -1095,7 +1095,13 @@ pre.raw-markdown {
   color: var(--text-muted);
 }
 .chat-message.agent .role { color: var(--purple); }
-.chat-message.error .role { color: var(--danger); }
+.chat-message .turn-error {
+  color: var(--danger-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-message .turn-error::before { content: "■ "; }
+.chat-message.error .role .ts { margin-left: 0; }
 .chat-message.system.compaction {
   display: flex;
   align-items: center;
@@ -1213,6 +1219,10 @@ pre.raw-markdown {
   color: var(--text-disabled);
   font-style: italic;
   padding: 0.4rem 0.25rem;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .chat-message .content { margin: 0; }
 /* "Load earlier" sits at the top of the transcript when older turns exist

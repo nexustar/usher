@@ -33,7 +33,10 @@ type Result struct {
 
 // Delta is ephemeral protocol output used for live preview. Session JSONL
 // remains the canonical transcript.
-type Delta struct{ Text string }
+type Delta struct {
+	Text  string
+	Retry string
+}
 
 type turnRequest struct {
 	done    chan Result
@@ -673,6 +676,10 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			} `json:"event"`
 			CommandUUID string `json:"command_uuid"`
 			State       string `json:"state"`
+			Attempt     int    `json:"attempt"`
+			MaxRetries  int    `json:"max_retries"`
+			ErrorStatus int    `json:"error_status"`
+			Error       string `json:"error"`
 		}
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
@@ -754,6 +761,16 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			select {
 			case p.turns[0].deltas <- Delta{Text: e.Event.Delta.Text}:
 			default: // preview may drop under backpressure; JSONL truth-up repairs it
+			}
+		}
+		if len(p.turns) > 0 && !p.turns[0].foreign && e.Type == "system" && e.Subtype == "api_retry" {
+			reason := e.Error
+			if e.ErrorStatus != 0 {
+				reason = strings.TrimSpace(fmt.Sprintf("%d %s", e.ErrorStatus, e.Error))
+			}
+			select {
+			case p.turns[0].deltas <- Delta{Retry: backend.RetryDetail(e.Attempt, e.MaxRetries, reason)}:
+			default:
 			}
 		}
 		if len(p.turns) > 0 && e.Message.Model != "" {

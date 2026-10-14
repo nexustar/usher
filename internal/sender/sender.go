@@ -637,7 +637,12 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendS
 		backend: "claude", idKey: "session_id", id: id, cwd: cwd, fresh: fresh,
 		path: path, offset: offset, locate: func() string { return s.locate(id) }, poll: s.t.poll,
 		tail: tail, done: done, deltas: deltas, logger: s.logger,
-		delta: func(d claude.Delta) (string, string, bool) { return "text", d.Text, true },
+		delta: func(d claude.Delta) (string, string, bool) {
+			if d.Retry != "" {
+				return "retrying", d.Retry, true
+			}
+			return "text", d.Text, true
+		},
 		result: func(ctx context.Context, out chan<- StreamEvent, result claude.Result) {
 			if result.Subtype != "cancelled" {
 				if result.Error != "" {
@@ -740,12 +745,15 @@ func codexTurnError(result codex.TurnResult) string {
 }
 
 func emitLiveDelta(ctx context.Context, out chan<- StreamEvent, kind, delta string) bool {
-	if delta == "" {
+	if delta == "" && kind != "retrying" {
 		return true
 	}
 	typ, payload := backend.EventPartDelta, any(backend.PartDeltaPayload{Delta: delta})
-	if kind == "reasoning" {
+	switch kind {
+	case "reasoning":
 		typ, payload = backend.EventTurnStatus, backend.TurnStatusPayload{Status: "thinking"}
+	case "retrying":
+		typ, payload = backend.EventTurnStatus, backend.TurnStatusPayload{Status: "retrying", Detail: delta}
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

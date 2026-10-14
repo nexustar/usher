@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/nexustar/usher/internal/core"
 )
@@ -62,6 +63,17 @@ type PartDeltaPayload struct {
 
 type TurnStatusPayload struct {
 	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func RetryDetail(attempt, max int, reason string) string {
+	if max <= 0 {
+		return reason
+	}
+	if reason == "" {
+		return fmt.Sprintf("%d/%d", attempt, max)
+	}
+	return fmt.Sprintf("%d/%d · %s", attempt, max, reason)
 }
 
 // IsControlEvent reports whether an event is an usher runtime signal rather

@@ -410,18 +410,23 @@ func (c *Client) dispatch(m rpcMessage) {
 			ThreadID  string `json:"threadId"`
 			WillRetry bool   `json:"willRetry"`
 			Error     struct {
-				Message string `json:"message"`
+				Message           string `json:"message"`
+				AdditionalDetails string `json:"additionalDetails"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
-		// Retry errors may still be followed by a successful turn.
-		if !p.WillRetry && p.Error.Message != "" {
-			c.mu.Lock()
-			if stream := c.turns[p.ThreadID]; stream != nil {
+		c.mu.Lock()
+		if stream := c.turns[p.ThreadID]; stream != nil {
+			if p.WillRetry {
+				select {
+				case stream.deltas <- Delta{Kind: "retrying", Text: retryDetail(p.Error.Message, p.Error.AdditionalDetails)}:
+				default:
+				}
+			} else if p.Error.Message != "" {
 				stream.errMsg = p.Error.Message
 			}
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 		return
 	}
 	if m.Method == "turn/completed" {
@@ -1023,4 +1028,13 @@ func (c *Client) Kill(ctx context.Context, id string) error {
 		stream.finish(TurnResult{Status: "interrupted"})
 	}
 	return nil
+}
+
+func retryDetail(message, cause string) string {
+	var attempt, max int
+	_, _ = fmt.Sscanf(message, "Reconnecting... %d/%d", &attempt, &max)
+	if cause == "" {
+		cause = message
+	}
+	return backend.RetryDetail(attempt, max, cause)
 }

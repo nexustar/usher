@@ -781,3 +781,13 @@ func TestReadSessionMetaUsesLatestClaudeContext(t *testing.T) {
 		t.Fatalf("usage = %+v", u)
 	}
 }
+
+func TestAssemblerAPIErrorIsErrorTurn(t *testing.T) {
+	a := NewAssembler()
+	a.FeedLine([]byte(`{"type":"assistant","timestamp":"2026-10-14T10:00:00Z","message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"partial"}]}}`))
+	completed, part := a.FeedLine([]byte(`{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-10-14T10:00:01Z","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"API Error: 529 Overloaded"}]}}`))
+	if part != nil || len(completed) != 2 || completed[0].Role != "assistant" ||
+		completed[1].Role != "error" || completed[1].Content != "API Error: 529 Overloaded" {
+		t.Fatalf("completed = %+v, part = %+v", completed, part)
+	}
+}

@@ -61,6 +61,9 @@ type Router struct {
 	creating   map[string]core.Session  // sessions usher is spawning, not yet on disk
 	relayIn    map[string][]relayNote   // router sessionID -> replies to fold into its next prompt
 
+	errMu      sync.Mutex
+	turnErrors map[string]turnError // sessionID -> latest turn error
+
 	askMu sync.Mutex
 	asks  map[string]map[*askToken]struct{} // sessionID -> open in-place questions (questions.go)
 
@@ -82,6 +85,7 @@ func (r *Router) startTurn(ctx context.Context, sessionID, prompt, cwd string, t
 	if run == nil {
 		run = r.runSend
 	}
+	r.clearTurnError(sessionID)
 	go run(ctx, sessionID, prompt, cwd, tok)
 }
 
@@ -397,7 +401,14 @@ func (r *Router) ReadTurns(id, before string, limit int) (turns []core.Turn, mor
 		return nil, false, err
 	}
 	turns, more, err = format.ReadBefore(path, before, limit)
-	return r.wireTurnsOf(id, turns), more, err
+	turns = r.wireTurnsOf(id, turns)
+	if err == nil && before == "" {
+		turns = r.withTurnError(id, turns)
+		if limit > 0 && len(turns) > limit {
+			turns, more = turns[1:], true
+		}
+	}
+	return turns, more, err
 }
 
 // ReadTurnsFrom returns the turn at cursor from and every turn after it, or
@@ -408,7 +419,11 @@ func (r *Router) ReadTurnsFrom(id, from string) ([]core.Turn, error) {
 		return nil, err
 	}
 	turns, err := format.ReadFrom(path, from)
-	return r.wireTurnsOf(id, turns), err
+	turns = r.wireTurnsOf(id, turns)
+	if err == nil && len(turns) > 0 {
+		turns = r.withTurnError(id, turns)
+	}
+	return turns, err
 }
 
 func (r *Router) transcriptOf(id string) (backendpkg.Transcript, string, error) {
@@ -769,6 +784,7 @@ func (r *Router) DeleteSession(id string) error {
 	r.discovery.Remove(id)
 	r.meta.Forget(id)
 	r.interactions.SetAutoApprove(id, false)
+	r.clearTurnError(id)
 	slog.Info("session deleted", "session", id)
 	return nil
 }
@@ -1052,6 +1068,7 @@ func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok
 // without its matching exit would leave relays and queued sends waiting.
 func (r *Router) failSend(sessionID string, tok *sendToken, err error) {
 	r.markSendIdle(sessionID, tok)
+	r.noteTurnError(sessionID, err.Error(), tok.started)
 	errRaw, _ := json.Marshal(backendpkg.ErrorPayload{Message: err.Error()})
 	r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventError, Raw: errRaw})
 	exitRaw, _ := json.Marshal(map[string]string{"reason": "error"})
@@ -1107,6 +1124,9 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			r.discovery.Upsert(path)
 		}
 		ev.Raw = r.enrichExitWithTurnTimestamps(sessionID, ev.Raw, started)
+	}
+	if ev.Type == backendpkg.EventError {
+		r.noteTurnError(sessionID, extractErrorMessage(ev.Raw), started)
 	}
 	r.broker.Publish(broker.Event{SessionID: sessionID, Type: ev.Type, Raw: ev.Raw})
 

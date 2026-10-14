@@ -52,6 +52,8 @@ type Event struct {
 	IsMeta          bool   `json:"isMeta,omitempty"`
 	SourceToolUseID string `json:"sourceToolUseID,omitempty"`
 
+	IsAPIErrorMessage bool `json:"isApiErrorMessage,omitempty"`
+
 	// Origin ("coordinator" — a message pushed into a running subagent) and
 	// PromptSource ("system" — a queued prompt) mark meta that carries
 	// injected input. Boilerplate meta has neither.
@@ -413,6 +415,15 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 	}
 
 	b := parseBody(ev.Message)
+	if ev.Type == "assistant" && ev.IsAPIErrorMessage {
+		if t := a.Flush(); t != nil {
+			completed = append(completed, *t)
+		}
+		if text := b.joinedText(); text != "" {
+			completed = append(completed, core.Turn{Role: "error", Content: text, Time: ev.Timestamp, UUID: ev.UUID})
+		}
+		return completed, nil
+	}
 	if ev.Type == "user" && !b.hasToolResult() && !(ev.IsMeta && ev.SourceToolUseID != "") {
 		// Real user prompt — flush any in-progress assistant turn.
 		if t := a.Flush(); t != nil {
