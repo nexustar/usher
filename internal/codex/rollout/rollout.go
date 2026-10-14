@@ -154,13 +154,17 @@ func (s *MetaScanner) Feed(raw []byte) {
 				meta.ID = p.ID
 			}
 			meta.Cwd = p.Cwd
-			meta.IsSubagent = p.ThreadSource == "subagent"
+			// guardian_review is an auto-review thread, spawned per parent.
+			meta.IsSubagent = p.ThreadSource == "subagent" || p.ThreadSource == "guardian_review"
 			if meta.IsSubagent {
 				meta.ParentID = p.ParentThreadID
 			}
 			meta.AgentName = p.AgentNickname
 			if meta.AgentName == "" {
 				meta.AgentName = p.AgentPath
+			}
+			if meta.AgentName == "" && p.ThreadSource == "guardian_review" {
+				meta.AgentName = "auto-review"
 			}
 		}
 	case "event_msg":

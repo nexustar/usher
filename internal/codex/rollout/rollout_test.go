@@ -88,6 +88,22 @@ func TestReadSessionMetaSubagent(t *testing.T) {
 	}
 }
 
+func TestReadSessionMetaGuardianReview(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout-2026-10-14T00-00-00-01a1396f-7dd0-7381-8da2-d8bb043fa493.jsonl")
+	raw := `{"timestamp":"2026-10-14T00:00:00Z","type":"session_meta","payload":{"id":"01a1396f-7dd0-7381-8da2-d8bb043fa493","cwd":"/tmp/project","source":{"subagent":{"other":"guardian"}},"thread_source":"guardian_review","parent_thread_id":"019f5228-434c-76d1-8459-4279b2d87ba3"}}`
+	if err := os.WriteFile(path, []byte(raw+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !meta.IsSubagent || meta.ParentID != "019f5228-434c-76d1-8459-4279b2d87ba3" || meta.AgentName != "auto-review" {
+		t.Fatalf("guardian review meta = %+v", meta)
+	}
+}
+
 // The prompt doubles as the session title (codex has no ai-title), so trailing
 // whitespace must not eat into the 60-rune budget and add a bogus ellipsis.
 func TestReadSessionMeta_PromptIsTrimmed(t *testing.T) {
