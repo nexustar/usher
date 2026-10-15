@@ -151,13 +151,13 @@ func TestHubMirrorsAndLazyCreatesTopic(t *testing.T) {
 			"role": "assistant",
 			"part": map[string]any{"type": "text", "content": text},
 		})
-		return broker.Event{SessionID: "sessXYZ", Type: "part", Raw: raw}
+		return broker.Event{SessionID: "sessXYZ", Type: "turn.part", Raw: raw}
 	}
 
 	fr.events <- asst("first reply")
-	fr.events <- broker.Event{SessionID: "sessXYZ", Type: "turn.user", Raw: json.RawMessage(`{}`)} // ignored
+	fr.events <- broker.Event{SessionID: "sessXYZ", Type: "turn.prompt", Raw: json.RawMessage(`{}`)} // ignored
 	fr.events <- asst("second reply")
-	fr.events <- broker.Event{SessionID: "sessXYZ", Type: "subprocess.exit", Raw: json.RawMessage(`{}`)}
+	fr.events <- broker.Event{SessionID: "sessXYZ", Type: "turn.ended", Raw: json.RawMessage(`{}`)}
 
 	waitFor(t, func() bool {
 		rs.mu.Lock()
@@ -256,7 +256,7 @@ func TestHubMirrorsShowImage(t *testing.T) {
 			"type": "tool", "tool_name": "mcp__usher__show_image", "tool_target": "chart.png",
 		},
 	})
-	fr.events <- broker.Event{SessionID: "s1", Type: "part", Raw: raw}
+	fr.events <- broker.Event{SessionID: "s1", Type: "turn.part", Raw: raw}
 
 	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(photos) == 1 })
 
@@ -364,7 +364,7 @@ func TestPromptEchoAndDedup(t *testing.T) {
 
 	userEv := func(text string) broker.Event {
 		raw, _ := json.Marshal(map[string]any{"role": "user", "content": text})
-		return broker.Event{SessionID: "s1", Type: "turn.user", Raw: raw}
+		return broker.Event{SessionID: "s1", Type: "turn.prompt", Raw: raw}
 	}
 
 	// Web-originated prompt (not recorded) → echoed with the ▶ prefix.
@@ -437,7 +437,7 @@ func TestPerSessionIsolation(t *testing.T) {
 			"role": "assistant",
 			"part": map[string]any{"type": "text", "content": text},
 		})
-		return broker.Event{SessionID: sess, Type: "part", Raw: raw}
+		return broker.Event{SessionID: sess, Type: "turn.part", Raw: raw}
 	}
 	fr.events <- asst("s1", "blocks here")
 	fr.events <- asst("s2", "should still send")
@@ -518,7 +518,7 @@ func TestDecodeDecision(t *testing.T) {
 		ok                  bool
 	}{
 		{"a:abc123", "allow", "", "abc123", true},
-		{"s:abc123", "allow", "session", "abc123", true},
+		{"s:abc123", "allow", "always", "abc123", true},
 		{"d:abc123", "deny", "", "abc123", true},
 		{"i:abc123", "deny", "", "abc123", true}, // ignore = deny under the hood
 
@@ -608,7 +608,7 @@ func TestHandleCallbackResolvesInteraction(t *testing.T) {
 	fr.mu.Lock()
 	resp, ok := fr.responded["pend42"]
 	fr.mu.Unlock()
-	if !ok || resp.Behavior != "allow" || resp.Scope != "session" {
+	if !ok || resp.Behavior != "allow" || resp.Scope != "always" {
 		t.Fatalf("interaction not resolved correctly: %+v ok=%v", resp, ok)
 	}
 	if !answerCalled || !editCalled {

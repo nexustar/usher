@@ -125,7 +125,7 @@ func (s *Store) List() []Profile {
 // name travels through: whitespace (chat clients cut `--agent <name>` at the
 // first space, so the tail would land in the instruction), unprintable runes
 // (names that look identical but never match), and "/" "." ".." (the name is a
-// path segment in /api/agents/{name}, which proxies normalize).
+// path segment in /api/v1/agents/{name}, which proxies normalize).
 func validate(p Profile) (Profile, error) {
 	p.Name = strings.TrimSpace(p.Name)
 	p.Builtin = false

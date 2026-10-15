@@ -65,7 +65,7 @@ func url(pathAndQuery string) string { return "http://usher" + pathAndQuery }
 // Ping verifies the socket is reachable — a startup diagnostic so a plugin
 // fails fast with a clear message when usher isn't running.
 func (c *Client) Ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url("/v1/healthz"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url("/healthz"), nil)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func (c *Client) GetSession(id string) (core.Session, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	var sess api.Session
-	if err := c.getJSON(ctx, "/v1/sessions/"+neturl.PathEscape(id), &sess); err != nil {
+	if err := c.getJSON(ctx, api.Prefix+"/sessions/"+neturl.PathEscape(id), &sess); err != nil {
 		return core.Session{}, false
 	}
 	return sess.Session, true
@@ -96,7 +96,7 @@ func (c *Client) GetSession(id string) (core.Session, bool) {
 func (c *Client) SendToSession(id, text string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	return c.post(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/send", api.SendRequest{Text: text})
+	return c.post(ctx, api.Prefix+"/sessions/"+neturl.PathEscape(id)+"/messages", api.MessageRequest{Text: text})
 }
 
 // ListSessions returns every root session, archived ones included, with
@@ -104,11 +104,11 @@ func (c *Client) SendToSession(id, text string) error {
 func (c *Client) ListSessions() ([]SessionView, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	var out []SessionView
-	if err := c.getJSON(ctx, "/v1/sessions?include_archived=1", &out); err != nil {
+	var out api.SessionList
+	if err := c.getJSON(ctx, api.Prefix+"/sessions?include_archived=1", &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Sessions, nil
 }
 
 // SendToSessionRelayed routes a prompt on the router session's behalf and
@@ -118,7 +118,7 @@ func (c *Client) SendToSessionRelayed(id, text string) (Delivery, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
 	var out Delivery
-	err := c.postJSON(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/route", api.SendRequest{Text: text}, &out)
+	err := c.postJSON(ctx, "/internal/router/sessions/"+neturl.PathEscape(id)+"/messages", api.MessageRequest{Text: text}, &out)
 	return out, err
 }
 
@@ -130,9 +130,11 @@ type CreateRequest = api.CreateRequest
 func (c *Client) CreateSession(req CreateRequest) (Delivery, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
-	var out Delivery
-	err := c.postJSON(ctx, "/v1/sessions", req, &out)
-	return out, err
+	var sess api.Session
+	if err := c.postJSON(ctx, api.Prefix+"/sessions", req, &sess); err != nil {
+		return Delivery{}, err
+	}
+	return Delivery{SessionID: sess.ID}, nil
 }
 
 // RouteNewSession is CreateSession on the router session's behalf: the new
@@ -141,7 +143,7 @@ func (c *Client) RouteNewSession(req CreateRequest) (Delivery, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	var out Delivery
-	err := c.postJSON(ctx, "/v1/route", req, &out)
+	err := c.postJSON(ctx, "/internal/router/sessions", req, &out)
 	return out, err
 }
 
@@ -162,9 +164,12 @@ func (c *Client) ReadTurns(id, before, from string, limit int) (api.TranscriptPa
 		values.Set("from", from)
 	}
 	var out api.TranscriptPage
-	err := c.getJSON(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/transcript?"+values.Encode(), &out)
+	err := c.getJSON(ctx, api.Prefix+"/sessions/"+neturl.PathEscape(id)+"/transcript?"+values.Encode(), &out)
 	return out, err
 }
+
+// SearchResult is the body of GET /search.
+type SearchResult = api.SearchResult
 
 // SearchSessions searches one session's transcript when id is set, or ranks
 // matching sessions across the machine when it is empty.
@@ -179,25 +184,20 @@ func (c *Client) SearchSessions(id, query string, limit, contextChars int) (Sear
 		values.Set("session_id", id)
 	}
 	var out SearchResult
-	err := c.getJSON(ctx, "/v1/search?"+values.Encode(), &out)
+	err := c.getJSON(ctx, api.Prefix+"/search?"+values.Encode(), &out)
 	return out, err
 }
 
 func (c *Client) SetArchived(id string, archived bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	method := http.MethodPost
-	if !archived {
-		method = http.MethodDelete
-	}
-	return c.do(ctx, method, "/v1/sessions/"+neturl.PathEscape(id)+"/archive", nil, nil)
+	return c.patch(ctx, id, api.PatchRequest{Archived: &archived})
 }
 
 func (c *Client) SetAutoApprove(id string, enabled bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	return c.post(ctx, "/v1/sessions/"+neturl.PathEscape(id)+"/auto-approve",
-		map[string]bool{"enabled": enabled})
+	return c.patch(ctx, id, api.PatchRequest{AutoApprove: &enabled})
 }
 
 // ListPendingInteractions returns the currently-pending prompts as a snapshot;
@@ -205,11 +205,11 @@ func (c *Client) SetAutoApprove(id string, enabled bool) error {
 func (c *Client) ListPendingInteractions() ([]interaction.Pending, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	var out []interaction.Pending
-	if err := c.getJSON(ctx, "/v1/interactions", &out); err != nil {
+	var out api.InteractionList
+	if err := c.getJSON(ctx, api.Prefix+"/interactions", &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Interactions, nil
 }
 
 // SessionView is a session plus the flags usher keeps outside the jsonl.
@@ -220,7 +220,7 @@ type SessionView = api.Session
 func (c *Client) UploadAttachment(id, filename string, src io.Reader) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), attachmentTimeout)
 	defer cancel()
-	path := "/v1/sessions/" + neturl.PathEscape(id) + "/upload?filename=" + neturl.QueryEscape(filename)
+	path := api.Prefix + "/uploads?" + neturl.Values{"session_id": {id}, "filename": {filename}}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url(path), src)
 	if err != nil {
 		return "", err
@@ -231,12 +231,10 @@ func (c *Client) UploadAttachment(id, filename string, src io.Reader) (string, e
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusCreated {
 		return "", apiError(resp)
 	}
-	var out struct {
-		Path string `json:"path"`
-	}
+	var out api.Upload
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return "", err
 	}
@@ -247,14 +245,14 @@ func (c *Client) UploadAttachment(id, filename string, src io.Reader) (string, e
 func (c *Client) RespondInteraction(id string, resp interaction.Response) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	return c.post(ctx, "/v1/interactions/"+neturl.PathEscape(id)+"/respond", resp)
+	return c.post(ctx, api.Prefix+"/interactions/"+neturl.PathEscape(id)+"/respond", resp)
 }
 
 // SubscribeAllSessions streams every session's events (filtered to
 // EventTypes when set). The subscription reconnects with backoff until
 // cancelled, so a usher restart heals itself.
 func (c *Client) SubscribeAllSessions() (<-chan broker.Event, func()) {
-	path := "/v1/events"
+	path := api.Prefix + "/events"
 	if len(c.EventTypes) > 0 {
 		path += "?types=" + neturl.QueryEscape(strings.Join(c.EventTypes, ","))
 	}
@@ -265,7 +263,7 @@ func (c *Client) SubscribeAllSessions() (<-chan broker.Event, func()) {
 // (re)connect the server replays the currently-pending set before the live
 // stream; consumers must dedupe by pending id.
 func (c *Client) SubscribePendingInteractions() (<-chan interaction.Pending, func()) {
-	events, cancel := subscribe[broker.Event](c, "/v1/events?types="+api.EventInteractionPending)
+	events, cancel := subscribe[broker.Event](c, api.Prefix+"/events?types="+api.EventInteractionPending)
 	ch := make(chan interaction.Pending, 64)
 	go func() {
 		defer close(ch)
@@ -295,6 +293,10 @@ func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 		return apiError(resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+func (c *Client) patch(ctx context.Context, id string, req api.PatchRequest) error {
+	return c.do(ctx, http.MethodPatch, api.Prefix+"/sessions/"+neturl.PathEscape(id), req, nil)
 }
 
 func (c *Client) post(ctx context.Context, path string, body any) error {
@@ -352,14 +354,12 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("plugin api status %d", e.Status)
 }
 
-// apiError extracts the server's {"error": ...} message from a non-2xx reply.
+// apiError extracts the server's error message from a non-2xx reply.
 func apiError(resp *http.Response) error {
-	var e struct {
-		Error string `json:"error"`
-	}
+	var e api.Error
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if json.Unmarshal(body, &e) == nil && e.Error != "" {
-		return &APIError{Status: resp.StatusCode, Msg: e.Error}
+	if json.Unmarshal(body, &e) == nil && e.Error.Message != "" {
+		return &APIError{Status: resp.StatusCode, Msg: e.Error.Message}
 	}
 	return &APIError{Status: resp.StatusCode}
 }

@@ -69,8 +69,8 @@ func TestMergeLoggedTurn_CancelEmitsExit(t *testing.T) {
 	f := startTurnLoop(t)
 	f.cancel()
 	evs := collect(t, f.ch, 5*time.Second)
-	if !hasType(evs, backend.EventProcessExit) {
-		t.Fatalf("cancelled turn produced no %s: %v", backend.EventProcessExit, types(evs))
+	if !hasType(evs, backend.EventTurnEnded) {
+		t.Fatalf("cancelled turn produced no %s: %v", backend.EventTurnEnded, types(evs))
 	}
 }
 
@@ -84,8 +84,8 @@ func TestMergeLoggedTurn_CancelDrainsLateBackendResult(t *testing.T) {
 		f.done <- fakeResult{}
 	}()
 	evs := collect(t, f.ch, 5*time.Second)
-	if !hasType(evs, backend.EventProcessExit) {
-		t.Fatalf("cancelled turn produced no %s: %v", backend.EventProcessExit, types(evs))
+	if !hasType(evs, backend.EventTurnEnded) {
+		t.Fatalf("cancelled turn produced no %s: %v", backend.EventTurnEnded, types(evs))
 	}
 	if !hasType(evs, "assistant") {
 		t.Fatalf("cancel dropped a record persisted before the interrupt landed: %v", types(evs))
@@ -97,8 +97,8 @@ func TestMergeLoggedTurn_CancelFinalizesWithoutBackendResult(t *testing.T) {
 	f := startTurnLoop(t)
 	f.cancel()
 	evs := collect(t, f.ch, 5*time.Second)
-	if !hasType(evs, backend.EventProcessExit) {
-		t.Fatalf("cancelled turn produced no %s: %v", backend.EventProcessExit, types(evs))
+	if !hasType(evs, backend.EventTurnEnded) {
+		t.Fatalf("cancelled turn produced no %s: %v", backend.EventTurnEnded, types(evs))
 	}
 }
 
@@ -109,10 +109,10 @@ func TestMergeLoggedTurn_CompletionDrainsTail(t *testing.T) {
 	appendLines(f.path, 0, `{"type":"assistant"}`)
 	f.done <- fakeResult{}
 	evs := collect(t, f.ch, 5*time.Second)
-	if !hasType(evs, "assistant") || !hasType(evs, backend.EventProcessExit) {
+	if !hasType(evs, "assistant") || !hasType(evs, backend.EventTurnEnded) {
 		t.Fatalf("completed turn missing assistant/exit: %v", types(evs))
 	}
-	if hasType(evs, backend.EventError) {
+	if hasType(evs, backend.EventTurnFailed) {
 		t.Fatalf("clean turn emitted an error: %v", types(evs))
 	}
 }
@@ -163,7 +163,7 @@ func TestMergeLoggedTurn_MarkerBeforeDoneSkipsQuiet(t *testing.T) {
 	// collect fails the test on timeout, so finishing under 3s proves the quiet
 	// window was skipped.
 	evs := collect(t, ch, 3*time.Second)
-	if !hasType(evs, backend.EventProcessExit) {
+	if !hasType(evs, backend.EventTurnEnded) {
 		t.Fatalf("no exit after marker: %v", types(evs))
 	}
 }
@@ -200,7 +200,7 @@ func TestMergeLoggedTurn_CancelMarkerBeforeResultSkipsQuiet(t *testing.T) {
 	done <- fakeResult{}
 
 	evs := collect(t, ch, 3*time.Second)
-	if !hasType(evs, backend.EventProcessExit) {
+	if !hasType(evs, backend.EventTurnEnded) {
 		t.Fatalf("no exit after abort marker: %v", types(evs))
 	}
 }
@@ -237,7 +237,7 @@ func TestMergeLoggedTurn_WaitsForLateLog(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	select {
 	case ev := <-ch:
-		if ev.Type != backend.EventProcessStarted {
+		if ev.Type != backend.EventTurnStarted {
 			t.Fatalf("before the log appeared: %s %s", ev.Type, ev.Raw)
 		}
 	default:
@@ -249,7 +249,7 @@ func TestMergeLoggedTurn_WaitsForLateLog(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	done <- fakeResult{}
 	evs := collect(t, ch, time.Second)
-	if hasType(evs, backend.EventError) {
+	if hasType(evs, backend.EventTurnFailed) {
 		t.Fatalf("late log reported as an error: %+v", evs)
 	}
 	lines := 0
@@ -268,7 +268,7 @@ func TestMergeLoggedTurn_EndsWithoutLog(t *testing.T) {
 	ch, done, _ := lateLogTurn(t)
 	done <- fakeResult{}
 	evs := collect(t, ch, time.Second)
-	if !hasType(evs, backend.EventError) {
+	if !hasType(evs, backend.EventTurnFailed) {
 		t.Fatalf("no error for a turn that left no log: %+v", evs)
 	}
 }

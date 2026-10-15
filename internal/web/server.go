@@ -13,7 +13,6 @@ package web
 
 import (
 	"context"
-	"crypto/rand"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -26,21 +25,16 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/auth"
-	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/interaction"
-	"github.com/nexustar/usher/internal/pathutil"
 	"github.com/nexustar/usher/internal/pluginapi"
 	"github.com/nexustar/usher/internal/push"
 	"github.com/nexustar/usher/internal/router"
-	"github.com/nexustar/usher/internal/schedule"
 	"github.com/nexustar/usher/internal/terminal"
 )
 
@@ -60,20 +54,18 @@ func init() {
 }
 
 type Server struct {
-	addr           string
-	hookSockPath   string
-	attachmentsDir string
-	auth           *auth.Store
-	router         *router.Router
-	push           *push.Manager
-	logger         *slog.Logger
+	addr         string
+	hookSockPath string
+	auth         *auth.Store
+	router       *router.Router
+	api          *api.Server
+	push         *push.Manager
+	logger       *slog.Logger
 	// editorURL is the --editor-url template for the "Open in editor" entry
 	// in the session actions menu; "" hides the entry.
 	editorURL string
 	uiDir     string
 	themePath string
-	agents    *agentprofile.Store
-	schedules *schedule.Runner
 	// readOnly rejects every state-changing web request (see
 	// readOnlyMiddleware); reads, SSE, and static files stay available.
 	readOnly bool
@@ -82,55 +74,32 @@ type Server struct {
 func NewServer(
 	addr string,
 	hookSockPath string,
-	attachmentsDir string,
 	authStore *auth.Store,
 	r *router.Router,
 	pushMgr *push.Manager,
 	editorURL string,
 	uiDir string,
 	themePath string,
-	agents *agentprofile.Store,
-	schedules *schedule.Runner,
-	readOnly bool,
+	c api.Config,
 	logger *slog.Logger,
 ) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	c.Router = r
 	return &Server{
-		addr:           addr,
-		hookSockPath:   hookSockPath,
-		attachmentsDir: attachmentsDir,
-		auth:           authStore,
-		router:         r,
-		push:           pushMgr,
-		logger:         logger,
-		editorURL:      editorURL,
-		uiDir:          uiDir,
-		themePath:      themePath,
-		agents:         agents,
-		schedules:      schedules,
-		readOnly:       readOnly,
+		addr:         addr,
+		hookSockPath: hookSockPath,
+		auth:         authStore,
+		router:       r,
+		api:          api.New(c),
+		push:         pushMgr,
+		logger:       logger,
+		editorURL:    editorURL,
+		uiDir:        uiDir,
+		themePath:    themePath,
+		readOnly:     c.ReadOnly,
 	}
-}
-
-// handleModels feeds the new-session picker from each backend's model catalog.
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	backends := s.router.Backends()
-	models := make(map[string][]backend.Model, len(backends))
-	for _, name := range backends {
-		catalog, err := s.router.Models(r.Context(), name)
-		if err == nil {
-			models[name] = catalog
-		}
-	}
-	api.WriteJSON(w, http.StatusOK, struct {
-		Backends []string                   `json:"backends"`
-		Models   map[string][]backend.Model `json:"models"`
-	}{
-		Backends: backends,
-		Models:   models,
-	})
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -145,37 +114,19 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("GET /logout", s.handleLogout)
 	webMux.HandleFunc("POST /logout", s.handleLogout)
 
-	api.New(s.router, s.agents, s.attachmentsDir).Register(webMux, "/api")
-	webMux.HandleFunc("POST /api/uploads", s.handleDraftUpload)
-	webMux.HandleFunc("GET /api/models", s.handleModels)
-	webMux.HandleFunc("GET /api/agents", s.handleAgents)
-	webMux.HandleFunc("POST /api/agents", s.handleCreateAgent)
-	webMux.HandleFunc("PUT /api/agents/{name}", s.handleUpdateAgent)
-	webMux.HandleFunc("DELETE /api/agents/{name}", s.handleDeleteAgent)
-	webMux.HandleFunc("GET /api/sessions/{id}/commands", s.handleSessionCommands)
-	webMux.HandleFunc("POST /api/sessions/{id}/pause", s.handlePauseSession)
-	webMux.HandleFunc("POST /api/sessions/{id}/resume", s.handleResumeSession)
-	webMux.HandleFunc("POST /api/sessions/{id}/terminal", s.handleOpenTerminal)
-	webMux.HandleFunc("DELETE /api/sessions/{id}/terminal", s.handleCloseTerminal)
-	webMux.HandleFunc("POST /api/sessions/{id}/terminal/input", s.handleTerminalInput)
-	webMux.HandleFunc("GET /api/sessions/{id}/terminal/screen", s.handleTerminalScreen)
-	webMux.HandleFunc("GET /api/sessions/{id}/image", s.handleSessionImage)
-	webMux.HandleFunc("POST /api/sessions/{id}/terminal/control", s.handleTerminalControl)
-
-	webMux.HandleFunc("GET /api/schedules", s.handleSchedules)
-	webMux.HandleFunc("POST /api/schedules", s.handleCreateSchedule)
-	webMux.HandleFunc("PUT /api/schedules/{id}", s.handleUpdateSchedule)
-	webMux.HandleFunc("DELETE /api/schedules/{id}", s.handleDeleteSchedule)
-	webMux.HandleFunc("POST /api/schedules/{id}/run", s.handleRunSchedule)
-
-	webMux.HandleFunc("GET /api/config", s.handleConfig)
-	webMux.HandleFunc("GET /api/sessions/{id}/routed", s.handleRouted)
-	webMux.HandleFunc("POST /api/router", s.handleStartRouter)
+	s.api.Register(webMux)
+	webMux.HandleFunc("GET /internal/config", s.handleConfig)
+	webMux.HandleFunc("POST /internal/router", s.handleStartRouter)
+	webMux.HandleFunc("GET /internal/sessions/{id}/routed", s.handleRouted)
+	webMux.HandleFunc("POST /internal/sessions/{id}/terminal", s.handleOpenTerminal)
+	webMux.HandleFunc("DELETE /internal/sessions/{id}/terminal", s.handleCloseTerminal)
+	webMux.HandleFunc("POST /internal/sessions/{id}/terminal/input", s.handleTerminalInput)
+	webMux.HandleFunc("GET /internal/sessions/{id}/terminal/screen", s.handleTerminalScreen)
+	webMux.HandleFunc("POST /internal/sessions/{id}/terminal/control", s.handleTerminalControl)
+	webMux.HandleFunc("GET /internal/push/vapid-key", s.handlePushVAPIDKey)
+	webMux.HandleFunc("POST /internal/push/subscribe", s.handlePushSubscribe)
+	webMux.HandleFunc("POST /internal/push/unsubscribe", s.handlePushUnsubscribe)
 	webMux.HandleFunc("GET /theme.css", s.handleTheme)
-
-	webMux.HandleFunc("GET /api/push/vapid-key", s.handlePushVAPIDKey)
-	webMux.HandleFunc("POST /api/push/subscribe", s.handlePushSubscribe)
-	webMux.HandleFunc("POST /api/push/unsubscribe", s.handlePushUnsubscribe)
 
 	var staticRoot fs.FS
 	if s.uiDir != "" {
@@ -333,7 +284,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		// API/XHR clients get 401; full-page navigations get a redirect to
 		// /login so the user lands on the form instead of seeing JSON.
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/internal/") {
 			api.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -444,137 +395,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // --- sessions ------------------------------------------------------------
 
-func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
-	api.WriteJSON(w, http.StatusOK, map[string]any{"agents": s.agents.List()})
-}
-
-func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
-	var profile agentprofile.Profile
-	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	created, err := s.agents.Create(profile)
-	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
-	var profile agentprofile.Profile
-	if err := json.NewDecoder(r.Body).Decode(&profile); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	updated, err := s.agents.Update(r.PathValue("name"), profile)
-	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, updated)
-}
-
-func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
-	if err := s.agents.Delete(r.PathValue("name")); err != nil {
-		api.WriteError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// scheduleDTO adds the next due time, which the server derives and a write
-// never carries.
-type scheduleDTO struct {
-	schedule.Task
-	NextRun time.Time `json:"next_run,omitzero"`
-}
-
-// validateScheduleTarget rejects a task that could not create a session. The
-// agent is re-resolved at fire time, so this is a courtesy, not a guarantee —
-// but it catches typos that would otherwise surface at 3am as a failed run.
-func (s *Server) validateScheduleTarget(task schedule.Task) error {
-	opts, err := s.agents.Resolve(task.Agent, task.Cwd, task.Backend, task.Model)
-	if err != nil {
-		return err
-	}
-	if opts.Cwd == "" {
-		return errors.New("cwd is required (set one here or on the agent)")
-	}
-	return nil
-}
-
-func (s *Server) handleSchedules(w http.ResponseWriter, _ *http.Request) {
-	now := time.Now()
-	tasks := s.schedules.Store().List()
-	out := make([]scheduleDTO, 0, len(tasks))
-	for _, task := range tasks {
-		out = append(out, scheduleDTO{Task: task, NextRun: task.NextRun(now)})
-	}
-	// The zone rides with the list, not /api/config: it is only meaningful next
-	// to these timestamps, and the pane cannot render one before knowing it.
-	api.WriteJSON(w, http.StatusOK, map[string]any{
-		"schedules": out,
-		"timezone":  schedule.LocalZone(now),
-	})
-}
-
-func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
-	var task schedule.Task
-	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	if err := s.validateScheduleTarget(task); err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	created, err := s.schedules.Store().Create(task)
-	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusCreated, scheduleDTO{Task: created, NextRun: created.NextRun(time.Now())})
-}
-
-func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
-	var task schedule.Task
-	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	if err := s.validateScheduleTarget(task); err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	updated, err := s.schedules.Store().Update(r.PathValue("id"), task)
-	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, scheduleDTO{Task: updated, NextRun: updated.NextRun(time.Now())})
-}
-
-func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
-	if err := s.schedules.Store().Delete(r.PathValue("id")); err != nil {
-		api.WriteError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleRunSchedule starts a task's session now, answering once the id is
-// known (like POST /api/sessions) since the caller is testing the task.
-func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
-	id, err := s.schedules.RunNow(r.PathValue("id"))
-	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
-}
-
 // handleConfig exposes the few server-side settings the SPA needs to render
 // optional UI.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -619,7 +439,7 @@ func (s *Server) handleStartRouter(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	api.WriteJSON(w, http.StatusAccepted, map[string]string{"id": id})
+	s.api.WriteCreated(w, r, id)
 }
 
 // handleRouted resolves the replies to the work a session routed elsewhere, for
@@ -635,127 +455,6 @@ func (s *Server) handleRouted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, replies)
-}
-
-func (s *Server) handleSessionCommands(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, ok := s.router.GetSession(id)
-	if !ok {
-		api.WriteError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	catalog, err := s.router.ComposerItems(r.Context(), id, sess.Cwd)
-	if err != nil {
-		api.WriteError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	if catalog.Items == nil {
-		catalog.Items = []backend.ComposerItem{}
-	}
-	api.WriteJSON(w, http.StatusOK, struct {
-		Source    string                 `json:"source"`
-		Available bool                   `json:"available"`
-		Commands  []backend.ComposerItem `json:"commands"`
-	}{Source: sess.Backend, Available: catalog.Available, Commands: catalog.Items})
-}
-
-// handlePauseSession tears down the session's live worker without deleting
-// anything — the conversation stays on disk and resumes on the next send.
-// Non-destructive and distinct from DELETE (which removes the jsonl). Returns
-// 404 for an unknown id.
-func (s *Server) handlePauseSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.router.PauseSession(id); err != nil {
-		api.WriteError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, map[string]bool{"paused": true})
-}
-
-// handleResumeSession starts an idle backend worker without adding a user turn.
-func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.router.ResumeSession(r.Context(), id); err != nil {
-		if errors.Is(err, router.ErrSessionNotFound) {
-			api.WriteError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, map[string]bool{"resumed": true})
-}
-
-// imageContentTypes is the /image allowlist (also the forced Content-Type).
-// Raster only — SVG is excluded because directly navigating to a same-origin SVG
-// would execute its scripts in usher's authenticated origin (an <img> load is
-// inert, but the endpoint must be safe under direct navigation too).
-var imageContentTypes = map[string]string{
-	".png":  "image/png",
-	".jpg":  "image/jpeg",
-	".jpeg": "image/jpeg",
-	".gif":  "image/gif",
-	".webp": "image/webp",
-}
-
-// handleSessionImage serves an image file from a session's working directory or
-// /tmp. Auth is the surrounding cookie middleware.
-func (s *Server) handleSessionImage(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	sess, ok := s.router.GetSession(id)
-	if !ok {
-		api.WriteError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	rel := r.URL.Query().Get("path")
-	if rel == "" {
-		api.WriteError(w, http.StatusBadRequest, "missing path")
-		return
-	}
-	ctype, ok := imageContentTypes[strings.ToLower(filepath.Ext(rel))]
-	if !ok {
-		api.WriteError(w, http.StatusForbidden, "not a supported image type")
-		return
-	}
-	// Beyond the cwd: this session's uploads, the pre-session uploads its
-	// first message points at, Codex's generated images.
-	full, ok := pathutil.ResolveImagePath(sess.Cwd, rel,
-		filepath.Join(s.attachmentsDir, id),
-		filepath.Join(s.attachmentsDir, draftsDir),
-		pathutil.CodexGeneratedImagesDir(id))
-	if !ok {
-		api.WriteError(w, http.StatusNotFound, "image not found")
-		return
-	}
-	f, err := os.Open(full)
-	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "image not found")
-		return
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		api.WriteError(w, http.StatusNotFound, "image not found")
-		return
-	}
-	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "private, max-age=60")
-	http.ServeContent(w, r, filepath.Base(full), info.ModTime(), f)
-}
-
-// draftsDir holds uploads made before a session exists, one subdirectory per
-// upload. Session ids are UUIDs, so it can't collide with a session's own.
-const draftsDir = "_drafts"
-
-// handleDraftUpload does the same for the new-session composer, which has no
-// id to file the upload under yet. Nothing relocates it afterwards: the id is
-// minted in the same call that sends the initial message, which already
-// carries the path. One directory per upload keeps the original filename.
-func (s *Server) handleDraftUpload(w http.ResponseWriter, r *http.Request) {
-	var b [8]byte
-	_, _ = rand.Read(b[:]) // documented never to fail
-	api.SaveUpload(w, r, filepath.Join(s.attachmentsDir, draftsDir), fmt.Sprintf("%x", b[:]))
 }
 
 // --- session terminal ----------------------------------------------------

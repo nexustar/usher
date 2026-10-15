@@ -85,7 +85,7 @@ func TestSwitchedWorkerIsDropped(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := collectPi(t, ch, 5*time.Second)
-	if !hasEvent(events, backend.EventError) {
+	if !hasEvent(events, backend.EventTurnFailed) {
 		t.Fatalf("no error event reported the switch: %+v", events)
 	}
 	// The snapshot describes the session pi moved to, so it must not be
@@ -113,7 +113,7 @@ func TestMatchingSessionKeepsWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := collectPi(t, ch, 5*time.Second)
-	if hasEvent(events, backend.EventError) {
+	if hasEvent(events, backend.EventTurnFailed) {
 		t.Fatalf("unexpected error event: %+v", events)
 	}
 	if !hasEvent(events, backend.EventRuntime) {

@@ -13,7 +13,7 @@ silently mangle it: whitespace (chat clients cut `--agent <name>` at the first
 space, with no quoting, so the rest would land in the instruction); invisible
 characters such as zero-width spaces and bidi marks (two names that look
 identical but never match); and `/`, `.` and `..` (the name is a path segment
-in `/api/agents/{name}`, which path-normalizing proxies rewrite before usher
+in `/api/v1/agents/{name}`, which path-normalizing proxies rewrite before usher
 sees them).
 
 Manage them from **Settings → Agents** in the Web UI. That writes
@@ -67,10 +67,10 @@ new-session page lists `default` once it has been saved.
 The authenticated HTTP API exposes the same configuration:
 
 ```text
-GET /api/agents
-POST /api/agents
-PUT /api/agents/{name}
-DELETE /api/agents/{name}
+GET /api/v1/agents
+POST /api/v1/agents
+PUT /api/v1/agents/{name}
+DELETE /api/v1/agents/{name}
 ```
 
 To create from an agent, send its name. Explicit `cwd`, `backend`, and

@@ -338,7 +338,7 @@ func (h *Hub) handleCallback(ctx context.Context, cb *CallbackQuery) {
 		toast = "🚫 ignored"
 	case behavior == "deny":
 		toast = "⛔ denied"
-	case scope == "session":
+	case scope == "always":
 		toast = "✅ always allowed"
 	}
 	if err := h.router.RespondInteraction(id, resp); err != nil {
@@ -427,13 +427,13 @@ func (h *Hub) notifyTopic(thread int64, text string) {
 // completion — and, elsewhere, permission prompts — notify audibly.
 func (h *Hub) handleEvent(ctx context.Context, ev broker.Event) {
 	switch ev.Type {
-	case backend.EventTurnUser:
+	case backend.EventTurnPrompt:
 		h.mirrorPrompt(ctx, ev)
-	case backend.EventPart:
+	case backend.EventTurnPart:
 		h.mirrorAssistant(ctx, ev)
-	case backend.EventProcessExit:
+	case backend.EventTurnEnded:
 		h.notifyTurnComplete(ctx, ev)
-	case backend.EventError:
+	case backend.EventTurnFailed:
 		h.notifyTurnError(ctx, ev)
 	}
 }

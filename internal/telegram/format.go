@@ -26,7 +26,7 @@ func decodeDecision(data string) (behavior, scope, id string, ok bool) {
 	case "a":
 		return "allow", "", id, true
 	case "s":
-		return "allow", "session", id, true
+		return "allow", "always", id, true
 	case "d":
 		return "deny", "", id, true
 	case "i":

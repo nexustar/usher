@@ -128,7 +128,7 @@ func (r *Router) checkForeignTurn(id string) {
 	if err != nil {
 		exitRaw = json.RawMessage(`{}`)
 	}
-	r.broker.Publish(broker.Event{SessionID: id, Type: backend.EventProcessExit, Raw: exitRaw})
+	r.broker.Publish(broker.Event{SessionID: id, Type: backend.EventTurnEnded, Raw: exitRaw})
 
 	// Subagents are read-only transcript children, not independent foreign
 	// conversations. The exit above only wakes their open detail view; never
@@ -158,7 +158,7 @@ func (r *Router) publishForeignTurnEvents(sessionID string, turns []core.Turn) {
 		case "user":
 			raw, err := json.Marshal(userTurnEvent(tn))
 			if err == nil {
-				r.broker.Publish(broker.Event{SessionID: sessionID, Type: backend.EventTurnUser, Raw: raw})
+				r.broker.Publish(broker.Event{SessionID: sessionID, Type: backend.EventTurnPrompt, Raw: raw})
 			}
 		case "assistant":
 			for _, p := range tn.Parts {
@@ -166,7 +166,7 @@ func (r *Router) publishForeignTurnEvents(sessionID string, turns []core.Turn) {
 					"role": "assistant", "ts": tn.Time, "model": tn.Model, "part": p,
 				})
 				if err == nil {
-					r.broker.Publish(broker.Event{SessionID: sessionID, Type: backend.EventPart, Raw: raw})
+					r.broker.Publish(broker.Event{SessionID: sessionID, Type: backend.EventTurnPart, Raw: raw})
 				}
 			}
 		}

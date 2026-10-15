@@ -179,7 +179,7 @@ func TestCRUDValidation(t *testing.T) {
 		"bad name",  // chat clients cut --agent at the space
 		"tab\tname", // any whitespace, not just the ASCII space
 		"zero​wid",  // invisible: two names that look identical
-		"a/b",       // path segment in /api/agents/{name}
+		"a/b",       // path segment in /api/v1/agents/{name}
 		"..",        // ditto — proxies rewrite it before usher sees it
 	} {
 		if _, err := store.Create(Profile{Name: bad}); err == nil {

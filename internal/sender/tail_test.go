@@ -86,7 +86,7 @@ func TestTailTurn_SimpleTurn(t *testing.T) {
 	ch := tailTurn(context.Background(), path, off.Size(), nil, fastCfg())
 	got := collect(t, ch, 5*time.Second)
 
-	want := []string{"user", "assistant", "subprocess.exit"}
+	want := []string{"user", "assistant", "turn.ended"}
 	if !eq(types(got), want) {
 		t.Fatalf("got %v, want %v", types(got), want)
 	}
@@ -106,7 +106,7 @@ func TestTailTurnSkipsQueuedSpontaneousCompletion(t *testing.T) {
 	cfg := fastCfg()
 	cfg.skipCompletions = 1
 	got := collect(t, tailTurn(context.Background(), path, 0, nil, cfg), 3*time.Second)
-	if want := []string{"assistant", "system", "user", "assistant", "subprocess.exit"}; !eq(types(got), want) {
+	if want := []string{"assistant", "system", "user", "assistant", "turn.ended"}; !eq(types(got), want) {
 		t.Fatalf("got %v, want %v", types(got), want)
 	}
 }
@@ -133,7 +133,7 @@ func TestTailTurn_EndTurnStopReasonDoesNotEndEarly(t *testing.T) {
 
 	// All four turn events flow before the exit — the early end_turn messages
 	// did not cut it short.
-	want := []string{"user", "assistant", "user", "assistant", "subprocess.exit"}
+	want := []string{"user", "assistant", "user", "assistant", "turn.ended"}
 	if !eq(types(got), want) {
 		t.Fatalf("got %v, want %v", types(got), want)
 	}
@@ -161,7 +161,7 @@ func TestTailTurn_ByteOffsetSkipsHistory(t *testing.T) {
 			t.Fatalf("tailer leaked pre-offset history: %s", e.Raw)
 		}
 	}
-	if !eq(types(got), []string{"user", "assistant", "subprocess.exit"}) {
+	if !eq(types(got), []string{"user", "assistant", "turn.ended"}) {
 		t.Fatalf("got %v", types(got))
 	}
 }
@@ -170,8 +170,8 @@ func TestTailTurn_FileNeverAppears(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.jsonl")
 	ch := tailTurn(context.Background(), path, 0, nil, tailConfig{poll: 10 * time.Millisecond, appearWait: 80 * time.Millisecond})
 	got := collect(t, ch, 2*time.Second)
-	if !eq(types(got), []string{"error"}) {
-		t.Fatalf("got %v, want [error]", types(got))
+	if !eq(types(got), []string{"turn.failed"}) {
+		t.Fatalf("got %v, want [turn.failed]", types(got))
 	}
 }
 
@@ -187,7 +187,7 @@ func TestTailTurn_CodexAbortTerminatesAfterActivityLatch(t *testing.T) {
 		`{"type":"event_msg","payload":{"type":"turn_aborted"}}`,
 	)
 	got := collect(t, tailTurn(context.Background(), path, 0, nil, cfg), 2*time.Second)
-	if !eq(types(got), []string{"event_msg", "event_msg", "error", "subprocess.exit"}) {
+	if !eq(types(got), []string{"event_msg", "event_msg", "turn.failed", "turn.ended"}) {
 		t.Fatalf("got %v", types(got))
 	}
 }
@@ -198,7 +198,7 @@ func TestTailTurn_SeekErrorEmitsErrorAndExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := collect(t, tailTurn(context.Background(), path, -1, nil, fastCfg()), 2*time.Second)
-	if !eq(types(got), []string{"error", "subprocess.exit"}) {
+	if !eq(types(got), []string{"turn.failed", "turn.ended"}) {
 		t.Fatalf("got %v", types(got))
 	}
 }
@@ -210,8 +210,8 @@ func TestTailTurn_CancelBeforeFileAppears(t *testing.T) {
 	ch := tailTurn(ctx, path, 0, nil, tailConfig{poll: 10 * time.Millisecond, appearWait: 10 * time.Second})
 	cancel()
 	got := collect(t, ch, 2*time.Second)
-	if !eq(types(got), []string{"subprocess.exit"}) {
-		t.Fatalf("got %v, want [subprocess.exit]", types(got))
+	if !eq(types(got), []string{"turn.ended"}) {
+		t.Fatalf("got %v, want [turn.ended]", types(got))
 	}
 }
 
@@ -227,7 +227,7 @@ func TestTailTurn_CancelDrainsPersistedFinalLine(t *testing.T) {
 	cancel()
 
 	got := collect(t, ch, 2*time.Second)
-	if !eq(types(got), []string{"assistant", "subprocess.exit"}) {
+	if !eq(types(got), []string{"assistant", "turn.ended"}) {
 		t.Fatalf("got %v, want persisted final line before exit", types(got))
 	}
 }
@@ -257,8 +257,8 @@ func TestTailTurn_ContentOnlyIgnoresLogCompletion(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 	cancel()
-	if ev := <-ch; ev.Type != "subprocess.exit" {
-		t.Fatalf("cancel event = %s, want subprocess.exit", ev.Type)
+	if ev := <-ch; ev.Type != "turn.ended" {
+		t.Fatalf("cancel event = %s, want turn.ended", ev.Type)
 	}
 }
 

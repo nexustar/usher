@@ -263,7 +263,7 @@ done
 	for _, ev := range collectPi(t, ch, 5*time.Second) {
 		types = append(types, ev.Type)
 	}
-	if len(types) == 0 || types[len(types)-1] != backend.EventProcessExit {
+	if len(types) == 0 || types[len(types)-1] != backend.EventTurnEnded {
 		t.Fatalf("extension command did not finish: %v", types)
 	}
 	r.mu.Lock()

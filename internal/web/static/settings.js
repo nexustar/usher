@@ -15,7 +15,7 @@
 // column is visible is left entirely to CSS — no viewport branching here, so
 // there is nothing to re-run on resize or rotate.
 
-import { esc, getLastSessions } from './state.js';
+import { esc, getLastSessions, fetchBackends } from './state.js';
 import { bindPushToggle } from './push.js';
 
 const dialog = document.getElementById('settings-dialog');
@@ -290,14 +290,14 @@ function renderForm(agent, copy = false) {
     // The API wants an array; an empty field must not send [""].
     const extraArgs = form.elements.extra_args.value.trim();
     payload.extra_args = extraArgs ? extraArgs.split(/\s+/) : undefined;
-    const response = await fetch(creating ? '/api/agents' : '/api/agents/' + encodeURIComponent(value.name), {
+    const response = await fetch(creating ? '/api/v1/agents' : '/api/v1/agents/' + encodeURIComponent(value.name), {
       method: creating ? 'POST' : 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
-    }).catch(error => ({ok: false, json: async () => ({error: error.message})}));
+    }).catch(error => ({ok: false, json: async () => ({error: {message: error.message}})}));
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      showError(body.error || ('HTTP ' + response.status));
+      showError(body.error?.message || ('HTTP ' + response.status));
       return;
     }
     paneDirty = false;
@@ -328,10 +328,10 @@ function renderForm(agent, copy = false) {
       ? 'Reset the default agent to the built-in one? Existing sessions are not affected.'
       : `Delete agent “${value.name}”? Existing sessions are not affected.`;
     if (!confirm(ask)) return;
-    const response = await fetch('/api/agents/' + encodeURIComponent(value.name), {method: 'DELETE'});
+    const response = await fetch('/api/v1/agents/' + encodeURIComponent(value.name), {method: 'DELETE'});
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      showError(body.error || ('HTTP ' + response.status));
+      showError(body.error?.message || ('HTTP ' + response.status));
       return;
     }
     selectedName = isDefault ? value.name : '';
@@ -342,14 +342,13 @@ function renderForm(agent, copy = false) {
 // Both panes need the installed backends and their model catalogs; both fetch
 // on open rather than caching, since a backend can be enabled under usher.
 async function loadCatalogs() {
-  const response = await fetch('/api/models');
-  const data = response.ok ? await response.json() : {};
+  const data = await fetchBackends().catch(() => ({}));
   backends = data.backends || [];
   catalogs = data.models || {};
 }
 
 async function loadAgentList() {
-  const response = await fetch('/api/agents');
+  const response = await fetch('/api/v1/agents');
   const data = response.ok ? await response.json() : {agents: []};
   agents = data.agents || [];
 }
@@ -390,12 +389,12 @@ async function renderAgentsPane(host) {
 }
 
 // ----- scheduled pane ------------------------------------------------------
-// Same list-beside-editor shape as Agents, over /api/schedules. A task's
+// Same list-beside-editor shape as Agents, over /api/v1/schedules. A task's
 // fields are the composer's, plus when to fire.
 
 let schedules = [];
 let selectedScheduleID = '';
-// The zone name the server reads cron expressions on, from /api/schedules.
+// The zone name the server reads cron expressions on, from /api/v1/schedules.
 let serverZone = '';
 
 // Two clocks meet in this pane: the server reads cron expressions on its own,
@@ -465,7 +464,7 @@ function renderScheduleList() {
 async function toggleSchedule(id, enabled) {
   const task = schedules.find(entry => entry.id === id);
   if (!task) return;
-  const response = await fetch('/api/schedules/' + encodeURIComponent(id), {
+  const response = await fetch('/api/v1/schedules/' + encodeURIComponent(id), {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({...task, enabled}),
@@ -592,14 +591,14 @@ function renderScheduleForm(task) {
       model: form.elements.model.value,
       prompt: form.elements.prompt.value,
     };
-    const response = await fetch(creating ? '/api/schedules' : '/api/schedules/' + encodeURIComponent(value.id), {
+    const response = await fetch(creating ? '/api/v1/schedules' : '/api/v1/schedules/' + encodeURIComponent(value.id), {
       method: creating ? 'POST' : 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
-    }).catch(error => ({ok: false, json: async () => ({error: error.message})}));
+    }).catch(error => ({ok: false, json: async () => ({error: {message: error.message}})}));
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      showError(body.error || ('HTTP ' + response.status));
+      showError(body.error?.message || ('HTTP ' + response.status));
       return;
     }
     paneDirty = false;
@@ -629,21 +628,21 @@ function renderScheduleForm(task) {
     const button = event.currentTarget;
     button.disabled = true;
     button.textContent = 'Starting…';
-    const response = await fetch('/api/schedules/' + encodeURIComponent(value.id) + '/run', {method: 'POST'})
-      .catch(error => ({ok: false, json: async () => ({error: error.message})}));
+    const response = await fetch('/api/v1/schedules/' + encodeURIComponent(value.id) + '/run', {method: 'POST'})
+      .catch(error => ({ok: false, json: async () => ({error: {message: error.message}})}));
     const body = await response.json().catch(() => ({}));
     button.disabled = false;
     button.textContent = 'Run now';
     // Nothing on the task changes when it runs, so there is nothing to reload.
-    if (!response.ok) showError(body.error || ('HTTP ' + response.status));
+    if (!response.ok) showError(body.error?.message || ('HTTP ' + response.status));
   });
 
   host.querySelector('.sched-delete')?.addEventListener('click', async () => {
     if (!confirm(`Delete schedule “${value.name}”? Sessions it already created are not affected.`)) return;
-    const response = await fetch('/api/schedules/' + encodeURIComponent(value.id), {method: 'DELETE'});
+    const response = await fetch('/api/v1/schedules/' + encodeURIComponent(value.id), {method: 'DELETE'});
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      showError(body.error || ('HTTP ' + response.status));
+      showError(body.error?.message || ('HTTP ' + response.status));
       return;
     }
     paneDirty = false;
@@ -653,7 +652,7 @@ function renderScheduleForm(task) {
 }
 
 async function loadSchedules() {
-  const response = await fetch('/api/schedules');
+  const response = await fetch('/api/v1/schedules');
   const data = response.ok ? await response.json().catch(() => ({})) : {};
   schedules = data.schedules || [];
   serverZone = data.timezone || '';

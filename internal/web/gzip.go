@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// gzipMiddleware compresses compressible 200 responses (the JSON API and the
+// gzipMiddleware compresses compressible 200 and 201 responses (the JSON API and the
 // static SPA assets — app.js + vendored marked alone are ~100KB raw) when the
 // client advertises gzip. This matters because usher's primary remote client
 // is a phone: transcript JSON compresses 5–10×.
@@ -31,7 +31,7 @@ func gzipMiddleware(next http.Handler) http.Handler {
 
 // gzipWriter decides per-response whether to compress: on WriteHeader it
 // inspects the Content-Type the handler set and switches to a gzip body only
-// for compressible types on a plain 200. Until then it is a transparent
+// for compressible types on a 200 or 201. Until then it is a transparent
 // pass-through (404s, redirects, 304s, SSE streams all flow untouched).
 type gzipWriter struct {
 	http.ResponseWriter
@@ -66,7 +66,7 @@ func (w *gzipWriter) WriteHeader(code int) {
 		return
 	}
 	w.wroteHeader = true
-	if code == http.StatusOK &&
+	if (code == http.StatusOK || code == http.StatusCreated) &&
 		w.Header().Get("Content-Encoding") == "" &&
 		compressible(w.Header().Get("Content-Type")) {
 		w.compress = true

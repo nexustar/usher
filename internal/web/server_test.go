@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nexustar/usher/internal/api"
+	"github.com/nexustar/usher/internal/auth"
 )
 
 func TestHandleTheme(t *testing.T) {
@@ -62,12 +65,14 @@ func TestReadOnlyMiddleware(t *testing.T) {
 		method, path string
 		want         int
 	}{
-		{http.MethodGet, "/api/sessions", http.StatusOK},
+		{http.MethodGet, "/api/v1/sessions", http.StatusOK},
 		{http.MethodHead, "/", http.StatusOK},
-		{http.MethodGet, "/api/sessions/abc/events", http.StatusOK},
-		{http.MethodPost, "/api/sessions/abc/send", http.StatusForbidden},
-		{http.MethodDelete, "/api/sessions/abc", http.StatusForbidden},
-		{http.MethodPut, "/api/agents/x", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/sessions/abc/events", http.StatusOK},
+		{http.MethodPost, "/api/v1/sessions/abc/messages", http.StatusForbidden},
+		{http.MethodPatch, "/api/v1/sessions/abc", http.StatusForbidden},
+		{http.MethodDelete, "/api/v1/sessions/abc", http.StatusForbidden},
+		{http.MethodPut, "/api/v1/agents/x", http.StatusForbidden},
+		{http.MethodPost, "/internal/router", http.StatusForbidden},
 		{http.MethodPost, "/login", http.StatusOK},
 		{http.MethodPost, "/logout", http.StatusOK},
 	}
@@ -78,8 +83,8 @@ func TestReadOnlyMiddleware(t *testing.T) {
 			t.Errorf("%s %s = %d, want %d", c.method, c.path, rec.Code, c.want)
 		}
 		if c.want == http.StatusForbidden {
-			var body map[string]string
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["error"] == "" {
+			var body api.Error
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error.Code != "forbidden" {
 				t.Errorf("%s %s: body %q lacks error field", c.method, c.path, rec.Body.String())
 			}
 		}
@@ -189,6 +194,28 @@ func TestGzipMiddleware(t *testing.T) {
 		}
 	})
 
+	t.Run("compresses a created resource", func(t *testing.T) {
+		created := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"s1"}`))
+		})
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/v1/sessions", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		gzipMiddleware(created).ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated || rec.Header().Get("Content-Encoding") != "gzip" {
+			t.Fatalf("status %d, Content-Encoding %q", rec.Code, rec.Header().Get("Content-Encoding"))
+		}
+		zr, err := gzip.NewReader(rec.Body)
+		if err != nil {
+			t.Fatalf("body is not gzip: %v", err)
+		}
+		if body, _ := io.ReadAll(zr); string(body) != `{"id":"s1"}` {
+			t.Errorf("decompressed body = %q", body)
+		}
+	})
+
 	t.Run("leaves SSE untouched", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/api/s/events", nil)
@@ -214,42 +241,6 @@ func TestGzipMiddleware(t *testing.T) {
 			t.Errorf("body = %q", rec.Body.String())
 		}
 	})
-}
-
-// Each draft upload gets its own directory, so the same name uploaded twice
-// keeps it both times.
-func TestDraftUploadKeepsFilenamePerUpload(t *testing.T) {
-	s := &Server{attachmentsDir: t.TempDir()}
-	upload := func() string {
-		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, "/api/uploads?filename=screenshot.png", strings.NewReader("png data"))
-		rec := httptest.NewRecorder()
-		s.handleDraftUpload(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
-		}
-		var got struct{ Path string }
-		if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-			t.Fatal(err)
-		}
-		return got.Path
-	}
-
-	first, second := upload(), upload()
-	if first == second {
-		t.Fatalf("both uploads landed on %q", first)
-	}
-	for _, p := range []string{first, second} {
-		if filepath.Base(p) != "screenshot.png" {
-			t.Errorf("path = %q, want it to keep the name screenshot.png", p)
-		}
-		if got, want := filepath.Dir(filepath.Dir(p)), filepath.Join(s.attachmentsDir, draftsDir); got != want {
-			t.Errorf("%q sits in %q, want a subdirectory of %q", p, got, want)
-		}
-		if data, err := os.ReadFile(p); err != nil || string(data) != "png data" {
-			t.Errorf("content of %q = %q (err %v)", p, data, err)
-		}
-	}
 }
 
 func TestCrossOriginGuard(t *testing.T) {
@@ -280,5 +271,31 @@ func TestCrossOriginGuard(t *testing.T) {
 		if rec.Code != c.want {
 			t.Errorf("%s: status %d, want %d", c.name, rec.Code, c.want)
 		}
+	}
+}
+
+func TestAuthMiddlewareAnswersAPICallsWithJSON(t *testing.T) {
+	store, err := auth.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPassword("pw"); err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{auth: store}).authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	for _, path := range []string{"/api/v1/sessions", "/internal/config"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		var body api.Error
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); rec.Code != http.StatusUnauthorized || err != nil || body.Error.Code != "unauthorized" {
+			t.Errorf("%s = %d %s", path, rec.Code, rec.Body)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+		t.Errorf("page load = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 }

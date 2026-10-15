@@ -10,7 +10,6 @@ package pluginapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,20 +17,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/core"
 )
 
-// RouterAPI is what the control socket serves: the session handlers shared
-// with the web server, plus the dispatch and search operations only the
-// router session's tools use.
+// RouterAPI is what the control socket serves: /api/v1 plus the router
+// session's dispatch operations.
 type RouterAPI interface {
 	api.Router
 	// The Route variants queue the finished turn as a note for usher's router
@@ -39,23 +34,21 @@ type RouterAPI interface {
 	// plain form.
 	RouteToSession(id, text string) (relayed bool, err error)
 	RouteNewSession(o core.CreateOptions) (id string, relayed bool, err error)
-	SearchSessionTranscript(id, query string, maxHits, contextChars int) ([]core.TranscriptSearchHit, bool, error)
-	SearchAllSessions(query string, maxSessions, contextChars int) ([]core.SessionSearchResult, bool, error)
 }
 
 // Server serves the plugin API on a Unix socket.
 type Server struct {
-	router         RouterAPI
-	attachmentsDir string
-	agents         *agentprofile.Store
-	logger         *slog.Logger
+	router RouterAPI
+	api    *api.Server
+	logger *slog.Logger
 }
 
-func NewServer(router RouterAPI, attachmentsDir string, agents *agentprofile.Store, logger *slog.Logger) *Server {
+func NewServer(router RouterAPI, c api.Config, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{router: router, attachmentsDir: attachmentsDir, agents: agents, logger: logger}
+	c.Router = router
+	return &Server{router: router, api: api.New(c), logger: logger}
 }
 
 // Run listens on the Unix socket at path and serves until ctx is cancelled.
@@ -94,13 +87,12 @@ func (s *Server) Run(ctx context.Context, path string) error {
 
 func (s *Server) mux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	api.New(s.router, s.agents, s.attachmentsDir).Register(mux, "/v1")
-	mux.HandleFunc("POST /v1/sessions/{id}/route", s.handleRoute)
-	mux.HandleFunc("POST /v1/route", s.handleRouteNew)
-	mux.HandleFunc("GET /v1/search", s.handleSearch)
+	s.api.Register(mux)
+	mux.HandleFunc("POST /internal/router/sessions", s.handleRouteNew)
+	mux.HandleFunc("POST /internal/router/sessions/{id}/messages", s.handleRoute)
 	return mux
 }
 
@@ -115,9 +107,8 @@ type Delivery struct {
 // With no router session the prompt is still delivered, and the ack says
 // nothing will come back.
 func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
-	var req api.SendRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+	var req api.MessageRequest
+	if !api.Decode(w, r, &req) {
 		return
 	}
 	if req.Text == "" {
@@ -136,11 +127,10 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 // handleRouteNew is handleRoute for a session that does not exist yet.
 func (s *Server) handleRouteNew(w http.ResponseWriter, r *http.Request) {
 	var req api.CreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+	if !api.Decode(w, r, &req) {
 		return
 	}
-	opts, err := req.Options(s.agents)
+	opts, err := req.Options(s.api.Agents)
 	if err != nil {
 		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -151,53 +141,6 @@ func (s *Server) handleRouteNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	api.WriteJSON(w, http.StatusAccepted, Delivery{SessionID: id, Relayed: relayed})
-}
-
-// SearchResult carries both search shapes: Hits when a session id scoped the
-// search to one transcript, Results when it ranged over every session.
-type SearchResult struct {
-	Scope     string                     `json:"scope"`
-	SessionID string                     `json:"session_id,omitempty"`
-	Hits      []core.TranscriptSearchHit `json:"hits,omitempty"`
-	Results   []core.SessionSearchResult `json:"results,omitempty"`
-	Truncated bool                       `json:"truncated"`
-}
-
-func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	if query == "" {
-		api.WriteError(w, http.StatusBadRequest, "query is required")
-		return
-	}
-	contextChars := queryInt(r, "context_chars", 120, 500)
-	if id := r.URL.Query().Get("session_id"); id != "" {
-		hits, truncated, err := s.router.SearchSessionTranscript(id, query, queryInt(r, "limit", 20, 100), contextChars)
-		if err != nil {
-			api.WriteError(w, api.ErrStatus(err), err.Error())
-			return
-		}
-		api.WriteJSON(w, http.StatusOK, SearchResult{
-			Scope: "session", SessionID: id, Hits: hits, Truncated: truncated,
-		})
-		return
-	}
-	results, truncated, err := s.router.SearchAllSessions(query, queryInt(r, "limit", 20, 50), contextChars)
-	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	api.WriteJSON(w, http.StatusOK, SearchResult{Scope: "all", Results: results, Truncated: truncated})
-}
-
-func queryInt(r *http.Request, name string, fallback, ceiling int) int {
-	n, err := strconv.Atoi(r.URL.Query().Get(name))
-	if err != nil || n <= 0 {
-		return fallback
-	}
-	if n > ceiling {
-		return ceiling
-	}
-	return n
 }
 
 // DefaultDataDir resolves usher's data directory ($XDG_DATA_HOME/usher,

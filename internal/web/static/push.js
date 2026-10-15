@@ -31,7 +31,7 @@ function urlBase64ToUint8Array(base64) {
 async function setupPush(reg) {
   if (!('PushManager' in window) || !('Notification' in window)) return;
   try {
-    const res = await fetch('/api/push/vapid-key');
+    const res = await fetch('/internal/push/vapid-key');
     if (!res.ok) return; // push not available server-side
     vapidKey = (await res.json()).key;
   } catch (_) {
@@ -111,7 +111,7 @@ async function enableNotifications(reg, vapidKey, permPromise) {
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(vapidKey),
   });
-  await fetch('/api/push/subscribe', {
+  await fetch('/internal/push/subscribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(sub),
@@ -121,7 +121,7 @@ async function enableNotifications(reg, vapidKey, permPromise) {
 async function disableNotifications(sub) {
   // Tell the server first (we still have the endpoint), then drop the local sub.
   try {
-    await fetch('/api/push/unsubscribe', {
+    await fetch('/internal/push/unsubscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ endpoint: sub.endpoint }),

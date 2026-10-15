@@ -252,11 +252,11 @@ func (r *Router) Call(name string, raw json.RawMessage) (any, error) {
 			next = page.Turns[limit].Cursor
 			page.Turns = page.Turns[:limit]
 		}
-		out := transcriptPage{Turns: make([]transcriptTurn, len(page.Turns)), More: page.More, From: next}
+		out := transcriptPage{Turns: make([]transcriptTurn, len(page.Turns)), More: page.HasMore, From: next}
 		for i, t := range page.Turns {
 			out.Turns[i] = transcriptTurn{Role: t.Role, Content: turnText(t), Time: t.DisplayTime()}
 		}
-		if page.More && len(page.Turns) > 0 {
+		if page.HasMore && len(page.Turns) > 0 {
 			out.Before = page.Turns[0].Cursor
 		}
 		return out, nil

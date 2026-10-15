@@ -22,21 +22,21 @@ type Event struct {
 func CompletedOperation(cwd string) <-chan Event {
 	ch := make(chan Event, 2)
 	started, _ := json.Marshal(ProcessStartedPayload{Cwd: cwd})
-	ch <- Event{Type: EventProcessStarted, Raw: started}
-	ch <- Event{Type: EventProcessExit, Raw: json.RawMessage(`{}`)}
+	ch <- Event{Type: EventTurnStarted, Raw: started}
+	ch <- Event{Type: EventTurnEnded, Raw: json.RawMessage(`{}`)}
 	close(ch)
 	return ch
 }
 
 const (
-	EventProcessStarted = "subprocess.started"
-	EventProcessExit    = "subprocess.exit"
-	EventError          = "error"
-	EventPartDelta      = "part.delta"
-	EventTurnStatus     = "turn.status"
-	EventRuntime        = "session.runtime"
-	EventTurnUser       = "turn.user"
-	EventPart           = "part"
+	EventTurnStarted = "turn.started"
+	EventTurnEnded   = "turn.ended"
+	EventTurnFailed  = "turn.failed"
+	EventTurnDelta   = "turn.delta"
+	EventTurnStatus  = "turn.status"
+	EventRuntime     = "session.runtime"
+	EventTurnPrompt  = "turn.prompt"
+	EventTurnPart    = "turn.part"
 )
 
 // AbortedTurnMessage is the live wording for a turn that ended without
@@ -80,7 +80,7 @@ func RetryDetail(attempt, max int, reason string) string {
 // than a persisted backend transcript record suitable for an Assembler.
 func IsControlEvent(t string) bool {
 	switch t {
-	case EventProcessStarted, EventProcessExit, EventError, EventPartDelta,
+	case EventTurnStarted, EventTurnEnded, EventTurnFailed, EventTurnDelta,
 		EventTurnStatus, EventRuntime:
 		return true
 	default:

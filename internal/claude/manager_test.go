@@ -253,7 +253,7 @@ func TestCanUseToolControlRequest(t *testing.T) {
 	if len(pending) != 1 || !pending[0].AllowAlways || pending[0].ToolName != "Edit" {
 		t.Fatalf("pending permission = %+v", pending)
 	}
-	if err := h.Respond(pending[0].ID, interaction.Response{Behavior: "allow", Scope: "session"}); err != nil {
+	if err := h.Respond(pending[0].ID, interaction.Response{Behavior: "allow", Scope: "always"}); err != nil {
 		t.Fatal(err)
 	}
 

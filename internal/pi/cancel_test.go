@@ -93,20 +93,20 @@ func TestPromptCancelDrainsUntilAgentSettled(t *testing.T) {
 	var exits, messages, aborts int
 	for _, ev := range evs {
 		switch ev.Type {
-		case backend.EventProcessExit:
+		case backend.EventTurnEnded:
 			exits++
 			// User cancellation should reconcile as a normal end.
 			if reason := exitReason(t, ev); reason != "" {
 				t.Errorf("cancelled turn exited with reason %q, want none", reason)
 			}
-		case backend.EventError:
+		case backend.EventTurnFailed:
 			aborts++
 		case "message":
 			messages++
 		}
 	}
 	if exits != 1 {
-		t.Errorf("subprocess.exit count = %d, want 1", exits)
+		t.Errorf("turn.ended count = %d, want 1", exits)
 	}
 	// Without this the interrupt leaves no trace in the UI at all.
 	if aborts != 1 {
@@ -136,14 +136,14 @@ func TestPromptCancelFinalizesWithoutAgentSettled(t *testing.T) {
 	exits, aborts := 0, 0
 	for _, ev := range evs {
 		switch ev.Type {
-		case backend.EventProcessExit:
+		case backend.EventTurnEnded:
 			exits++
-		case backend.EventError:
+		case backend.EventTurnFailed:
 			aborts++
 		}
 	}
 	if exits != 1 {
-		t.Fatalf("subprocess.exit count = %d, want 1", exits)
+		t.Fatalf("turn.ended count = %d, want 1", exits)
 	}
 	// The grace-path finalization must report the interrupt too.
 	if aborts != 1 {
@@ -198,11 +198,11 @@ done
 		t.Fatal(err)
 	}
 	events := collectPi(t, ch, 3*time.Second)
-	if last := events[len(events)-1]; last.Type != backend.EventProcessExit {
-		t.Fatalf("last event = %s, want %s", last.Type, backend.EventProcessExit)
+	if last := events[len(events)-1]; last.Type != backend.EventTurnEnded {
+		t.Fatalf("last event = %s, want %s", last.Type, backend.EventTurnEnded)
 	}
 	for _, ev := range events {
-		if ev.Type == backend.EventError {
+		if ev.Type == backend.EventTurnFailed {
 			t.Fatalf("handled prompt reported an error: %s", ev.Raw)
 		}
 	}

@@ -7,7 +7,7 @@ import {
   updateTabBadge,
   registerRenderSidebarSessions,
   refreshSubtitle, currentDetailId,
-  editorUrl, pendingInteractionCount, routerDir,
+  editorUrl, pendingInteractionCount, routerDir, patchSession,
 } from './state.js';
 import { statusDot, backendMark } from './render.js';
 import { loadList } from './list.js';
@@ -45,14 +45,14 @@ export async function loadSidebar() {
     // Always fetch include_archived=1 so the count and per-cwd disclosure
     // can show how many are archived even when collapsed. Payload size is
     // trivial at this scale.
-    const res = await fetch('/api/sessions?include_archived=1&include_subagents=1');
-    const sessions = res.ok ? (await res.json() || []) : [];
+    const res = await fetch('/api/v1/sessions?include_archived=1&include_subagents=1');
+    const sessions = res.ok ? ((await res.json()).sessions || []) : [];
     // Cache the FULL list (incl. subagents): markViewing() re-renders the
     // sidebar from this cache on selection, and it must still see subagents
     // or expanded child rows would blink out until the next poll. Unread
     // bookkeeping stays root-only — subagents are read-only and never run.
     setLastSessions(sessions);
-    reconcileUnread(sessions.filter(s => !s.is_subagent));
+    reconcileUnread(sessions.filter(s => !s.subagent));
     renderSidebarSessions(sessions);
     updateSidebarActive();
     updateTabBadge();
@@ -62,17 +62,17 @@ export async function loadSidebar() {
 export function renderSidebarSessions(allSessions) {
   const wrap = document.getElementById('sidebar-sessions');
   const count = document.getElementById('sidebar-session-count');
-  const roots = allSessions.filter(s => !s.is_subagent);
+  const roots = allSessions.filter(s => !s.subagent);
   const children = new Map();
   for (const s of allSessions) {
-    if (!s.is_subagent || !s.parent_id) continue;
+    if (!s.subagent || !s.parent_id) continue;
     if (!children.has(s.parent_id)) children.set(s.parent_id, []);
     children.get(s.parent_id).push(s);
   }
   // Keep the parent expanded while its subagent is the one on screen, so the
   // active child row stays visible across the 5s re-render.
   const active = allSessions.find(s => s.id === currentDetailId);
-  if (active?.is_subagent && active.parent_id) subagentExpanded.add(active.parent_id);
+  if (active?.subagent && active.parent_id) subagentExpanded.add(active.parent_id);
   const visible = roots.filter(s => !s.archived);
   if (count) {
     count.textContent = visible.length === roots.length
@@ -579,9 +579,8 @@ async function handleKebabAction(action, id) {
     return;
   }
   if (action === 'pin' || action === 'unpin') {
-    const method = action === 'pin' ? 'POST' : 'DELETE';
     try {
-      const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/pin', { method });
+      const res = await patchSession(id, { pinned: action === 'pin' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       loadSidebar();
       loadList();
@@ -591,9 +590,8 @@ async function handleKebabAction(action, id) {
     }
     return;
   }
-  const method = action === 'archive' ? 'POST' : 'DELETE';
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/archive', { method });
+    const res = await patchSession(id, { archived: action === 'archive' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     loadSidebar();
     loadList(); // no-op unless the list view is open
@@ -611,7 +609,7 @@ async function deleteSession(id) {
     return;
   }
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+    const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     if (location.hash === '#/s/' + encodeURIComponent(id)) {
       location.hash = '#/';
@@ -629,7 +627,7 @@ async function deleteSession(id) {
 // Non-destructive, so no confirm. The session simply drops back to "idle".
 async function pauseSession(id) {
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/pause', { method: 'POST' });
+    const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/pause', { method: 'POST' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     loadSidebar();
     loadList(); // no-op unless the list view is open
@@ -643,7 +641,7 @@ async function pauseSession(id) {
 // resumeSession brings the backend worker online without sending a message.
 async function resumeSession(id) {
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
+    const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     loadSidebar();
     loadList();
@@ -662,14 +660,10 @@ async function renameSession(id) {
     return;
   }
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/rename', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    });
+    const res = await patchSession(id, { title });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || 'HTTP ' + res.status);
+      throw new Error(body.error?.message || 'HTTP ' + res.status);
     }
     loadSidebar();
     loadList();

@@ -31,8 +31,8 @@ func TestDrainTailCancelsAndKeepsFinalParts(t *testing.T) {
 	go func() {
 		// Model a protocol result arriving just before the tailer's next poll.
 		time.Sleep(20 * time.Millisecond)
-		events <- StreamEvent{Type: "part"}
-		events <- StreamEvent{Type: "subprocess.exit"}
+		events <- StreamEvent{Type: "turn.part"}
+		events <- StreamEvent{Type: "turn.ended"}
 		close(events)
 	}()
 
@@ -41,8 +41,8 @@ func TestDrainTailCancelsAndKeepsFinalParts(t *testing.T) {
 	if tailCtx.Err() == nil {
 		t.Fatal("tail was not cancelled for its final EOF drain")
 	}
-	if first, second := (<-out).Type, (<-out).Type; first != "part" || second != "subprocess.exit" {
-		t.Fatalf("events = [%s %s], want [part subprocess.exit]", first, second)
+	if first, second := (<-out).Type, (<-out).Type; first != "turn.part" || second != "turn.ended" {
+		t.Fatalf("events = [%s %s], want [part turn.ended]", first, second)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestDrainTailHardCeilingStopsUnboundedGrowth(t *testing.T) {
 				return
 			case <-tick.C:
 				select {
-				case events <- StreamEvent{Type: "part"}:
+				case events <- StreamEvent{Type: "turn.part"}:
 				case <-tailCtx.Done():
 					close(events)
 					return
@@ -110,7 +110,7 @@ func TestDrainTailStopsOnTerminalMarker(t *testing.T) {
 		events <- StreamEvent{Type: "system", Raw: marker}
 		// The tailer emits its own exit once cancelled for the final EOF read.
 		<-tailCtx.Done()
-		events <- StreamEvent{Type: backend.EventProcessExit, Raw: []byte(`{}`)}
+		events <- StreamEvent{Type: backend.EventTurnEnded, Raw: []byte(`{}`)}
 		close(events)
 	}()
 

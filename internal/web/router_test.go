@@ -17,7 +17,7 @@ import (
 	"github.com/nexustar/usher/internal/settings"
 )
 
-// /api/config reports the current router session and the directory router
+// /internal/config reports the current router session and the directory router
 // sessions run in; a router on a backend usher does not have is refused.
 func TestRouterConfigAndStart(t *testing.T) {
 	dir := t.TempDir()
@@ -30,14 +30,14 @@ func TestRouterConfigAndStart(t *testing.T) {
 	s := &Server{router: r}
 
 	rec := httptest.NewRecorder()
-	s.handleStartRouter(rec, httptest.NewRequest(http.MethodPost, "/api/router",
+	s.handleStartRouter(rec, httptest.NewRequest(http.MethodPost, "/internal/router",
 		strings.NewReader(`{"initial_message":"hi","backend":"nope"}`)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown backend: status %d", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()
-	s.handleConfig(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	s.handleConfig(rec, httptest.NewRequest(http.MethodGet, "/internal/config", nil))
 	var cfg struct {
 		Router routerConfig `json:"router"`
 	}

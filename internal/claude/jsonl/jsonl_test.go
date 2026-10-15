@@ -732,7 +732,7 @@ func TestCompactTaskNotification(t *testing.T) {
 }
 
 // End to end through the Assembler: the notification turn's Content is the
-// compact form, so transcript reads and live turn.user events agree.
+// compact form, so transcript reads and live turn.prompt events agree.
 func TestAssemblerCompactsTaskNotification(t *testing.T) {
 	a := NewAssembler()
 	line := `{"type":"user","timestamp":"2026-07-04T10:13:27Z","message":{"role":"user","content":"<task-notification>\n<summary>workflow done</summary>\n<result>{}</result>\n</task-notification>"}}`

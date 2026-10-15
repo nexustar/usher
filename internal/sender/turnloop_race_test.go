@@ -54,9 +54,9 @@ func TestMergeLoggedTurn_CompletionRacingCancelStillExits(t *testing.T) {
 
 		evs := collect(t, ch, 5*time.Second)
 		cancel()
-		if !hasType(evs, backend.EventProcessExit) {
+		if !hasType(evs, backend.EventTurnEnded) {
 			t.Fatalf("attempt %d: completion racing cancel produced no %s: %v",
-				i, backend.EventProcessExit, types(evs))
+				i, backend.EventTurnEnded, types(evs))
 		}
 	}
 }

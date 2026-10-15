@@ -25,7 +25,7 @@ import (
 
 // StreamEvent is one event for a turn. Type is the jsonl line's "type"
 // (e.g. "user", "assistant", "system"), or one of the synthesized values
-// "subprocess.started" / "subprocess.exit" / "error". The names are kept from
+// "turn.started" / "turn.ended" / "error". The names are kept from
 // the headless era so the broker/web layer needs minimal change; the payloads
 // are now whole jsonl lines (message granularity), not stream-json token
 // deltas.
@@ -748,7 +748,7 @@ func emitLiveDelta(ctx context.Context, out chan<- StreamEvent, kind, delta stri
 	if delta == "" && kind != "retrying" {
 		return true
 	}
-	typ, payload := backend.EventPartDelta, any(backend.PartDeltaPayload{Delta: delta})
+	typ, payload := backend.EventTurnDelta, any(backend.PartDeltaPayload{Delta: delta})
 	switch kind {
 	case "reasoning":
 		typ, payload = backend.EventTurnStatus, backend.TurnStatusPayload{Status: "thinking"}
@@ -776,7 +776,7 @@ func drainTail(ctx context.Context, out chan<- StreamEvent, events <-chan Stream
 	forceStop := func() bool {
 		cancel()
 		for ev := range events {
-			exited = exited || ev.Type == backend.EventProcessExit
+			exited = exited || ev.Type == backend.EventTurnEnded
 			if !sendEvent(ctx, out, ev) {
 				return exited
 			}
@@ -796,7 +796,7 @@ func drainTail(ctx context.Context, out chan<- StreamEvent, events <-chan Stream
 			if !ok {
 				return exited
 			}
-			exited = exited || ev.Type == backend.EventProcessExit
+			exited = exited || ev.Type == backend.EventTurnEnded
 			if !sendEvent(ctx, out, ev) {
 				cancel()
 				return exited
@@ -849,5 +849,5 @@ func sendEvent(ctx context.Context, ch chan<- StreamEvent, ev StreamEvent) bool 
 
 func emitError(ctx context.Context, out chan<- StreamEvent, msg string) {
 	raw, _ := json.Marshal(backend.ErrorPayload{Message: msg})
-	sendEvent(ctx, out, StreamEvent{Type: backend.EventError, Raw: raw})
+	sendEvent(ctx, out, StreamEvent{Type: backend.EventTurnFailed, Raw: raw})
 }

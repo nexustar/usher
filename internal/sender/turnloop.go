@@ -55,7 +55,7 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 	go func() {
 		defer close(out)
 		started, _ := json.Marshal(backend.ProcessStartedPayload{Cwd: cfg.cwd, Fresh: cfg.fresh})
-		if !sendEvent(ctx, out, StreamEvent{Type: backend.EventProcessStarted, Raw: started}) {
+		if !sendEvent(ctx, out, StreamEvent{Type: backend.EventTurnStarted, Raw: started}) {
 			return
 		}
 		// Keep the tail alive until backend completion supplies final records.
@@ -138,7 +138,7 @@ func mergeLoggedTurn[R, D any](ctx context.Context, cfg loggedTurnConfig[R, D]) 
 }
 
 // finishCancelled waits briefly for the backend, drains the tail, and ensures
-// the cancelled turn emits subprocess.exit. pending is a raced tail event.
+// the cancelled turn emits turn.ended. pending is a raced tail event.
 func finishCancelled[R, D any](out chan<- StreamEvent, cfg loggedTurnConfig[R, D], events <-chan StreamEvent, cancel context.CancelFunc, pending ...StreamEvent) {
 	ctx := context.Background()
 	exited := false
@@ -146,7 +146,7 @@ func finishCancelled[R, D any](out chan<- StreamEvent, cfg loggedTurnConfig[R, D
 	// result, so remember it for drainTail — same reason as the completion path.
 	terminalSeen := false
 	send := func(ev StreamEvent) {
-		exited = exited || ev.Type == backend.EventProcessExit
+		exited = exited || ev.Type == backend.EventTurnEnded
 		terminalSeen = terminalSeen || cfg.tail.terminalMarker(ev.Raw)
 		sendEvent(ctx, out, ev)
 	}
@@ -176,6 +176,6 @@ func finishCancelled[R, D any](out chan<- StreamEvent, cfg loggedTurnConfig[R, D
 	}
 	if !exited {
 		// User-requested cancellation reconciles as a normal turn end.
-		send(StreamEvent{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)})
+		send(StreamEvent{Type: backend.EventTurnEnded, Raw: json.RawMessage(`{}`)})
 	}
 }

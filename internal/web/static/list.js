@@ -80,9 +80,9 @@ export async function loadList() {
   try {
     // Always fetch the full set (incl. archived); the controls narrow it
     // client-side, so toggling "show archived" needs no refetch.
-    const res = await fetch('/api/sessions?include_archived=1');
+    const res = await fetch('/api/v1/sessions?include_archived=1');
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = (await res.json()) || [];
+    const data = (await res.json()).sessions || [];
     // Pinned first; the router's own directory last.
     const rank = s => (s.pinned ? 0 : 1) + (routerDir && s.cwd === routerDir ? 2 : 0);
     const sorted = data.slice().sort((a, b) => rank(a) - rank(b));

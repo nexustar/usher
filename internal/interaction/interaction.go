@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -48,8 +49,8 @@ type pendingEntry struct {
 type Response struct {
 	Behavior string `json:"behavior"` // allow | deny
 	Reason   string `json:"reason,omitempty"`
-	// Scope is "once" (default) or "session". "session" is the historical API
-	// spelling for the UI's "always" choice; the backend owns its exact scope.
+	// Scope is "once" (default) or "always"; the backend owns the exact scope
+	// of "always".
 	Scope string `json:"scope,omitempty"`
 	// Answers maps each question, verbatim from the tool input, to what the
 	// user picked or typed; Behavior is "allow" alongside it. Claude's
@@ -333,28 +334,30 @@ func (m *Manager) notifyPending(p Pending) {
 	}
 }
 
+// ErrNotFound is a decision for an interaction that is not pending.
+var ErrNotFound = errors.New("interaction not found")
+
 // Respond delivers the user's decision to the matching pending interaction.
-// Returns an error if the ID is unknown or the entry has already been resolved.
 func (m *Manager) Respond(id string, r Response) error {
 	m.mu.Lock()
 	p, ok := m.pending[id]
 	m.mu.Unlock()
 	if !ok {
-		return errors.New("interaction not found")
+		return ErrNotFound
 	}
-	if r.Scope == "session" {
+	if r.Scope == "always" {
 		if r.Behavior != "allow" {
-			return errors.New("session scope is only valid for allow")
+			return errors.New("scope always is only valid for allow")
 		}
 		if !p.AllowAlways {
-			return errors.New("session approval is not available for this interaction")
+			return errors.New("always-allow is not available for this interaction")
 		}
 	}
 	select {
 	case p.response <- r:
 		return nil
 	default:
-		return errors.New("already resolved")
+		return fmt.Errorf("%w: already resolved", ErrNotFound)
 	}
 }
 

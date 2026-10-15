@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/agentprofile"
+	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/auth"
 	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
@@ -365,6 +366,21 @@ func serve(args []string) error {
 		return err
 	}
 
+	// Scheduled tasks: each due task creates a session, so the runner needs
+	// only the two seams the composer uses. Inert until a task is saved.
+	// Read-only mode keeps the runner for GET /api/v1/schedules but never fires it.
+	scheduleRunner := schedule.NewRunner(schedules, r, agents, logger)
+	if !*readOnly {
+		go scheduleRunner.Run(ctx)
+	}
+	apiConfig := api.Config{
+		Agents:         agents,
+		Schedules:      scheduleRunner,
+		AttachmentsDir: attachmentsDir,
+		Version:        Version,
+		ReadOnly:       *readOnly,
+	}
+
 	// Plugin API: out-of-process IM frontends (e.g. usher-lark) consume the
 	// same Router seam the Telegram hub uses, over a 0600 Unix socket. Inert
 	// until a plugin connects. Read-only skips it: plugins drive sessions,
@@ -372,22 +388,14 @@ func serve(args []string) error {
 	// instance.
 	if !*readOnly {
 		go func() {
-			if err := pluginapi.NewServer(r, attachmentsDir, agents, logger).Run(ctx, pluginapi.SocketPath(*dataDir)); err != nil && ctx.Err() == nil {
+			if err := pluginapi.NewServer(r, apiConfig, logger).Run(ctx, pluginapi.SocketPath(*dataDir)); err != nil && ctx.Err() == nil {
 				logger.Warn("plugin api stopped", "err", err)
 			}
 		}()
 	}
 
-	// Scheduled tasks: each due task creates a session, so the runner needs
-	// only the two seams the composer uses. Inert until a task is saved.
-	// Read-only mode keeps the runner for GET /api/schedules but never fires it.
-	scheduleRunner := schedule.NewRunner(schedules, r, agents, logger)
-	if !*readOnly {
-		go scheduleRunner.Run(ctx)
-	}
-
 	themePath := filepath.Join(*dataDir, "theme.css")
-	srv := web.NewServer(*addr, hookSockPath(*dataDir), attachmentsDir, authStore, r, pushMgr, *editorURL, *uiDir, themePath, agents, scheduleRunner, *readOnly, logger)
+	srv := web.NewServer(*addr, hookSockPath(*dataDir), authStore, r, pushMgr, *editorURL, *uiDir, themePath, apiConfig, logger)
 
 	// Foreign-turn watcher: turns usher didn't start (background workflow
 	// continuations, pane-typed prompts) still have to refresh the transcript

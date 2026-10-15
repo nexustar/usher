@@ -468,7 +468,7 @@ func TestMirrorsAssistantAndLazilyCreatesThread(t *testing.T) {
 
 	raw := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"**hello** from <claude>"}}`)
 	waitFor(t, "assistant mirror", func() bool {
-		r.broker.Publish(broker.Event{SessionID: "s1", Type: "part", Raw: raw})
+		r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.part", Raw: raw})
 		msgs := f.messages()
 		return len(msgs) >= 2 && msgs[0].kind == "root" && msgs[1].kind == "post"
 	})
@@ -518,13 +518,13 @@ func TestGuestCodexPostsOnlyFinalAnswer(t *testing.T) {
 
 	commentary := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"let me check the parser first"}}`)
 	final := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"fixed: the parser now handles empty input"}}`)
-	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: commentary})
-	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: final})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "turn.part", Raw: commentary})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "turn.part", Raw: final})
 	if got := f.messages(); len(got) != 0 {
 		t.Fatalf("guest parts must not mirror live, got %+v", got)
 	}
 
-	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "turn.ended"})
 	msgs := f.messages()
 	if len(msgs) != 1 {
 		t.Fatalf("guest codex turn: want exactly one message, got %d: %+v", len(msgs), msgs)
@@ -553,9 +553,9 @@ func TestGuestNonCodexJoinsTurnText(t *testing.T) {
 
 	p1 := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"first finding"}}`)
 	p2 := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"second finding"}}`)
-	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: p1})
-	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "part", Raw: p2})
-	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "turn.part", Raw: p1})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "turn.part", Raw: p2})
+	h.handleEvent(ctx, broker.Event{SessionID: "s1", Type: "turn.ended"})
 
 	msgs := f.messages()
 	if len(msgs) != 1 {
@@ -663,7 +663,7 @@ func TestGuestFreshMessageCreate(t *testing.T) {
 		t.Fatalf("ack = %v", f.reacted)
 	}
 	raw, _ := json.Marshal(map[string]any{"role": "user", "content": "build it"})
-	h.mirrorPrompt(context.Background(), broker.Event{SessionID: "guest_1", Type: "turn.user", Raw: raw})
+	h.mirrorPrompt(context.Background(), broker.Event{SessionID: "guest_1", Type: "turn.prompt", Raw: raw})
 	if len(f.messages()) != 1 {
 		t.Fatalf("guest initial prompt echo should be suppressed, got %+v", f.messages())
 	}
@@ -861,7 +861,7 @@ func TestTurnCompleteOnlyWithExistingThread(t *testing.T) {
 	runHub(t, h)
 
 	// No thread yet → exit event mirrors nothing.
-	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.ended"})
 	time.Sleep(50 * time.Millisecond)
 	if len(f.messages()) != 0 {
 		t.Fatalf("no thread: want no messages, got %v", f.messages())
@@ -869,11 +869,11 @@ func TestTurnCompleteOnlyWithExistingThread(t *testing.T) {
 
 	raw := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"work"}}`)
 	waitFor(t, "mirror", func() bool {
-		r.broker.Publish(broker.Event{SessionID: "s1", Type: "part", Raw: raw})
+		r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.part", Raw: raw})
 		return len(f.messages()) >= 2
 	})
 	exit := json.RawMessage(`{"user_ts":"2026-06-25T03:00:00Z","assistant_ts":"2026-06-25T03:00:08Z"}`)
-	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit", Raw: exit})
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.ended", Raw: exit})
 	waitFor(t, "turn ping", func() bool {
 		msgs := f.messages()
 		last := msgs[len(msgs)-1]
@@ -918,14 +918,14 @@ func TestInboundRoutingAndAuth(t *testing.T) {
 
 	// The routed prompt's own echo is deduped; a different prompt echoes.
 	raw, _ := json.Marshal(map[string]any{"role": "user", "content": "again"})
-	h.mirrorPrompt(ctx, broker.Event{SessionID: "s1", Type: "turn.user", Raw: raw})
+	h.mirrorPrompt(ctx, broker.Event{SessionID: "s1", Type: "turn.prompt", Raw: raw})
 	for _, m := range f.messages() {
 		if strings.Contains(m.body, promptCaption) {
 			t.Fatalf("own prompt should not echo back: %+v", m)
 		}
 	}
 	rawWeb, _ := json.Marshal(map[string]any{"role": "user", "content": "from the web"})
-	h.mirrorPrompt(ctx, broker.Event{SessionID: "s1", Type: "turn.user", Raw: rawWeb})
+	h.mirrorPrompt(ctx, broker.Event{SessionID: "s1", Type: "turn.prompt", Raw: rawWeb})
 	msgs := f.messages()
 	last := msgs[len(msgs)-1]
 	if !strings.Contains(last.body, "from the web") || !strings.Contains(last.body, promptCaption) {
@@ -1002,7 +1002,7 @@ func TestPermissionCardRoundTrip(t *testing.T) {
 	if resp.Toast == nil || !strings.Contains(resp.Toast.Content, "always allowed") {
 		t.Fatalf("toast = %+v", resp.Toast)
 	}
-	if got, ok := r.response("p1"); !ok || got.Behavior != "allow" || got.Scope != "session" {
+	if got, ok := r.response("p1"); !ok || got.Behavior != "allow" || got.Scope != "always" {
 		t.Fatalf("response = %+v %v", got, ok)
 	}
 
@@ -1158,7 +1158,7 @@ func TestDecisionCodec(t *testing.T) {
 		ok       bool
 	}{
 		{obj{"k": "a", "id": "x"}, "allow", "", true},
-		{obj{"k": "s", "id": "x"}, "allow", "session", true},
+		{obj{"k": "s", "id": "x"}, "allow", "always", true},
 		{obj{"k": "d", "id": "x"}, "deny", "", true},
 		{obj{"k": "i", "id": "x"}, "deny", "", true},
 		{obj{"k": "zz", "id": "x"}, "", "", false},
@@ -1408,7 +1408,7 @@ func TestMarkdownCardFallsBackToText(t *testing.T) {
 
 	raw := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"**still here**"}}`)
 	waitFor(t, "plain fallback", func() bool {
-		r.broker.Publish(broker.Event{SessionID: "s1", Type: "part", Raw: raw})
+		r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.part", Raw: raw})
 		msgs := f.messages()
 		if len(msgs) == 0 {
 			return false
@@ -1428,12 +1428,12 @@ func TestRootCardRetitledOnTurnEnd(t *testing.T) {
 
 	raw := json.RawMessage(`{"role":"assistant","part":{"type":"text","content":"working"}}`)
 	waitFor(t, "thread created", func() bool {
-		r.broker.Publish(broker.Event{SessionID: "s1", Type: "part", Raw: raw})
+		r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.part", Raw: raw})
 		return len(f.messages()) >= 2
 	})
 
 	// Turn ends with an unchanged title: no patch.
-	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.ended"})
 	waitFor(t, "turn ping", func() bool {
 		msgs := f.messages()
 		return msgs[len(msgs)-1].kind == "text"
@@ -1448,7 +1448,7 @@ func TestRootCardRetitledOnTurnEnd(t *testing.T) {
 	r.mu.Lock()
 	r.sessions["s1"] = core.Session{ID: "s1", Title: "fix the flaky test", Cwd: "/w"}
 	r.mu.Unlock()
-	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.ended"})
 	waitFor(t, "root card patched", func() bool {
 		for _, m := range f.messages() {
 			if m.kind == "update" && m.to == "om_root_1" && strings.Contains(m.body, "fix the flaky test") {
@@ -1459,7 +1459,7 @@ func TestRootCardRetitledOnTurnEnd(t *testing.T) {
 	})
 
 	// A further turn end with the same title patches nothing new.
-	r.broker.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit"})
+	r.broker.Publish(broker.Event{SessionID: "s1", Type: "turn.ended"})
 	time.Sleep(50 * time.Millisecond)
 	updates := 0
 	for _, m := range f.messages() {

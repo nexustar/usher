@@ -58,7 +58,7 @@ function diffHTML(text) {
 }
 
 function sessionImageHTML(path, alt, titleAttr) {
-  const src = '/api/sessions/' + encodeURIComponent(currentDetailId) +
+  const src = '/api/v1/sessions/' + encodeURIComponent(currentDetailId) +
     '/image?path=' + encodeURIComponent(path);
   return '<span class="markdown-image"><a href="' + esc(src) +
     '" target="_blank" rel="noopener"><img loading="lazy" decoding="async" alt="' +
@@ -259,7 +259,7 @@ export function renderToolPart(p) {
   // path travels only as an encodeURIComponent'd query param, so it can't break
   // out of the attribute; /image resolves+validates it against the session cwd.
   if (target && currentDetailId && /(^|__)show_image$/.test(name)) {
-    const src = '/api/sessions/' + encodeURIComponent(currentDetailId) +
+    const src = '/api/v1/sessions/' + encodeURIComponent(currentDetailId) +
       '/image?path=' + encodeURIComponent(target);
     const fname = target.split('/').pop() || 'image';
     // Known dims let a.sized reserve the box before load.

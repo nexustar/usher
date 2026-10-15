@@ -22,7 +22,7 @@ func SamePromptEcho(sent, observed string) bool {
 }
 
 // TurnUserText extracts the display text from router's backend-neutral
-// "turn.user" event. This is the event IM frontends should render for prompt
+// "turn.prompt" event. This is the event IM frontends should render for prompt
 // echoes; it is derived from either Claude jsonl or Codex rollout logs.
 func TurnUserText(raw json.RawMessage) string {
 	var o struct {
@@ -35,7 +35,7 @@ func TurnUserText(raw json.RawMessage) string {
 	return o.Content
 }
 
-// PartText extracts assistant text from router's backend-neutral "part" event.
+// PartText extracts assistant text from router's backend-neutral "turn.part" event.
 // Tool parts and malformed payloads yield "".
 func PartText(raw json.RawMessage) string {
 	var o struct {
@@ -61,7 +61,7 @@ var ImageExts = map[string]bool{
 }
 
 // PartImageRefs extracts show_image file paths from a backend-neutral tool
-// "part" event. The router puts a tool's path-like argument into tool_target,
+// "turn.part" event. The router puts a tool's path-like argument into tool_target,
 // so this covers streamed show_image calls without tying IM frontends to one
 // backend's raw log shape.
 func PartImageRefs(raw json.RawMessage) []string {
@@ -108,7 +108,7 @@ func ParseQuestions(raw json.RawMessage) []AskQuestion {
 	return in.Questions
 }
 
-// TurnDuration reads the elapsed time of a turn from a subprocess.exit event:
+// TurnDuration reads the elapsed time of a turn from a turn.ended event:
 // user_ts → assistant_end_ts, falling back to assistant_ts on older payloads.
 // Returns false when a timestamp is missing or out of order.
 func TurnDuration(raw json.RawMessage) (time.Duration, bool) {

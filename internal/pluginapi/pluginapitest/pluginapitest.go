@@ -7,6 +7,7 @@ package pluginapitest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/agentprofile"
+	"github.com/nexustar/usher/internal/api"
+	"github.com/nexustar/usher/internal/backend"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
@@ -330,7 +333,7 @@ func (f *FakeRouter) RespondInteraction(id string, resp interaction.Response) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, done := f.responses[id]; done {
-		return errors.New("already resolved")
+		return fmt.Errorf("%w: already resolved", interaction.ErrNotFound)
 	}
 	f.responses[id] = resp
 	return nil
@@ -351,7 +354,7 @@ func StartWithAgents(t *testing.T, f *FakeRouter, agents *agentprofile.Store) *p
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := pluginapi.NewServer(f, t.TempDir(), agents, nil).Run(ctx, sock); err != nil {
+		if err := pluginapi.NewServer(f, api.Config{Agents: agents, AttachmentsDir: t.TempDir()}, nil).Run(ctx, sock); err != nil {
 			t.Errorf("server: %v", err)
 		}
 	}()
@@ -419,15 +422,37 @@ func (f *FakeRouter) OpenSession(id string, _ time.Duration) (core.Session, bool
 
 func (f *FakeRouter) DefaultEffort(context.Context, string, string) string { return "" }
 func (f *FakeRouter) DeleteSession(string) error                           { return nil }
-func (f *FakeRouter) ForkSession(string, string) (string, error)           { return "", nil }
+func (f *FakeRouter) ForkSession(id, _ string) (string, error)             { return id + "_fork", nil }
 func (f *FakeRouter) CancelSend(string) error                              { return nil }
-func (f *FakeRouter) Rename(context.Context, string, string) error         { return nil }
-func (f *FakeRouter) Pin(string)                                           {}
-func (f *FakeRouter) Unpin(string)                                         {}
-func (f *FakeRouter) IsPinned(string) bool                                 { return false }
-func (f *FakeRouter) HasTerminal(string) bool                              { return false }
-func (f *FakeRouter) TerminalAvailable() bool                              { return false }
+func (f *FakeRouter) Rename(_ context.Context, _, title string) error {
+	if title == "" {
+		return core.ErrInvalidTitle
+	}
+	return nil
+}
+func (f *FakeRouter) Pin(string)              {}
+func (f *FakeRouter) Unpin(string)            {}
+func (f *FakeRouter) IsPinned(string) bool    { return false }
+func (f *FakeRouter) HasTerminal(string) bool { return false }
+func (f *FakeRouter) TerminalAvailable() bool { return false }
 
 func (f *FakeRouter) SubscribeSession(id string) (<-chan broker.Event, func()) {
 	return f.broker.Subscribe(id)
 }
+
+func (f *FakeRouter) PauseSession(id string) error {
+	if _, ok := f.GetSession(id); !ok {
+		return core.ErrSessionNotFound
+	}
+	return nil
+}
+
+func (f *FakeRouter) ResumeSession(_ context.Context, id string) error { return f.PauseSession(id) }
+
+func (f *FakeRouter) ComposerItems(context.Context, string, string) (backend.ComposerCatalog, error) {
+	return backend.ComposerCatalog{}, nil
+}
+
+func (f *FakeRouter) Backends() []string { return []string{"claude"} }
+
+func (f *FakeRouter) Models(context.Context, string) ([]backend.Model, error) { return nil, nil }

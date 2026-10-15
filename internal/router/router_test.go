@@ -28,7 +28,7 @@ import (
 
 // TestPublishStreamDerivesCodexTurns proves the live path: fed Codex rollout
 // lines through the codex assembler, publishStream derives the backend-neutral
-// turn.user / part broker events the web client renders (same as for Claude).
+// turn.prompt / part broker events the web client renders (same as for Claude).
 func TestPublishStreamDerivesCodexTurns(t *testing.T) {
 	b := broker.New()
 	r := &Router{broker: b}
@@ -51,13 +51,13 @@ func TestPublishStreamDerivesCodexTurns(t *testing.T) {
 	var sawUser, sawPart bool
 	for ev := range sub {
 		switch {
-		case ev.Type == "turn.user" && strings.Contains(string(ev.Raw), "hello codex"):
+		case ev.Type == "turn.prompt" && strings.Contains(string(ev.Raw), "hello codex"):
 			sawUser = true
-		case ev.Type == "part" && strings.Contains(string(ev.Raw), "hi there"):
+		case ev.Type == "turn.part" && strings.Contains(string(ev.Raw), "hi there"):
 			sawPart = true
 		case ev.Type == "done":
 			if !sawUser {
-				t.Error("no turn.user derived from codex user_message")
+				t.Error("no turn.prompt derived from codex user_message")
 			}
 			if !sawPart {
 				t.Error("no part derived from codex agent_message")
@@ -85,10 +85,10 @@ func TestFailSendPublishesTerminalExit(t *testing.T) {
 
 	r.failSend("s1", tok, errors.New("unknown command: /wtf"))
 	first, second := <-sub, <-sub
-	if first.Type != backend.EventError || !strings.Contains(string(first.Raw), "unknown command: /wtf") {
+	if first.Type != backend.EventTurnFailed || !strings.Contains(string(first.Raw), "unknown command: /wtf") {
 		t.Fatalf("first event = %s %s, want command error", first.Type, first.Raw)
 	}
-	if second.Type != backend.EventProcessExit || !strings.Contains(string(second.Raw), `"reason":"error"`) {
+	if second.Type != backend.EventTurnEnded || !strings.Contains(string(second.Raw), `"reason":"error"`) {
 		t.Fatalf("second event = %s %s, want terminal error exit", second.Type, second.Raw)
 	}
 	if _, active := r.activeSend["s1"]; active {
@@ -607,7 +607,7 @@ func partEvent(sid, role, typ, content string) broker.Event {
 		"role": role,
 		"part": map[string]string{"type": typ, "content": content},
 	})
-	return broker.Event{SessionID: sid, Type: "part", Raw: raw}
+	return broker.Event{SessionID: sid, Type: "turn.part", Raw: raw}
 }
 
 func TestCollectTurnTextAccumulatesUntilExit(t *testing.T) {
@@ -620,7 +620,7 @@ func TestCollectTurnTextAccumulatesUntilExit(t *testing.T) {
 		b.Publish(partEvent("s1", "assistant", "tool", "ignored tool part"))
 		b.Publish(partEvent("s1", "user", "text", "ignored user echo"))
 		b.Publish(partEvent("s1", "assistant", "text", "world"))
-		b.Publish(broker.Event{SessionID: "s1", Type: "subprocess.exit", Raw: json.RawMessage(`{}`)})
+		b.Publish(broker.Event{SessionID: "s1", Type: "turn.ended", Raw: json.RawMessage(`{}`)})
 	}()
 
 	got, err := collectTurnText(context.Background(), ch)
@@ -639,7 +639,7 @@ func TestCollectTurnTextErrorEvent(t *testing.T) {
 
 	go func() {
 		b.Publish(partEvent("s1", "assistant", "text", "partial"))
-		b.Publish(broker.Event{SessionID: "s1", Type: "error", Raw: json.RawMessage(`{"message":"boom"}`)})
+		b.Publish(broker.Event{SessionID: "s1", Type: "turn.failed", Raw: json.RawMessage(`{"message":"boom"}`)})
 	}()
 
 	got, err := collectTurnText(context.Background(), ch)
@@ -808,7 +808,7 @@ func newQueueTestRouter(t *testing.T) *Router {
 	}
 	r.runTurn = func(_ context.Context, sessionID, prompt, _ string, tok *sendToken) {
 		r.broker.Publish(partEvent(sessionID, "assistant", "text", "re: "+prompt))
-		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "subprocess.exit", Raw: json.RawMessage(`{}`)})
+		r.broker.Publish(broker.Event{SessionID: sessionID, Type: "turn.ended", Raw: json.RawMessage(`{}`)})
 		r.releaseSend(sessionID, tok)
 	}
 	return r

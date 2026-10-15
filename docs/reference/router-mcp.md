@@ -73,10 +73,11 @@ router:
   spawned it with the routing tools, and recorded the designation, so the relay
   closes the loop with no polling anywhere.
 
-The control socket serves the same session routes as the web API, under
-`/v1`. Routed work has two routes of its own, used only by these tools:
-`POST /v1/sessions/{id}/route` and `POST /v1/route` take the body of a send and
-of a create, and answer `{"id", "relayed"}`.
+The control socket serves the same `/api/v1` routes as the web API. Routed
+work has two routes of its own, used only by these tools:
+`POST /internal/router/sessions/{id}/messages` and
+`POST /internal/router/sessions` take the body of a message and of a create,
+and answer `{"id", "relayed"}`.
 
 ## The current session
 
@@ -99,7 +100,7 @@ Start a router session — `backend` and `model` are optional, and default to
 usher's default backend and its default model:
 
 ```sh
-curl -sS -X POST localhost:8080/api/router \
+curl -sS -X POST localhost:8080/internal/router \
   -H 'Content-Type: application/json' \
   -d '{"initial_message":"List my active sessions."}'
 ```

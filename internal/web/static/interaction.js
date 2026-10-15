@@ -26,9 +26,9 @@ let pendingInteractions = [];
 
 export async function pollInteractions() {
   try {
-    const res = await fetch('/api/interactions');
+    const res = await fetch('/api/v1/interactions');
     if (!res.ok) return;
-    const list = (await res.json()) || [];
+    const list = (await res.json()).interactions || [];
     if (!sameInteractions(pendingInteractions, list)) {
       pendingInteractions = list;
     }
@@ -105,7 +105,7 @@ function renderPermission(p, position, total) {
   try { inputJSON = JSON.stringify(p.tool_input || {}, null, 2); }
   catch { inputJSON = String(p.tool_input || ''); }
   const always = p.allow_always
-    ? '<button class="allow secondary" data-scope="session">allow always</button>'
+    ? '<button class="allow secondary" data-scope="always">allow always</button>'
     : '';
   return `
     <div class="interaction" data-id="${esc(p.id)}">
@@ -262,7 +262,7 @@ function wirePermission(node) {
 
 async function respond(id, behavior, scope, reason) {
   try {
-    await fetch('/api/interactions/' + encodeURIComponent(id) + '/respond', {
+    await fetch('/api/v1/interactions/' + encodeURIComponent(id) + '/respond', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ behavior, scope: scope || 'once', reason: reason || 'via usher web UI' }),
@@ -277,7 +277,7 @@ async function respond(id, behavior, scope, reason) {
 // picked or typed (question → answer).
 async function respondAnswers(id, answers) {
   try {
-    await fetch('/api/interactions/' + encodeURIComponent(id) + '/respond', {
+    await fetch('/api/v1/interactions/' + encodeURIComponent(id) + '/respond', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ behavior: 'allow', answers, reason: 'via usher web UI' }),

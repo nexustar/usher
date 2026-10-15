@@ -983,7 +983,7 @@ func (m *Manager) handleControlRequest(p *process, raw []byte) {
 		if resp.Behavior == "allow" {
 			// The SDK always echoes the original input for an allow decision.
 			decision["updatedInput"] = json.RawMessage(msg.Request.Input)
-			if resp.Scope == "session" {
+			if resp.Scope == "always" {
 				if suggestions := allowSuggestions(msg.Request.PermissionSuggestions); len(suggestions) > 0 {
 					decision["updatedPermissions"] = suggestions
 				}

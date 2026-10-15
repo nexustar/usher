@@ -6,7 +6,7 @@ import {
   setSuppressAppendScroll, setRoutedTargets, getLastSessions,
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
-  registerRefreshSubtitle,
+  registerRefreshSubtitle, fetchBackends, patchSession,
 } from './state.js';
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
@@ -129,7 +129,7 @@ function wireCommandPreview(promptEl, sessionID) {
   };
   const load = async () => {
     if (loading || Date.now() - lastAvailableLoad < 30000) return loading;
-    loading = fetch('/api/sessions/' + encodeURIComponent(sessionID) + '/commands')
+    loading = fetch('/api/v1/sessions/' + encodeURIComponent(sessionID) + '/commands')
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         source = data && data.source || '';
@@ -212,7 +212,7 @@ function installDropGuard() {
 // wireUpload wires url to the upload button, a file drop, and an image paste,
 // appending each stored path to the message box. notify(text, role) reports
 // progress the calling view's way — 'system' or 'error'.
-function wireUpload(url, promptEl, notify) {
+function wireUpload(sessionID, promptEl, notify) {
   const btn = document.getElementById('upload-btn');
   const input = document.getElementById('upload-input');
   if (!btn || !input) return;
@@ -224,10 +224,12 @@ function wireUpload(url, promptEl, notify) {
 
   const uploadFile = async (file) => {
     try {
-      const res = await fetch(url + '?filename=' + encodeURIComponent(file.name), { method: 'POST', body: file });
+      const query = new URLSearchParams({ filename: file.name });
+      if (sessionID) query.set('session_id', sessionID);
+      const res = await fetch('/api/v1/uploads?' + query, { method: 'POST', body: file });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        notify('upload failed: ' + (err.error || 'HTTP ' + res.status), 'error');
+        notify('upload failed: ' + (err.error?.message || 'HTTP ' + res.status), 'error');
         return;
       }
       const { path } = await res.json();
@@ -296,7 +298,7 @@ function wireUpload(url, promptEl, notify) {
 // Mirrors the regular session detail layout so the page transition after
 // creation is purely additive (empty placeholders fill in); the cwd picker
 // above the composer is the only pre-creation addition.
-// Submitting POSTs to /api/sessions (router.StartSession returns the new
+// Submitting POSTs to /api/v1/sessions (router.StartSession returns the new
 // id immediately and streams to broker subscribers), then hash-routes to
 // the freshly-created session's detail page.
 
@@ -315,9 +317,9 @@ export async function showNewSession(opts = {}) {
 
   let cwds = [];
   try {
-    const res = await fetch('/api/sessions');
+    const res = await fetch('/api/v1/sessions');
     if (res.ok) {
-      const data = (await res.json()) || [];
+      const data = (await res.json()).sessions || [];
       cwds = [...new Set(data.map(s => s.cwd).filter(Boolean))].sort();
     }
   } catch {/* offline → datalist just empty */}
@@ -380,7 +382,7 @@ export async function showNewSession(opts = {}) {
   }
 
   // No transcript to report into; the path in the message box is receipt enough.
-  wireUpload('/api/uploads', promptEl, (content, role) => {
+  wireUpload('', promptEl, (content, role) => {
     if (role !== 'error') return;
     errEl.textContent = content;
     errEl.style.display = '';
@@ -557,7 +559,7 @@ export async function showNewSession(opts = {}) {
   // Both catalogs land together so the agent options and the backend/model
   // options are never half-populated when one of the two requests is slow.
   const getJSON = url => fetch(url).then(r => r.ok ? r.json() : {}).catch(() => ({}));
-  Promise.all([getJSON('/api/models'), getJSON('/api/agents')]).then(([models, agents]) => {
+  Promise.all([fetchBackends().catch(() => ({})), getJSON('/api/v1/agents')]).then(([models, agents]) => {
     backends = (models && models.backends) || ['claude'];
     modelCatalogs = (models && models.models) || {};
     restoreSavedChoice();
@@ -594,13 +596,13 @@ export async function showNewSession(opts = {}) {
       if (!profile || backend !== (profile.backend || '')) request.backend = backend;
       if (!profile || model !== (profile.model || '')) request.model = model;
       if (!profile || autoApprove !== !!profile.auto_approve) request.auto_approve = autoApprove;
-      const res = await fetch('/api/sessions', {
+      const res = await fetch('/api/v1/sessions', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(request),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+      if (!res.ok) throw new Error(body.error?.message || ('HTTP ' + res.status));
       // Refresh sidebar so the new session shows up while its first stream
       // is still in flight; fsnotify normally surfaces it within ~1s but a
       // proactive reload avoids the awkward "where did it go?" gap.
@@ -647,7 +649,7 @@ export async function showDetail(id) {
 
   let sess;
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id));
+    const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id));
     if (!res.ok) {
       root.innerHTML = '<div class="err">session not found</div>';
       return;
@@ -665,7 +667,7 @@ export async function showDetail(id) {
   // band, no fragile second-tier sticky element.
   renderSessionSubtitle(sess);
 
-  if (sess.is_subagent) {
+  if (sess.subagent) {
     root.innerHTML = `<div id="chat-scroll" class="chat-area"></div>`;
     openSubagentEventStream(id);
     await loadTranscript(id);
@@ -779,11 +781,7 @@ export async function showDetail(id) {
       if (!target) return;
       autoBtn.disabled = true;
       try {
-        const res = await fetch('/api/sessions/' + encodeURIComponent(target) + '/auto-approve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: next }),
-        });
+        const res = await patchSession(target, { auto_approve: next });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         autoBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
         autoBtn.querySelector('.toggle-val').textContent = next ? 'auto' : 'ask';
@@ -882,14 +880,14 @@ export async function showDetail(id) {
         // Reveal before measuring its width.
         termPanel.hidden = false;
         const box = document.getElementById('term-grid').parentElement;
-        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/terminal', {
+        const res = await fetch('/internal/sessions/' + encodeURIComponent(id) + '/terminal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ cols: measureCols(box), rows: onRows() }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || ('HTTP ' + res.status));
+          throw new Error(body.error?.message || ('HTTP ' + res.status));
         }
         shellAlive = true;
         panelShown = true;
@@ -912,7 +910,7 @@ export async function showDetail(id) {
         terminalRequestID = terminalRequestID || (globalThis.crypto && globalThis.crypto.randomUUID
           ? globalThis.crypto.randomUUID()
           : Date.now() + '-' + Math.random().toString(16).slice(2));
-        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/terminal/input', {
+        const res = await fetch('/internal/sessions/' + encodeURIComponent(id) + '/terminal/input', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -922,7 +920,7 @@ export async function showDetail(id) {
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || ('HTTP ' + res.status));
+          throw new Error(body.error?.message || ('HTTP ' + res.status));
         }
         termInput.value = '';
         terminalRequestID = null;
@@ -944,7 +942,7 @@ export async function showDetail(id) {
     });
   }
 
-  wireUpload('/api/sessions/' + encodeURIComponent(id) + '/upload', promptEl,
+  wireUpload(id, promptEl,
     (content, role) => appendChatMessage({ role, content, ts: new Date().toISOString() }));
 
   // Keep one send/cancel button stable while its request is in flight.
@@ -978,8 +976,8 @@ export async function showDetail(id) {
     clearDraft();
     growPrompt(promptEl); // shrink back; programmatic clear fires no input event
     // Optimistic: show the user message immediately. The live bubble is
-    // created by openEventStream on subprocess.started. Marked .optimistic so
-    // the turn.user event (or a truth-up fetch) replaces it with the
+    // created by openEventStream on turn.started. Marked .optimistic so
+    // the turn.prompt event (or a truth-up fetch) replaces it with the
     // canonical turn — same text, server timestamp.
     const el = document.getElementById('chat-scroll');
     if (el) el.querySelectorAll(':scope > .chat-loading').forEach(n => n.remove());
@@ -995,14 +993,14 @@ export async function showDetail(id) {
       liveTurnDirty = true;
     }
     try {
-      const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/send', {
+      const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        appendChatMessage({ role: 'error', content: 'send failed: ' + (err.error || ('HTTP ' + res.status)), ts: new Date().toISOString() });
+        appendChatMessage({ role: 'error', content: 'send failed: ' + (err.error?.message || ('HTTP ' + res.status)), ts: new Date().toISOString() });
         actionPending = null;
         renderAction();
         return;
@@ -1025,7 +1023,7 @@ export async function showDetail(id) {
     actionPending = 'cancel';
     renderAction();
     try {
-      const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/send', { method: 'DELETE' });
+      const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/interrupt', { method: 'POST' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
     } catch (e) {
       appendChatMessage({ role: 'error', content: 'cancel failed: ' + String(e), ts: new Date().toISOString() });
@@ -1048,28 +1046,28 @@ export async function showDetail(id) {
 }
 
 // Subagents are read-only and intentionally do not stream partial output.
-// Their lightweight server-side watcher emits subprocess.exit when a child
+// Their lightweight server-side watcher emits turn.ended when a child
 // turn completes; refetch the transcript then. turn.idle is the server's
 // snapshot-on-connect event, so it also closes the subscribe/fetch race and
 // reconciles completions that happened while the SSE connection was down.
 function openSubagentEventStream(id) {
-  const es = new EventSource('/api/sessions/' + encodeURIComponent(id) + '/events');
+  const es = new EventSource('/api/v1/sessions/' + encodeURIComponent(id) + '/events');
   setCurrentES(es);
   es.addEventListener('turn.idle', () => loadTranscript(id));
-  es.addEventListener('subprocess.exit', () => loadTranscript(id));
+  es.addEventListener('turn.ended', () => loadTranscript(id));
   es.onerror = () => {/* SSE auto-reconnects; no user-visible noise */};
 }
 
-// openEventStream attaches SSE handlers to /api/sessions/{id}/events. The
+// openEventStream attaches SSE handlers to /api/v1/sessions/{id}/events. The
 // in-flight assistant turn renders inline at the bottom of the transcript:
-// subprocess.started stands up the live bubble; each 'part' event (one
+// turn.started stands up the live bubble; each 'turn.part' event (one
 // server-grouped TurnPart — assistant text or a rendered tool result, the
-// same shapes /transcript serves) appends into it as it happens; 'turn.user'
-// adopts our optimistic echo as the canonical user turn; subprocess.exit
+// same shapes /transcript serves) appends into it as it happens; 'turn.prompt'
+// adopts our optimistic echo as the canonical user turn; turn.ended
 // promotes the live bubble in place (full fetch only when the turn is
-// dirty — see finalizeTurn). Turn errors surface via the 'error' event.
+// dirty — see finalizeTurn). Turn errors surface via 'turn.failed'.
 function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
-  const es = new EventSource('/api/sessions/' + encodeURIComponent(id) + '/events');
+  const es = new EventSource('/api/v1/sessions/' + encodeURIComponent(id) + '/events');
   setCurrentES(es);
 
   let opened = false;
@@ -1096,10 +1094,10 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   };
   // beginTurn stands up the live bubble + running-state UI for
   // a turn. It's the single idempotent entry point for every way a turn
-  // surfaces: subprocess.started (live), turn.active (server snapshot on a
+  // surfaces: turn.started (live), turn.active (server snapshot on a
   // mid-turn connect), and the lazy first-part fallback. The guard makes it
   // safe when two of those race (e.g. connecting in the window between the
-  // session flipping to running and subprocess.started being published).
+  // session flipping to running and turn.started being published).
   const beginTurn = () => {
     if (liveTurn) return; // already tracking a turn
     const lt = ensureLiveTurn();
@@ -1113,7 +1111,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     'relay.landed': () => { if (detailStreaming) liveTurnDirty = true; else syncRouted(id); },
     // Sent by the server on connect when the session is already mid-turn (the
     // started event predates this subscribe). beginTurn is idempotent, so if a
-    // real subprocess.started also lands (connect raced the turn starting) it
+    // real turn.started also lands (connect raced the turn starting) it
     // won't double the bubble. Parts that flowed before this subscribe are
     // gone (no broker replay) — mark the turn dirty so its end reconciles via
     // a full fetch. adoptLastTurnAsLive continues that same bubble instead of
@@ -1127,7 +1125,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       liveTurnDirty = true;
     },
     // Counterpart to turn.active: the server says no turn is running. If we still
-    // think one is — our subprocess.exit was dropped on a broken connection and
+    // think one is — our turn.ended was dropped on a broken connection and
     // the turn ended before we reconnected — finalize now, else send stays
     // disabled and the preview streams on forever. No-op on a normal idle connect
     // (detailStreaming already false).
@@ -1138,19 +1136,19 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       liveTurnDirty = false; // the full fetch below reconciles everything
       onIdle();
       loadTranscript(id);
-      refreshSubtitle(id); // recover metadata when subprocess.exit was missed
+      refreshSubtitle(id); // recover metadata when turn.ended was missed
     },
-    'subprocess.started': () => beginTurn(),
+    'turn.started': () => beginTurn(),
     // One server-grouped TurnPart (assistant text or a rendered tool result)
-    // appended to the in-progress turn. subprocess.started / turn.active
+    // appended to the in-progress turn. turn.started / turn.active
     // normally create the bubble, but if both were missed stand it up now —
     // via beginTurn so running-state UI is wired too, not just a bubble.
-    'part': (d) => {
+    'turn.part': (d) => {
       if (!liveTurn) beginTurn();
       setLiveWorkingText(liveTurn, 'Working…');
       appendLivePart(d);
     },
-    'part.delta': (d) => {
+    'turn.delta': (d) => {
       if (!liveTurn) beginTurn();
       setLiveWorkingText(liveTurn, 'Working…');
       appendLiveDelta(d);
@@ -1163,11 +1161,11 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     // The canonical user prompt hit the jsonl. Adopt our optimistic echo
     // (stamp the persisted ts, commit it). No echo means the prompt came
     // from another frontend: render it immediately, ahead of the live
-    // assistant bubble that subprocess.started may already have created.
+    // assistant bubble that turn.started may already have created.
     // Keep the turn dirty as well: for mid-turn steering the prompt closed
     // assistant output this client may not have witnessed, so the turn-end
     // fetch still reconciles the complete canonical order.
-    'turn.user': (d) => {
+    'turn.prompt': (d) => {
       if (!d || !d.content) return;
       const el = document.getElementById('chat-scroll');
       if (!el) return;
@@ -1194,7 +1192,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       liveTurnDirty = true;
     },
     'session.runtime': (d) => renderSessionRuntime(d),
-    'subprocess.exit': (d) => {
+    'turn.ended': (d) => {
       // Failed/unconfirmed exits follow an explicit error event. Keep that
       // error bubble visible instead of reconciling it away as a successful turn.
       if (d && d.reason && d.reason !== 'local_command') {
@@ -1210,7 +1208,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       // its real title/cwd, so refresh the header too.
       refreshSubtitle(id);
     },
-    'error': (d) => {
+    'turn.failed': (d) => {
       const msg = d.message || JSON.stringify(d);
       if (liveTurn) {
         clearLiveWorking(liveTurn);
@@ -1236,15 +1234,9 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
 
   Object.entries(handlers).forEach(([name, fn]) => {
     es.addEventListener(name, (ev) => {
-      // addEventListener('error', …) also catches EventSource's native
-      // connection-error event (a plain Event on every disconnect/reconnect),
-      // which has no .data. Server-sent events always carry data:, so a
-      // missing payload means a native error — ignore it (es.onerror handles
-      // reconnect) instead of rendering a spurious "{}" error bubble.
-      if (ev.data == null) return;
       // Each frame is the whole event; the handlers take its payload.
       let data;
-      try { data = JSON.parse(ev.data).raw || {}; } catch { data = { raw: ev.data }; }
+      try { data = JSON.parse(ev.data).data || {}; } catch { data = { raw: ev.data }; }
       try { fn(data); } catch (e) { console.error('handler error', name, e); }
     });
   });
@@ -1261,7 +1253,7 @@ export async function showRouter(fresh) {
   const epoch = ++detailEpoch;
   let router = {};
   try {
-    const res = await fetch('/api/config');
+    const res = await fetch('/internal/config');
     if (res.ok) router = (await res.json()).router || {};
   } catch { /* fall through to the empty view */ }
   if (epoch !== detailEpoch) return; // the user went elsewhere meanwhile
@@ -1270,8 +1262,8 @@ export async function showRouter(fresh) {
   const saved = (key) => { try { return localStorage.getItem(key) || ''; } catch { return ''; } };
   let catalog = null;
   try {
-    const res = await fetch('/api/models');
-    if (res.ok) catalog = await res.json();
+    const backends = await fetchBackends();
+    if (backends.backends) catalog = backends;
   } catch { /* no picker: the last choice, or usher's defaults, apply */ }
   if (epoch !== detailEpoch) return;
 
@@ -1329,7 +1321,7 @@ export async function showRouter(fresh) {
     if (!text || sendBtn.disabled) return;
     sendBtn.disabled = true;
     try {
-      const res = await fetch('/api/router', {
+      const res = await fetch('/internal/router', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(catalog && backendEl.value
@@ -1337,7 +1329,7 @@ export async function showRouter(fresh) {
           : { initial_message: text }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || 'HTTP ' + res.status);
+      if (!res.ok) throw new Error(body.error?.message || 'HTTP ' + res.status);
       if (catalog && backendEl.value) {
         try {
           localStorage.setItem('usher.routerBackend', backendEl.value);
@@ -1369,7 +1361,7 @@ function renderSessionSubtitle(sess) {
   // here, so the datasets track every action applied to the on-screen
   // session. The chevron sits OUTSIDE the truncating title span so a long
   // title can't ellipsize it away.
-  if (sess.is_subagent) {
+  if (sess.subagent) {
     subtitle.innerHTML =
       backendMark(sess.backend) +
       `<span class="subtitle-left">` +
@@ -1439,7 +1431,7 @@ function updateRouterFocus() {
 // currentDetailId so a late fetch can't write into a view already left.
 async function refreshSubtitle(id) {
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id));
+    const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id));
     if (!res.ok) return;
     const sess = await res.json();
     if (id !== currentDetailId) return;
@@ -1677,10 +1669,10 @@ function finalizeTurn(id, d) {
 
 // fetchTurns returns { turns, more }, or null when the request failed.
 async function fetchTurns(id, query) {
-  const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/transcript?' + query);
+  const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/transcript?' + query);
   if (!res.ok) return null;
   const page = await res.json();
-  return { turns: page.turns || [], more: !!page.more };
+  return { turns: page.turns || [], more: !!page.has_more };
 }
 
 // loadTranscript brings the rendered transcript up to date: it catches up from
@@ -1838,7 +1830,7 @@ async function syncRouted(id) {
   const first = renderedTurns.find(r => r.cursor);
   let replies;
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/routed' +
+    const res = await fetch('/internal/sessions/' + encodeURIComponent(id) + '/routed' +
       (first ? '?from=' + encodeURIComponent(first.cursor) : ''));
     if (!res.ok) return;
     replies = await res.json();
@@ -2044,14 +2036,14 @@ document.addEventListener('click', async (e) => {
   if (!btn || !currentDetailId) return;
   btn.disabled = true;
   try {
-    const res = await fetch('/api/sessions/' + encodeURIComponent(currentDetailId) + '/fork', {
+    const res = await fetch('/api/v1/sessions/' + encodeURIComponent(currentDetailId) + '/fork', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ after_uuid: btn.dataset.uuid }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      appendChatMessage({ role: 'error', content: 'fork failed: ' + (err.error || ('HTTP ' + res.status)), ts: new Date().toISOString() });
+      appendChatMessage({ role: 'error', content: 'fork failed: ' + (err.error?.message || ('HTTP ' + res.status)), ts: new Date().toISOString() });
       return;
     }
     const data = await res.json();

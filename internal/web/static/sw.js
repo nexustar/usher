@@ -2,7 +2,7 @@
 // shell load offline. It is deliberately conservative:
 //
 //   - It only ever touches same-origin GETs for the app shell + static
-//     assets. /api/*, the SSE event stream, and /login,/logout,/healthz are
+//     assets. /api/*, /internal/*, the SSE event streams, and /login,/logout,/healthz are
 //     never intercepted, so authentication redirects and live data behave
 //     exactly as they do without a service worker.
 //   - Navigations are network-first (so a 401 -> /login redirect or a fresh
@@ -12,7 +12,7 @@
 //     cache, refreshed in the background. A code change therefore propagates
 //     after one extra reload. Bump CACHE to force-evict everything.
 
-const CACHE = 'usher-shell-v4';
+const CACHE = 'usher-shell-v5';
 const SHELL = [
   '/',
   '/index.html',
@@ -89,7 +89,7 @@ self.addEventListener('notificationclick', (e) => {
   // Inline Allow/Deny answers the pending interaction without opening the app.
   // Same-origin fetch carries the auth cookie, so no extra credentials needed.
   if ((e.action === 'allow' || e.action === 'deny') && data.interaction_id) {
-    e.waitUntil(fetch('/api/interactions/' + data.interaction_id + '/respond', {
+    e.waitUntil(fetch('/api/v1/interactions/' + data.interaction_id + '/respond', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ behavior: e.action, scope: 'once' }),
@@ -121,7 +121,7 @@ self.addEventListener('fetch', (e) => {
 
   // Leave live/auth traffic entirely to the network.
   const p = url.pathname;
-  if (p.startsWith('/api/') || p === '/login' || p === '/logout' || p === '/healthz') {
+  if (p.startsWith('/api/') || p.startsWith('/internal/') || p === '/login' || p === '/logout' || p === '/healthz') {
     return;
   }
 

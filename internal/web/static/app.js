@@ -78,7 +78,7 @@ loadSidebar();
 
 route();
 
-fetch('/api/config')
+fetch('/internal/config')
   .then(r => (r.ok ? r.json() : null))
   .then(c => {
     if (!c) return;

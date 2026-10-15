@@ -118,10 +118,10 @@ func TestManagerSessionScopeRequiresBackendSupport(t *testing.T) {
 	m := New("")
 	go func() { _, _ = m.Submit(context.Background(), Request{SessionID: "s", ToolName: "Bash"}) }()
 	id := waitForPending(t, m)
-	if err := m.Respond(id, Response{Behavior: "allow", Scope: "session"}); err == nil {
-		t.Fatal("session scope succeeded without backend support")
+	if err := m.Respond(id, Response{Behavior: "allow", Scope: "always"}); err == nil {
+		t.Fatal("always scope succeeded without backend support")
 	}
-	if err := m.Respond(id, Response{Behavior: "deny", Scope: "session"}); err == nil {
+	if err := m.Respond(id, Response{Behavior: "deny", Scope: "always"}); err == nil {
 		t.Fatal("session-scoped deny succeeded")
 	}
 	if err := m.Respond(id, Response{Behavior: "deny", Scope: "once"}); err != nil {
@@ -141,10 +141,10 @@ func TestManagerPassesSupportedSessionScopeToBackend(t *testing.T) {
 	if len(pending) != 1 || !pending[0].AllowAlways {
 		t.Fatalf("pending = %+v, want allow_always", pending)
 	}
-	if err := m.Respond(id, Response{Behavior: "allow", Scope: "session"}); err != nil {
+	if err := m.Respond(id, Response{Behavior: "allow", Scope: "always"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := <-result; got.Scope != "session" || got.Behavior != "allow" {
+	if got := <-result; got.Scope != "always" || got.Behavior != "allow" {
 		t.Fatalf("response = %+v", got)
 	}
 }

@@ -91,7 +91,7 @@ type askEntry struct {
 
 // guestTurn accumulates one in-progress guest turn's assistant output so the
 // thread gets a single message per turn rather than a live part-by-part
-// stream (guest topics can be crowded). It flushes on subprocess.exit.
+// stream (guest topics can be crowded). It flushes on turn.ended.
 type guestTurn struct {
 	texts  []string // each non-empty assistant text part, in arrival order
 	images []string // show_image refs, in arrival order
@@ -135,8 +135,8 @@ type Hub struct {
 	recentSent map[string]string
 
 	// guestBuf coalesces each guest turn's assistant output, keyed by session:
-	// "part" events accumulate here instead of mirroring live, and
-	// subprocess.exit posts the result as one message. The per-session mirror
+	// "turn.part" events accumulate here instead of mirroring live, and
+	// turn.ended posts the result as one message. The per-session mirror
 	// worker serializes access to a given entry; the map is shared across
 	// workers, so guestBufMu guards it.
 	guestBufMu sync.Mutex
@@ -372,22 +372,22 @@ func (h *Hub) takePosted(id string) (interaction.Pending, bool) {
 func (h *Hub) handleEvent(ctx context.Context, ev broker.Event) {
 	_, guest := h.store.guestBinding(ev.SessionID)
 	switch ev.Type {
-	case "turn.user":
+	case "turn.prompt":
 		h.mirrorPrompt(ctx, ev)
-	case "part":
+	case "turn.part":
 		if guest {
 			h.bufferGuestPart(ev)
 		} else {
 			h.mirrorAssistant(ctx, ev)
 		}
-	case "subprocess.exit":
+	case "turn.ended":
 		if guest {
 			h.flushGuestTurn(ctx, ev)
 		} else {
 			h.notifyTurnComplete(ctx, ev)
 		}
 		h.refreshTitle(ctx, ev.SessionID)
-	case "error":
+	case "turn.failed":
 		h.notifyTurnError(ctx, ev)
 	}
 }
@@ -1782,7 +1782,7 @@ func (h *Hub) HandleCardAction(ctx context.Context, event *callback.CardActionTr
 		msg = "🚫 ignored"
 	case behavior == "deny":
 		msg = "⛔ denied"
-	case scope == "session":
+	case scope == "always":
 		msg = "✅ always allowed"
 	}
 	err := h.router.RespondInteraction(v.ID, interaction.Response{Behavior: behavior, Scope: scope, Reason: "via lark"})

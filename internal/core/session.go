@@ -68,7 +68,7 @@ func (a Activity) Pins() bool {
 type Session struct {
 	ID          string    `json:"id"`
 	ParentID    string    `json:"parent_id,omitempty"`
-	IsSubagent  bool      `json:"is_subagent,omitempty"`
+	IsSubagent  bool      `json:"subagent,omitempty"`
 	AgentName   string    `json:"agent_name,omitempty"`
 	Cwd         string    `json:"cwd"`
 	Title       string    `json:"title"`

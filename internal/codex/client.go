@@ -623,7 +623,7 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 			if json.Unmarshal(p.Permissions, &granted) == nil && granted != nil {
 				result["permissions"] = granted
 			}
-			if r.Scope == "session" {
+			if r.Scope == "always" {
 				result["scope"] = "session"
 			} else {
 				result["scope"] = "turn"
@@ -658,7 +658,7 @@ func (c *Client) approval(m rpcMessage) {
 	if h != nil {
 		allowAlways := supportsAllowAlways(m.Method, p["availableDecisions"])
 		if r, err := h.Submit(context.Background(), interaction.Request{SessionID: sid, ToolName: tool, ToolInput: input, Cwd: cwd, AllowAlways: allowAlways}); err == nil && r.Behavior == "allow" {
-			if r.Scope == "session" && allowAlways {
+			if r.Scope == "always" && allowAlways {
 				decision = "acceptForSession"
 			} else {
 				decision = "accept"

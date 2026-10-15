@@ -29,7 +29,7 @@ export function openTerminalFeed(id, cols, rows, onFrame, onClosed) {
   if (cols) params.push('cols=' + cols);
   if (rows) params.push('rows=' + rows);
   const q = params.length ? ('?' + params.join('&')) : '';
-  const es = new EventSource('/api/sessions/' + encodeURIComponent(id) + '/terminal/screen' + q);
+  const es = new EventSource('/internal/sessions/' + encodeURIComponent(id) + '/terminal/screen' + q);
   setCurrentTerminalES(es);
   let lastRaw = null;
   es.addEventListener('screen', (ev) => {
@@ -65,7 +65,7 @@ export function wireTerminalControls(id) {
   document.querySelectorAll('#term-panel button[data-control]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       try {
-        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/terminal/control', {
+        const res = await fetch('/internal/sessions/' + encodeURIComponent(id) + '/terminal/control', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ control: btn.dataset.control }),

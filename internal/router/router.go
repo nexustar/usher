@@ -988,7 +988,7 @@ func relayNoteText(note relayNote) string {
 
 // enqueueSend is the single entry point for turn-tracked sends: run now if
 // the session is idle, queue otherwise. Serializing usher-injected turns per
-// session is what makes "subscribe, then collect until subprocess.exit" a
+// session is what makes "subscribe, then collect until turn.ended" a
 // sound way to capture one turn's reply — a send injected mid-turn would
 // tail the PREVIOUS turn's remainder instead. Typing directly into an
 // attached tmux pane still bypasses this (the manual-attach corner).
@@ -1033,7 +1033,7 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 }
 
 // injectDirect pastes text without turn tracking (see the '!' note in
-// SendToSession), then emits the turn.user + subprocess.exit events a normal
+// SendToSession), then emits the turn.prompt + turn.ended events a normal
 // turn would, so the web client adopts the echo and returns to idle with no
 // special-casing. No activeSend: nothing to cancel, and the session stays
 // "live" rather than "running". The 45s budget covers a cold window's resume.
@@ -1057,7 +1057,7 @@ func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok
 		// new send's collector may subscribe, and it must not see this
 		// turn's exit.
 		r.publishStream(sessionID, asm, ev, started)
-		if ev.Type == backendpkg.EventProcessExit {
+		if ev.Type == backendpkg.EventTurnEnded {
 			r.markSendIdle(sessionID, tok)
 		}
 	}
@@ -1070,9 +1070,9 @@ func (r *Router) failSend(sessionID string, tok *sendToken, err error) {
 	r.markSendIdle(sessionID, tok)
 	r.noteTurnError(sessionID, err.Error(), tok.started)
 	errRaw, _ := json.Marshal(backendpkg.ErrorPayload{Message: err.Error()})
-	r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventError, Raw: errRaw})
+	r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnFailed, Raw: errRaw})
 	exitRaw, _ := json.Marshal(map[string]string{"reason": "error"})
-	r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventProcessExit, Raw: exitRaw})
+	r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnEnded, Raw: exitRaw})
 }
 
 // publishStream forwards one tail event to broker subscribers, deriving the
@@ -1087,7 +1087,7 @@ func (r *Router) failSend(sessionID string, tok *sendToken, err error) {
 //     grouped/rendered server-side by jsonl.Assembler — the same engine
 //     behind ReadTurns, so a part streamed live and the same turn fetched
 //     later from /transcript can never disagree.
-//   - "turn.user": a canonical user turn hit the jsonl (the prompt usher just
+//   - "turn.prompt": a canonical user turn hit the jsonl (the prompt usher just
 //     injected, or one queued from another frontend mid-turn). Carries the
 //     persisted timestamp, so clients can stamp their optimistic echo.
 //
@@ -1116,7 +1116,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			r.discovery.UpdateRuntime(sessionID, runtime)
 		}
 	}
-	if ev.Type == backendpkg.EventProcessExit {
+	if ev.Type == backendpkg.EventTurnEnded {
 		// The web refreshes cached session metadata as soon as it receives this
 		// event. Ingest the final jsonl state synchronously first instead of
 		// racing the asynchronous fsnotify Write event.
@@ -1125,7 +1125,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 		}
 		ev.Raw = r.enrichExitWithTurnTimestamps(sessionID, ev.Raw, started)
 	}
-	if ev.Type == backendpkg.EventError {
+	if ev.Type == backendpkg.EventTurnFailed {
 		r.noteTurnError(sessionID, extractErrorMessage(ev.Raw), started)
 	}
 	r.broker.Publish(broker.Event{SessionID: sessionID, Type: ev.Type, Raw: ev.Raw})
@@ -1155,7 +1155,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 		t.Content = r.userText(sessionID, t.Content)
 		raw, mErr := json.Marshal(userTurnEvent(t))
 		if mErr == nil {
-			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnUser, Raw: raw})
+			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnPrompt, Raw: raw})
 		}
 	}
 	for _, part := range parts {
@@ -1163,7 +1163,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			"role": "assistant", "ts": lineTimestamp(ev.Raw), "model": asm.Model(), "part": part,
 		})
 		if mErr == nil {
-			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventPart, Raw: raw})
+			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnPart, Raw: raw})
 		}
 		if len(part.Questions) > 0 {
 			r.askInPlace(sessionID, part.Questions)
@@ -1693,7 +1693,7 @@ func snippetAround(text []rune, start, matchLen, ctx int) string {
 
 // relayWaitCeiling bounds how long a relayed send's collector goroutine may
 // outlive its turn. It is not a UX timeout — relays are event-driven and fire
-// whenever subprocess.exit lands — only a leak backstop for a session whose
+// whenever turn.ended lands — only a leak backstop for a session whose
 // turn never terminates.
 const relayWaitCeiling = 24 * time.Hour
 
@@ -1745,7 +1745,7 @@ func (r *Router) SendToSessionRelayed(id, text string, onDone func(sessionID, re
 }
 
 // collectTurnText accumulates one turn's assistant text from a broker
-// subscription until subprocess.exit, an error event, channel close, or ctx
+// subscription until turn.ended, an error event, channel close, or ctx
 // expiry (partial text is returned alongside the timeout error).
 func collectTurnText(ctx context.Context, ch <-chan broker.Event) (string, error) {
 	var buf strings.Builder
@@ -1756,7 +1756,7 @@ func collectTurnText(ctx context.Context, ch <-chan broker.Event) (string, error
 				return buf.String(), nil
 			}
 			switch ev.Type {
-			case backendpkg.EventPart:
+			case backendpkg.EventTurnPart:
 				// Message granularity (interactive claude emits no stream-json
 				// token deltas): each text part carries one assistant message's
 				// text blocks. Accumulate them across the turn.
@@ -1766,9 +1766,9 @@ func collectTurnText(ctx context.Context, ch <-chan broker.Event) (string, error
 					}
 					buf.WriteString(t)
 				}
-			case backendpkg.EventProcessExit:
+			case backendpkg.EventTurnEnded:
 				return buf.String(), nil
-			case backendpkg.EventError:
+			case backendpkg.EventTurnFailed:
 				return buf.String(), errors.New(extractErrorMessage(ev.Raw))
 			}
 		case <-ctx.Done():
@@ -1842,7 +1842,7 @@ func (r *Router) StartSession(o core.CreateOptions) (string, error) {
 		asm := format.NewAssembler()
 		for ev := range ch {
 			r.publishStream(id, asm, ev, time.Time{})
-			if ev.Type == backendpkg.EventProcessExit {
+			if ev.Type == backendpkg.EventTurnEnded {
 				r.markSendIdle(id, tok)
 			}
 		}
@@ -1999,7 +1999,7 @@ func (r *Router) CreateSessionRelayed(o core.CreateOptions, onDone func(sessionI
 }
 
 // collectNewSessionText drains a new session's first-turn stream, forwarding
-// every event to broker subscribers (raw + derived part/turn.user events, so a
+// every event to broker subscribers (raw + derived part/turn.prompt events, so a
 // session-detail tab opened on the new id sees the live stream too) while
 // accumulating the assistant text parts.
 func (r *Router) collectNewSessionText(sessionID, backendName string, ch <-chan sender.StreamEvent) string {

@@ -46,7 +46,7 @@ export function setCurrentDetailId(v) { currentDetailId = v; }
 export let suppressAppendScroll = false;
 export function setSuppressAppendScroll(v) { suppressAppendScroll = v; }
 
-// --editor-url template from GET /api/config ("" = no editor configured).
+// --editor-url template from GET /internal/config ("" = no editor configured).
 // Fetched once at boot by app.js; read by the kebab popover.
 export let editorUrl = '';
 export function setEditorUrl(v) { editorUrl = v; }
@@ -73,7 +73,7 @@ export function setRouterDir(v) { routerDir = v || ''; }
 export let routedTargets = new Set();
 export function setRoutedTargets(ids) { routedTargets = new Set(ids); }
 
-let lastSessions = [];         // latest /api/sessions payload — written by sidebar
+let lastSessions = [];         // latest /api/v1/sessions payload — written by sidebar
 export function getLastSessions() { return lastSessions; }
 export function setLastSessions(v) { lastSessions = v; }
 let pendingInteractionCounts = new Map(); // session id -> unresolved permission/question count
@@ -184,6 +184,26 @@ export const cwdExpanded = new Set();
 export const cwdArchivedVisible = new Map();
 
 // --- utility functions ---
+
+// fetchBackends returns {backends: [name], models: {name: [model]}}, or {}.
+export async function fetchBackends() {
+  const res = await fetch('/api/v1/backends');
+  if (!res.ok) return {};
+  const list = (await res.json()).backends || [];
+  return {
+    backends: list.map(b => b.name),
+    models: Object.fromEntries(list.map(b => [b.name, b.models])),
+  };
+}
+
+// patchSession sets title, archived, pinned or auto_approve.
+export function patchSession(id, fields) {
+  return fetch('/api/v1/sessions/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+}
 
 export function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({

@@ -164,9 +164,9 @@ func (m *Manager) Run(ctx context.Context) {
 				evCh = nil
 				continue
 			}
-			// subprocess.exit is the broker-level turn-end signal (the tailer
+			// turn.ended is the broker-level turn-end signal (the tailer
 			// emits it once the turn's turn_duration line lands).
-			if ev.Type == backend.EventProcessExit {
+			if ev.Type == backend.EventTurnEnded {
 				m.notifyTurnDone(ev.SessionID)
 			}
 		case p, ok := <-pendCh:

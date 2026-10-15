@@ -270,7 +270,7 @@ func (r *Runtime) finishOperation(ctx context.Context, id string, w *worker, out
 	case !r.checkBinding(id, w, st):
 		raw, _ := json.Marshal(backend.ErrorPayload{Message: "A pi command switched this worker to another session. " +
 			"usher released it; the next message starts a fresh worker for this session."})
-		out <- backend.Event{Type: backend.EventError, Raw: raw}
+		out <- backend.Event{Type: backend.EventTurnFailed, Raw: raw}
 	default:
 		emitRuntime(out, st.runtime)
 	}
@@ -836,7 +836,7 @@ func (r *Runtime) handleExtensionUI(ctx context.Context, sessionID string, w *wo
 		value := "Reject"
 		if decision.Behavior == "allow" {
 			value = "Allow Once"
-			if decision.Scope == "session" {
+			if decision.Scope == "always" {
 				value = "Allow Always"
 			}
 		}
@@ -982,18 +982,18 @@ func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ st
 		// exactly what keeps them out of the next turn. Dialogs it raises still
 		// reach the pump.
 		started, _ := json.Marshal(backend.ProcessStartedPayload{Cwd: w.cwd})
-		out <- backend.Event{Type: backend.EventProcessStarted, Raw: started}
+		out <- backend.Event{Type: backend.EventTurnStarted, Raw: started}
 		if typ == "compact" {
 			raw, _ := json.Marshal(backend.TurnStatusPayload{Status: "compacting"})
 			out <- backend.Event{Type: backend.EventTurnStatus, Raw: raw}
 		}
 		if _, err := w.c.request(ctx, typ, fields); err != nil {
 			raw, _ := json.Marshal(backend.ErrorPayload{Message: err.Error()})
-			out <- backend.Event{Type: backend.EventError, Raw: raw}
+			out <- backend.Event{Type: backend.EventTurnFailed, Raw: raw}
 		} else {
 			r.finishOperation(ctx, id, w, out)
 		}
-		out <- backend.Event{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)}
+		out <- backend.Event{Type: backend.EventTurnEnded, Raw: json.RawMessage(`{}`)}
 	}()
 	return out, nil
 }
@@ -1080,7 +1080,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 			r.mu.Unlock()
 		}()
 		started, _ := json.Marshal(backend.ProcessStartedPayload{Cwd: w.cwd, Fresh: fresh})
-		out <- backend.Event{Type: backend.EventProcessStarted, Raw: started}
+		out <- backend.Event{Type: backend.EventTurnStarted, Raw: started}
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		// Detach after cancellation to collect final transcript records.
@@ -1090,7 +1090,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 			if err != nil {
 				r.logger.Warn("session tail", "session", id, "err", err)
 				raw, _ := json.Marshal(backend.ErrorPayload{Message: "pi session tail: " + err.Error()})
-				out <- backend.Event{Type: backend.EventError, Raw: raw}
+				out <- backend.Event{Type: backend.EventTurnFailed, Raw: raw}
 			}
 			return grew
 		}
@@ -1100,7 +1100,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 				payload["reason"] = reason
 			}
 			raw, _ := json.Marshal(payload)
-			out <- backend.Event{Type: backend.EventProcessExit, Raw: raw}
+			out <- backend.Event{Type: backend.EventTurnEnded, Raw: raw}
 		}
 		// Pi persists an interrupted response as a stopReason "aborted" record
 		// that often carries no content at all. Emitted after the final tail so
@@ -1113,7 +1113,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 				return
 			}
 			raw, _ := json.Marshal(backend.ErrorPayload{Message: backend.AbortedTurnMessage})
-			out <- backend.Event{Type: backend.EventError, Raw: raw}
+			out <- backend.Event{Type: backend.EventTurnFailed, Raw: raw}
 		}
 		if accepted.Disposition == "handled" {
 			emitTail()
@@ -1143,7 +1143,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 			case <-w.c.done:
 				emitTail()
 				errRaw, _ := json.Marshal(backend.ErrorPayload{Message: "pi RPC process exited before the agent settled"})
-				out <- backend.Event{Type: backend.EventError, Raw: errRaw}
+				out <- backend.Event{Type: backend.EventTurnFailed, Raw: errRaw}
 				emitExit("rpc_exit")
 				return
 			case raw := <-evts:
@@ -1164,7 +1164,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 				case "message_update":
 					if e.Assistant.Type == "text_delta" && e.Assistant.Delta != "" {
 						b, _ := json.Marshal(backend.PartDeltaPayload{Delta: e.Assistant.Delta})
-						out <- backend.Event{Type: backend.EventPartDelta, Raw: b}
+						out <- backend.Event{Type: backend.EventTurnDelta, Raw: b}
 					} else if e.Assistant.Type == "thinking_delta" {
 						b, _ := json.Marshal(backend.TurnStatusPayload{Status: "thinking"})
 						out <- backend.Event{Type: backend.EventTurnStatus, Raw: b}
@@ -1182,7 +1182,7 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 						msg = "pi extension error"
 					}
 					b, _ := json.Marshal(backend.ErrorPayload{Message: msg})
-					out <- backend.Event{Type: backend.EventError, Raw: b}
+					out <- backend.Event{Type: backend.EventTurnFailed, Raw: b}
 				case "auto_retry_start":
 					b, _ := json.Marshal(backend.TurnStatusPayload{Status: "retrying", Detail: backend.RetryDetail(e.Attempt, e.MaxAttempts, e.ErrorMessage)})
 					out <- backend.Event{Type: backend.EventTurnStatus, Raw: b}
@@ -1192,12 +1192,12 @@ func (r *Runtime) startTurn(ctx context.Context, id string, w *worker, text stri
 				case "auto_retry_end":
 					if !e.Success && e.FinalError != "" {
 						b, _ := json.Marshal(backend.ErrorPayload{Message: e.FinalError})
-						out <- backend.Event{Type: backend.EventError, Raw: b}
+						out <- backend.Event{Type: backend.EventTurnFailed, Raw: b}
 					}
 				case "compaction_end":
 					if e.ErrorMessage != "" {
 						b, _ := json.Marshal(backend.ErrorPayload{Message: e.ErrorMessage})
-						out <- backend.Event{Type: backend.EventError, Raw: b}
+						out <- backend.Event{Type: backend.EventTurnFailed, Raw: b}
 					}
 				}
 			}

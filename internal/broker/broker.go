@@ -14,7 +14,7 @@ import (
 type Event struct {
 	SessionID string          `json:"session_id"`
 	Type      string          `json:"type"`
-	Raw       json.RawMessage `json:"raw,omitempty"`
+	Raw       json.RawMessage `json:"data,omitempty"`
 }
 
 type Broker struct {

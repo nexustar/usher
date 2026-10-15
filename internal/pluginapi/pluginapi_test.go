@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/agentprofile"
+	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/broker"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
@@ -139,10 +140,10 @@ func TestSessionControlRoundTrip(t *testing.T) {
 		t.Fatalf("ListSessions = %+v, %v", sessions, err)
 	}
 	page, err := c.ReadTurns("s1", "", "", 20)
-	if err != nil || len(page.Turns) != 1 || !page.More || page.Turns[0].Cursor != "c1" {
+	if err != nil || len(page.Turns) != 1 || !page.HasMore || page.Turns[0].Cursor != "c1" {
 		t.Fatalf("ReadTurns = %+v, %v", page, err)
 	}
-	if older, err := c.ReadTurns("s1", "c1", "", 20); err != nil || older.More || older.Turns[0].Content != "head" {
+	if older, err := c.ReadTurns("s1", "c1", "", 20); err != nil || older.HasMore || older.Turns[0].Content != "head" {
 		t.Fatalf("ReadTurns before c1 = %+v, %v", older, err)
 	}
 	found, err := c.SearchSessions("s1", "needle", 20, 120)
@@ -308,12 +309,12 @@ func TestEventStream(t *testing.T) {
 	for {
 		select {
 		case ev := <-events:
-			if ev.SessionID != "s1" || ev.Type != "assistant" || string(ev.Raw) != string(raw) {
+			if ev.SessionID != "s1" || ev.Type != "turn.part" || string(ev.Raw) != string(raw) {
 				t.Fatalf("event = %+v", ev)
 			}
 			return
 		case <-tick.C:
-			f.Publish(broker.Event{SessionID: "s1", Type: "assistant", Raw: raw})
+			f.Publish(broker.Event{SessionID: "s1", Type: "turn.part", Raw: raw})
 		case <-deadline:
 			t.Fatal("no event received")
 		}
@@ -369,7 +370,10 @@ func TestReconnect(t *testing.T) {
 
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	done1 := make(chan struct{})
-	go func() { defer close(done1); _ = pluginapi.NewServer(f, t.TempDir(), nil, nil).Run(ctx1, sock) }()
+	go func() {
+		defer close(done1)
+		_ = pluginapi.NewServer(f, api.Config{AttachmentsDir: t.TempDir()}, nil).Run(ctx1, sock)
+	}()
 
 	c := pluginapi.NewClient(sock, nil)
 	pluginapitest.WaitPing(t, c)
@@ -384,7 +388,10 @@ func TestReconnect(t *testing.T) {
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	done2 := make(chan struct{})
-	go func() { defer close(done2); _ = pluginapi.NewServer(f, t.TempDir(), nil, nil).Run(ctx2, sock) }()
+	go func() {
+		defer close(done2)
+		_ = pluginapi.NewServer(f, api.Config{AttachmentsDir: t.TempDir()}, nil).Run(ctx2, sock)
+	}()
 	t.Cleanup(func() { cancel2(); <-done2 })
 	pluginapitest.WaitPing(t, c)
 
@@ -402,11 +409,11 @@ func publishUntilReceived(t *testing.T, f *pluginapitest.FakeRouter, events <-ch
 	for {
 		select {
 		case ev := <-events:
-			if ev.Type == marker {
+			if ev.SessionID == marker {
 				return
 			}
 		case <-tick.C:
-			f.Publish(broker.Event{SessionID: "s", Type: marker})
+			f.Publish(broker.Event{SessionID: marker, Type: "turn.status"})
 		case <-deadline:
 			t.Fatalf("marker %q never received", marker)
 		}
@@ -418,7 +425,7 @@ func publishUntilReceived(t *testing.T, f *pluginapitest.FakeRouter, events <-ch
 func TestEventTypeFilter(t *testing.T) {
 	f := pluginapitest.NewFakeRouter()
 	c := pluginapitest.Start(t, f)
-	c.EventTypes = []string{"assistant"}
+	c.EventTypes = []string{"turn.part"}
 
 	events, cancel := c.SubscribeAllSessions()
 	defer cancel()
@@ -429,15 +436,42 @@ func TestEventTypeFilter(t *testing.T) {
 	for {
 		select {
 		case ev := <-events:
-			if ev.Type != "assistant" {
+			if ev.Type != "turn.part" {
 				t.Fatalf("filtered stream delivered %q", ev.Type)
 			}
 			return
 		case <-tick.C:
-			// The noise event is published first each round; receiving the
-			// assistant event implies the earlier noise was filtered out.
+			// The noise events are published first each round; receiving the
+			// part implies the earlier noise was filtered out.
 			f.Publish(broker.Event{SessionID: "s", Type: "user"})
+			f.Publish(broker.Event{SessionID: "s", Type: "turn.prompt"})
+			f.Publish(broker.Event{SessionID: "s", Type: "turn.part"})
+		case <-deadline:
+			t.Fatal("no event received")
+		}
+	}
+}
+
+// Backend log lines stay off the stream even unfiltered.
+func TestEventStreamCarriesOnlyPublicEvents(t *testing.T) {
+	f := pluginapitest.NewFakeRouter()
+	c := pluginapitest.Start(t, f)
+	events, cancel := c.SubscribeAllSessions()
+	defer cancel()
+
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case ev := <-events:
+			if ev.Type != "turn.part" {
+				t.Fatalf("stream delivered %q", ev.Type)
+			}
+			return
+		case <-tick.C:
 			f.Publish(broker.Event{SessionID: "s", Type: "assistant"})
+			f.Publish(broker.Event{SessionID: "s", Type: "turn.part"})
 		case <-deadline:
 			t.Fatal("no event received")
 		}

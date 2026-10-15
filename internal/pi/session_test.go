@@ -486,7 +486,7 @@ done
 	for event := range events {
 		eventTypes = append(eventTypes, event.Type)
 	}
-	if !reflect.DeepEqual(eventTypes, []string{backend.EventProcessStarted, backend.EventProcessExit}) {
+	if !reflect.DeepEqual(eventTypes, []string{backend.EventTurnStarted, backend.EventTurnEnded}) {
 		t.Fatalf("command events = %v", eventTypes)
 	}
 	events, err = r.Send(context.Background(), "sess-1", "/compact Keep the API details", dir)
@@ -502,7 +502,7 @@ done
 		}
 	}
 	if !reflect.DeepEqual(eventTypes, []string{
-		backend.EventProcessStarted, backend.EventTurnStatus, backend.EventRuntime, backend.EventProcessExit,
+		backend.EventTurnStarted, backend.EventTurnStatus, backend.EventRuntime, backend.EventTurnEnded,
 	}) {
 		t.Fatalf("compact events = %v", eventTypes)
 	}
@@ -585,7 +585,7 @@ done
 		types = append(types, ev.Type)
 	}
 	if !reflect.DeepEqual(types, []string{
-		backend.EventProcessStarted, backend.EventTurnStatus, backend.EventProcessExit,
+		backend.EventTurnStarted, backend.EventTurnStatus, backend.EventTurnEnded,
 	}) {
 		t.Fatalf("compact events = %v", types)
 	}

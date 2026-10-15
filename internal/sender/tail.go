@@ -53,7 +53,7 @@ func (c tailConfig) withDefaults() tailConfig {
 // Output: each complete jsonl line becomes a StreamEvent{Type, Raw} (Type is
 // the line's "type" field). When Claude Code logs its end-of-turn marker (a
 // "system/turn_duration" event — see isTurnComplete), the tailer emits a
-// synthesized "subprocess.exit" and closes the channel.
+// synthesized "turn.ended" and closes the channel.
 //
 // The channel also closes on ctx cancellation, or if the file never appears
 // within cfg.appearWait (brand-new sessions create their jsonl lazily). Process
@@ -70,18 +70,18 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 		// A turn ends one of two ways: Claude Code logs its turn_duration marker,
 		// or the send is cancelled — the cancel button, or an esc the user pressed
 		// in the mirror, which interrupts claude but (being an interrupt) never
-		// logs turn_duration. Emit subprocess.exit for both so the web UI finalizes
+		// logs turn_duration. Emit turn.ended for both so the web UI finalizes
 		// the turn instead of waiting forever on a marker that isn't coming.
 		emitExit := func() {
-			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventProcessExit, Raw: json.RawMessage(`{}`)})
+			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventTurnEnded, Raw: json.RawMessage(`{}`)})
 		}
 		emitExitReason := func(reason string) {
 			raw, _ := json.Marshal(map[string]string{"reason": reason})
-			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventProcessExit, Raw: raw})
+			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventTurnEnded, Raw: raw})
 		}
 		emitIOError := func(msg string) {
 			raw, _ := json.Marshal(map[string]string{"message": msg})
-			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventError, Raw: raw})
+			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventTurnFailed, Raw: raw})
 			emitExitReason("tail_error")
 		}
 
@@ -149,7 +149,7 @@ func tailTurn(ctx context.Context, path string, byteOffset int64, logger *slog.L
 					ev := StreamEvent{Type: lineType(line), Raw: append(json.RawMessage(nil), line...)}
 					_ = sendEvent(context.Background(), out, ev)
 					errRaw, _ := json.Marshal(backend.ErrorPayload{Message: backend.AbortedTurnMessage})
-					_ = sendEvent(context.Background(), out, StreamEvent{Type: backend.EventError, Raw: errRaw})
+					_ = sendEvent(context.Background(), out, StreamEvent{Type: backend.EventTurnFailed, Raw: errRaw})
 					emitExitReason("turn_aborted")
 					return
 				}
@@ -199,7 +199,7 @@ func openWhenReady(ctx context.Context, path string, cfg tailConfig, out chan<- 
 			return nil, false
 		case <-deadline.C:
 			errMsg, _ := json.Marshal(map[string]string{"message": "session jsonl did not appear: " + path})
-			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventError, Raw: errMsg})
+			sendEvent(context.Background(), out, StreamEvent{Type: backend.EventTurnFailed, Raw: errMsg})
 			return nil, false
 		case <-ticker.C:
 		}

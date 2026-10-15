@@ -61,15 +61,15 @@ func TestForeignTurnDetectedAndRelayedOnce(t *testing.T) {
 	}
 	select {
 	case ev := <-ch:
-		if ev.Type != "turn.user" {
-			t.Errorf("broker event 1 = %q, want turn.user", ev.Type)
+		if ev.Type != "turn.prompt" {
+			t.Errorf("broker event 1 = %q, want turn.prompt", ev.Type)
 		}
 	default:
 		t.Fatal("no foreign user event published")
 	}
 	select {
 	case ev := <-ch:
-		if ev.Type != "part" {
+		if ev.Type != "turn.part" {
 			t.Errorf("broker event 2 = %q, want part", ev.Type)
 		}
 	default:
@@ -77,8 +77,8 @@ func TestForeignTurnDetectedAndRelayedOnce(t *testing.T) {
 	}
 	select {
 	case ev := <-ch:
-		if ev.Type != "subprocess.exit" {
-			t.Errorf("broker event 3 = %q, want subprocess.exit", ev.Type)
+		if ev.Type != "turn.ended" {
+			t.Errorf("broker event 3 = %q, want turn.ended", ev.Type)
 		}
 		var p struct {
 			UserTS        time.Time `json:"user_ts"`
@@ -127,8 +127,8 @@ func TestSubagentCompletionOnlyWakesDetailView(t *testing.T) {
 
 	select {
 	case ev := <-ch:
-		if ev.Type != "subprocess.exit" {
-			t.Fatalf("subagent event = %q, want only subprocess.exit", ev.Type)
+		if ev.Type != "turn.ended" {
+			t.Fatalf("subagent event = %q, want only turn.ended", ev.Type)
 		}
 	default:
 		t.Fatal("subagent completion did not wake detail view")
