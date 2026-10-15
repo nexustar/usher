@@ -67,6 +67,11 @@ type Router struct {
 	askMu sync.Mutex
 	asks  map[string]map[*askToken]struct{} // sessionID -> open in-place questions (questions.go)
 
+	// previewMu also serializes publishing the events that change a preview,
+	// so a subscriber's seed and its live events neither overlap nor gap.
+	previewMu sync.Mutex
+	previews  map[string]*streamPreview // sessionID -> streamed text not yet in the jsonl
+
 	// Foreign-turn watcher state (see foreignwatch.go): per-session log-size
 	// baseline (guarded by sendMu) and the completion handler.
 	foreignBase   map[string]int64
@@ -1128,7 +1133,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 	if ev.Type == backendpkg.EventTurnFailed {
 		r.noteTurnError(sessionID, extractErrorMessage(ev.Raw), started)
 	}
-	r.broker.Publish(broker.Event{SessionID: sessionID, Type: ev.Type, Raw: ev.Raw})
+	r.publishPreviewed(broker.Event{SessionID: sessionID, Type: ev.Type, Raw: ev.Raw}, nil)
 
 	if isControlEvent(ev.Type) {
 		return nil
@@ -1163,7 +1168,7 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			"role": "assistant", "ts": lineTimestamp(ev.Raw), "model": asm.Model(), "part": part,
 		})
 		if mErr == nil {
-			r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnPart, Raw: raw})
+			r.publishPreviewed(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnPart, Raw: raw}, part)
 		}
 		if len(part.Questions) > 0 {
 			r.askInPlace(sessionID, part.Questions)
@@ -1369,8 +1374,57 @@ func (r *Router) CancelSend(sessionID string) error {
 	return nil
 }
 
+// SubscribeSession seeds a mid-turn subscriber with the streamed text it
+// missed, as one turn.delta, since the broker has no replay.
 func (r *Router) SubscribeSession(id string) (<-chan broker.Event, func()) {
-	return r.broker.Subscribe(id)
+	r.previewMu.Lock()
+	defer r.previewMu.Unlock()
+	var seed []broker.Event
+	if p := r.previews[id]; p != nil && p.text.Len() > 0 {
+		raw, _ := json.Marshal(backendpkg.PartDeltaPayload{Delta: p.text.String()})
+		seed = append(seed, broker.Event{SessionID: id, Type: backendpkg.EventTurnDelta, Raw: raw})
+	}
+	return r.broker.Subscribe(id, seed...)
+}
+
+// streamPreview mirrors the web client's live text preview: deltas accumulate
+// until a part lands, and after a text part the item's remaining deltas are
+// ignored until a tool part opens the next one.
+type streamPreview struct {
+	text   strings.Builder
+	closed bool
+}
+
+// publishPreviewed publishes ev and folds it into the session's stream
+// preview; part is the TurnPart a turn.part event carries.
+func (r *Router) publishPreviewed(ev broker.Event, part *core.TurnPart) {
+	r.previewMu.Lock()
+	defer r.previewMu.Unlock()
+	r.broker.Publish(ev)
+	id := ev.SessionID
+	if r.previews == nil {
+		r.previews = map[string]*streamPreview{}
+	}
+	switch ev.Type {
+	case backendpkg.EventTurnDelta:
+		p := r.previews[id]
+		if p == nil {
+			p = &streamPreview{}
+			r.previews[id] = p
+		}
+		var d backendpkg.PartDeltaPayload
+		if !p.closed && json.Unmarshal(ev.Raw, &d) == nil {
+			p.text.WriteString(d.Delta)
+		}
+	case backendpkg.EventTurnPart:
+		if part.Type == "tool" {
+			delete(r.previews, id)
+		} else {
+			r.previews[id] = &streamPreview{closed: true}
+		}
+	case backendpkg.EventTurnStarted, backendpkg.EventTurnEnded, backendpkg.EventTurnFailed:
+		delete(r.previews, id)
+	}
 }
 
 // SubscribeAllSessions returns a stream of events across every session, for

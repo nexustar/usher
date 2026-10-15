@@ -35,9 +35,13 @@ func New() *Broker {
 }
 
 // Subscribe returns a buffered channel of events for sessionID and a cancel
-// function to stop receiving and free the slot.
-func (b *Broker) Subscribe(sessionID string) (<-chan Event, func()) {
-	sub := &subscriber{ch: make(chan Event, 64)}
+// function to stop receiving and free the slot. seed events are queued ahead
+// of anything published after the subscription.
+func (b *Broker) Subscribe(sessionID string, seed ...Event) (<-chan Event, func()) {
+	sub := &subscriber{ch: make(chan Event, 64+len(seed))}
+	for _, ev := range seed {
+		sub.ch <- ev
+	}
 	b.mu.Lock()
 	if b.subs[sessionID] == nil {
 		b.subs[sessionID] = map[*subscriber]struct{}{}

@@ -1074,11 +1074,14 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
   // On reconnect (not the first connect) re-fetch to fill any gap. Mid-turn
   // the live stream owns the bubble, so just mark the turn dirty — events
   // during the outage are gone (the broker has no replay) and the turn-end
-  // full fetch will reconcile.
+  // full fetch will reconcile. The server re-seeds the streamed text preview
+  // as one turn.delta, so restart it rather than append a duplicate.
   es.onopen = () => {
     if (opened) {
-      if (detailStreaming) liveTurnDirty = true;
-      else loadTranscript(id);
+      if (detailStreaming) {
+        liveTurnDirty = true;
+        if (liveTurn) liveTurn.previewText = '';
+      } else loadTranscript(id);
     }
     opened = true;
   };
@@ -1542,9 +1545,22 @@ function appendLiveDelta(d) {
     const chat = document.getElementById('chat-scroll');
     const stick = chat && isNearBottom(chat);
     lt.preview.dataset.raw = lt.previewText;
-    lt.preview.innerHTML = renderMarkdown(lt.previewText);
+    patchChildren(lt.preview, renderMarkdown(lt.previewText));
     if (stick) chat.scrollTop = chat.scrollHeight;
   });
+}
+
+// patchChildren replaces only el's top-level nodes from the first one whose
+// markup changed, so a selection in the settled blocks survives a re-render.
+function patchChildren(el, html) {
+  const tmpl = document.createElement('template');
+  tmpl.innerHTML = html;
+  const next = [...tmpl.content.childNodes];
+  const cur = [...el.childNodes];
+  let i = 0;
+  while (i < cur.length && i < next.length && cur[i].isEqualNode(next[i])) i++;
+  cur.slice(i).forEach(n => n.remove());
+  el.append(...next.slice(i));
 }
 
 // appendLivePart renders one streamed "part" SSE event into the live bubble,
@@ -1593,7 +1609,7 @@ function appendLivePart(d) {
     lt.previewRAF = 0;
     lt.preview.classList.remove('stream-preview');
     lt.preview.dataset.raw = p.content || '';
-    lt.preview.innerHTML = renderMarkdown(p.content || '');
+    patchChildren(lt.preview, renderMarkdown(p.content || ''));
     lt.partNodes.push(lt.preview);
     lt.preview = null;
     lt.previewText = '';

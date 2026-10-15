@@ -67,6 +67,49 @@ func TestPublishStreamDerivesCodexTurns(t *testing.T) {
 	}
 }
 
+func TestSubscribeSessionSeedsStreamPreview(t *testing.T) {
+	r := &Router{broker: broker.New()}
+	delta := func(s string) {
+		raw, _ := json.Marshal(backend.PartDeltaPayload{Delta: s})
+		r.publishPreviewed(broker.Event{SessionID: "s1", Type: backend.EventTurnDelta, Raw: raw}, nil)
+	}
+	part := func(typ string) {
+		r.publishPreviewed(broker.Event{SessionID: "s1", Type: backend.EventTurnPart}, &core.TurnPart{Type: typ})
+	}
+	seed := func() string {
+		ch, cancel := r.SubscribeSession("s1")
+		defer cancel()
+		select {
+		case ev := <-ch:
+			var d backend.PartDeltaPayload
+			_ = json.Unmarshal(ev.Raw, &d)
+			return ev.Type + ":" + d.Delta
+		default:
+			return ""
+		}
+	}
+
+	delta("Hel")
+	delta("lo")
+	if got := seed(); got != "turn.delta:Hello" {
+		t.Fatalf("seed = %q", got)
+	}
+	part("text")
+	delta(" tail of the committed item")
+	if got := seed(); got != "" {
+		t.Fatalf("seed after text part = %q", got)
+	}
+	part("tool")
+	delta("next")
+	if got := seed(); got != "turn.delta:next" {
+		t.Fatalf("seed after tool part = %q", got)
+	}
+	r.publishPreviewed(broker.Event{SessionID: "s1", Type: backend.EventTurnEnded}, nil)
+	if got := seed(); got != "" {
+		t.Fatalf("seed after turn end = %q", got)
+	}
+}
+
 func TestFailSendPublishesTerminalExit(t *testing.T) {
 	b := broker.New()
 	tok := &sendToken{}
