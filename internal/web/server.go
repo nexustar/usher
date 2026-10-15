@@ -196,7 +196,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	webSrv := &http.Server{
 		Addr:              s.addr,
-		Handler:           gzipMiddleware(s.authMiddleware(apiHandler)),
+		Handler:           gzipMiddleware(crossOriginGuard(s.authMiddleware(apiHandler))),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -298,6 +298,16 @@ func readOnlyMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// crossOriginGuard rejects state-changing requests a browser sent from
+// another origin, another port on the same host included.
+func crossOriginGuard(next http.Handler) http.Handler {
+	p := http.NewCrossOriginProtection()
+	p.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.WriteError(w, http.StatusForbidden, "cross-origin request rejected")
+	}))
+	return p.Handler(next)
 }
 
 // --- auth middleware + handlers -----------------------------------------

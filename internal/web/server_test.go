@@ -251,3 +251,34 @@ func TestDraftUploadKeepsFilenamePerUpload(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossOriginGuard(t *testing.T) {
+	h := crossOriginGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	cases := []struct {
+		name, method, site, origin string
+		want                       int
+	}{
+		{"same origin", http.MethodPost, "same-origin", "", http.StatusOK},
+		{"other port", http.MethodPost, "same-site", "", http.StatusForbidden},
+		{"other site", http.MethodPost, "cross-site", "", http.StatusForbidden},
+		{"old browser, other origin", http.MethodPost, "", "http://evil.example", http.StatusForbidden},
+		{"curl", http.MethodPost, "", "", http.StatusOK},
+		{"cross-site read", http.MethodGet, "cross-site", "", http.StatusOK},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(c.method, "http://127.0.0.1:7777/api/v1/sessions", strings.NewReader(`{}`))
+		if c.site != "" {
+			req.Header.Set("Sec-Fetch-Site", c.site)
+		}
+		if c.origin != "" {
+			req.Header.Set("Origin", c.origin)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, rec.Code, c.want)
+		}
+	}
+}
