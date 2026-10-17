@@ -241,7 +241,9 @@ func serve(args []string) error {
 		sources = append(sources, discovery.NewClaudeSource(dir))
 		claudeRuntime := sender.New(*claudeCmd, *permissionMode, dir, hookSockPath(*dataDir), *maxLiveSessions, !*disableUsherTools, h, logger)
 		claudeRuntime.SetAutoPause(*autoPause)
-		backends["claude"] = backend.Backend{Runtime: claudeRuntime, Transcript: transcript.Claude{}, Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: modelcatalog.Claude{}}
+		// Claude Code's per-account model catalog sits next to the projects dir.
+		claudeModels := modelcatalog.Claude{Dir: filepath.Join(filepath.Dir(dir), "cache", "model-catalog")}
+		backends["claude"] = backend.Backend{Runtime: claudeRuntime, Transcript: transcript.Claude{}, Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: claudeModels}
 		defaultBackend = "claude"
 		logger.Info("claude backend enabled", "sessions_dir", dir)
 	}

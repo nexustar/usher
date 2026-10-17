@@ -224,10 +224,13 @@ type RouterDesignator interface {
 	SetRouterSession(sessionID string)
 }
 
-// Model is the backend-neutral model-picker projection.
+// Model is the backend-neutral model-picker projection. An Alias names
+// whichever model the CLI currently picks for it; a running session reports
+// the model instead.
 type Model struct {
 	ID             string   `json:"id"`
 	DisplayName    string   `json:"display_name,omitempty"`
+	Alias          bool     `json:"alias,omitempty"`
 	ThinkingLevels []string `json:"thinking_levels,omitempty"`
 }
 

@@ -7,25 +7,74 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/nexustar/usher/internal/backend"
 )
 
-type Claude struct{}
+// Claude lists Claude Code's aliases, then the per-account catalog it caches
+// in Dir (~/.claude/cache/model-catalog). The cache format is undocumented, so
+// anything unreadable leaves just the aliases.
+type Claude struct{ Dir string }
 
-func (Claude) Models(context.Context) ([]backend.Model, error) {
+func claudeAliases() []backend.Model {
 	return []backend.Model{
-		{ID: "fable", DisplayName: "Fable"},
-		{ID: "opus", DisplayName: "Opus"},
-		{ID: "sonnet", DisplayName: "Sonnet"},
-		{ID: "haiku", DisplayName: "Haiku"},
-		{ID: "opusplan", DisplayName: "Opus Plan"},
-		{ID: "claude-opus-4-8", DisplayName: "Opus 4.8"},
-		{ID: "claude-opus-4-6", DisplayName: "Opus 4.6"},
-		{ID: "claude-sonnet-4-6", DisplayName: "Sonnet 4.6"},
-	}, nil
+		{ID: "fable", DisplayName: "Fable (latest)", Alias: true},
+		{ID: "opus", DisplayName: "Opus (latest)", Alias: true},
+		{ID: "sonnet", DisplayName: "Sonnet (latest)", Alias: true},
+		{ID: "haiku", DisplayName: "Haiku (latest)", Alias: true},
+		{ID: "opusplan", DisplayName: "Opus Plan", Alias: true},
+	}
+}
+
+type claudeCatalog struct {
+	FetchedAt int64 `json:"fetchedAt"`
+	Catalog   struct {
+		Config struct {
+			Models []struct {
+				ID      string `json:"id"`
+				Name    string `json:"name"`
+				Runtime struct {
+					EffortLevels []string `json:"effort_levels"`
+				} `json:"runtime"`
+			} `json:"models"`
+		} `json:"config"`
+	} `json:"catalog"`
+}
+
+// cached is the newest account's catalog: one file per account, named
+// <account>-<hash>-cc.json.
+func (c Claude) cached() []backend.Model {
+	paths, _ := filepath.Glob(filepath.Join(c.Dir, "*-cc.json"))
+	var newest claudeCatalog
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var doc claudeCatalog
+		if json.Unmarshal(raw, &doc) == nil && len(doc.Catalog.Config.Models) > 0 && doc.FetchedAt > newest.FetchedAt {
+			newest = doc
+		}
+	}
+	var out []backend.Model
+	for _, m := range newest.Catalog.Config.Models {
+		if m.ID == "" {
+			continue
+		}
+		name := m.Name
+		if name == "" {
+			name = m.ID
+		}
+		out = append(out, backend.Model{ID: m.ID, DisplayName: name, ThinkingLevels: m.Runtime.EffortLevels})
+	}
+	return out
+}
+
+func (c Claude) Models(context.Context) ([]backend.Model, error) {
+	return append(claudeAliases(), c.cached()...), nil
 }
 
 func (Claude) DefaultEffort(context.Context, string) (string, error) { return "", nil }
@@ -54,11 +103,14 @@ func codexFallbackModels() []backend.Model {
 
 type codexDocument struct {
 	Models []struct {
-		Slug                  string `json:"slug"`
-		DisplayName           string `json:"display_name"`
-		Visibility            string `json:"visibility"`
-		Priority              int    `json:"priority"`
-		DefaultReasoningLevel string `json:"default_reasoning_level"`
+		Slug                     string `json:"slug"`
+		DisplayName              string `json:"display_name"`
+		Visibility               string `json:"visibility"`
+		Priority                 int    `json:"priority"`
+		DefaultReasoningLevel    string `json:"default_reasoning_level"`
+		SupportedReasoningLevels []struct {
+			Effort string `json:"effort"`
+		} `json:"supported_reasoning_levels"`
 	} `json:"models"`
 }
 
@@ -94,7 +146,13 @@ func (c Codex) Models(context.Context) ([]backend.Model, error) {
 		if label == "" {
 			label = m.Slug
 		}
-		out = append(out, backend.Model{ID: m.Slug, DisplayName: label})
+		var levels []string
+		for _, l := range m.SupportedReasoningLevels {
+			if l.Effort != "" {
+				levels = append(levels, l.Effort)
+			}
+		}
+		out = append(out, backend.Model{ID: m.Slug, DisplayName: label, ThinkingLevels: levels})
 	}
 	return out, nil
 }
