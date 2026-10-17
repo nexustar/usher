@@ -1526,6 +1526,10 @@ function adoptLastTurnAsLive() {
   if (liveTurn || !renderedTurns.length) return false;
   const last = renderedTurns[renderedTurns.length - 1];
   if (!last.node.classList.contains('assistant')) return false;
+  // A prompt below it (our optimistic echo) means the running turn is newer.
+  for (let n = last.node.nextElementSibling; n; n = n.nextElementSibling) {
+    if (n.matches('.chat-message.user')) return false;
+  }
   const forkBtn = last.node.querySelector('.turn-fork');
   if (forkBtn) forkBtn.remove(); // stale fork point; finalize re-adds a current one
   const partNodes = [...last.node.children].filter(c => !c.classList.contains('role') && !c.classList.contains('turn-footer'));
@@ -1777,7 +1781,10 @@ async function loadTranscript(id) {
     // user/assistant placeholders) — they're about to be represented by their
     // canonical turns from this fetch.
     const hadOptimistic = !!el.querySelector(':scope > .chat-message.optimistic');
-    el.querySelectorAll(':scope > .chat-loading, :scope > .chat-message.optimistic').forEach(n => n.remove());
+    // A turn that started while this fetch was in flight keeps its live
+    // bubble; it is moved below the rendered turns and settles at turn end.
+    const live = liveTurn && liveTurn.node.parentNode === el ? liveTurn : null;
+    el.querySelectorAll(':scope > .chat-loading, :scope > .chat-message.optimistic').forEach(n => { if (!live || n !== live.node) n.remove(); });
     const committed = () => el.querySelectorAll(':scope > .chat-message:not(.optimistic):not(.routed)');
     // Self-heal: if our tracked turns drifted from what's actually in the DOM
     // (an earlier early-return, a caught exception, or a race), rebuild from
@@ -1823,6 +1830,11 @@ async function loadTranscript(id) {
       }
     } finally {
       setSuppressAppendScroll(false); // never leave it stuck, or future appends won't scroll
+    }
+    if (live) {
+      el.insertBefore(live.node, el.querySelector(':scope > .send-anchor'));
+      if (live.working) showLiveWorking(live);
+      liveTurnDirty = true;
     }
     if (wasAtBottom) {
       // Only follow new turns to the bottom if the reader was already there.
