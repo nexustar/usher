@@ -60,6 +60,10 @@ type Router struct {
 	sendQueue  map[string][]pendingSend // sessionID -> sends waiting for the turn to end
 	creating   map[string]core.Session  // sessions usher is spawning, not yet on disk
 	relayIn    map[string][]relayNote   // router sessionID -> replies to fold into its next prompt
+	// switches are model/effort switches shown over what the transcript says
+	// until a turn begun after them ends: no backend records a switch before
+	// its next turn.
+	switches map[string]runtimeSwitch
 
 	errMu      sync.Mutex
 	turnErrors map[string]turnError // sessionID -> latest turn error
@@ -102,6 +106,11 @@ type sendToken struct {
 	started time.Time
 }
 
+type runtimeSwitch struct {
+	model, effort string
+	at            time.Time
+}
+
 // pendingSend is one send waiting in a session's FIFO queue behind an
 // in-flight turn. pre (optional) runs just before the turn starts — after
 // every event of the previous turn has been published — so a relay collector
@@ -130,6 +139,7 @@ func New(d *discovery.Discovery, backends map[string]backendpkg.Backend, default
 		activeSend:     map[string]*sendToken{},
 		sendQueue:      map[string][]pendingSend{},
 		creating:       map[string]core.Session{},
+		switches:       map[string]runtimeSwitch{},
 		composerCache:  map[composerCacheKey][]backendpkg.ComposerItem{},
 	}
 	if meta != nil {
@@ -301,6 +311,96 @@ func (r *Router) DefaultEffort(ctx context.Context, backendName, model string) s
 		return ""
 	}
 	return effort
+}
+
+// SetRuntime switches a session's model and effort from its next model
+// request; an empty value keeps the current one.
+func (r *Router) SetRuntime(ctx context.Context, id, model, effort string) error {
+	sess, ok := r.GetSession(id)
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if sess.IsSubagent {
+		return ErrReadOnlySession
+	}
+	if model == "" && effort == "" {
+		return nil
+	}
+	b, ok := r.backends[sess.Backend]
+	setter, can := b.Runtime.(backendpkg.RuntimeSetter)
+	if !ok || !can {
+		return fmt.Errorf("%w: backend %q cannot switch model or effort", ErrBackendUnavailable, sess.Backend)
+	}
+	if model != "" {
+		if model == "default" {
+			return errors.New("switch to a named model, not default")
+		}
+		if err := r.ValidateModel(ctx, sess.Backend, model); err != nil {
+			return err
+		}
+	}
+	if effort != "" && effort != "default" {
+		target := model
+		if target == "" {
+			target = sess.Runtime.Model
+		}
+		if levels := r.effortLevels(ctx, sess.Backend, target); levels != nil && !slices.Contains(levels, effort) {
+			return fmt.Errorf("model %s supports effort %s, not %q", target, strings.Join(levels, "/"), effort)
+		}
+	}
+	if err := setter.SetRuntime(ctx, id, sess.Cwd, model, effort); err != nil {
+		return err
+	}
+	slog.Info("runtime switched", "session", id, "model", model, "effort", effort)
+	r.sendMu.Lock()
+	sw := r.switches[id]
+	if model != "" {
+		sw.model = model
+	}
+	if effort != "" {
+		sw.effort = effort
+	}
+	sw.at = time.Now()
+	r.switches[id] = sw
+	r.sendMu.Unlock()
+	if sess, ok := r.GetSession(id); ok {
+		raw, _ := json.Marshal(sess.Runtime)
+		r.broker.Publish(broker.Event{SessionID: id, Type: backendpkg.EventRuntime, Raw: raw})
+	}
+	return nil
+}
+
+// applySwitchLocked shows a pending switch on s. With sendMu.
+func (r *Router) applySwitchLocked(s *core.Session) {
+	sw, ok := r.switches[s.ID]
+	if !ok {
+		return
+	}
+	if sw.model != "" {
+		s.Runtime.Model = sw.model
+	}
+	if sw.effort != "" {
+		s.Runtime.Effort = sw.effort
+	}
+}
+
+// effortLevels is what the catalog lists for model, nil when it lists none
+// and the backend is left to judge. A pi session reports its model without
+// the provider prefix.
+func (r *Router) effortLevels(ctx context.Context, backendName, model string) []string {
+	models, err := r.Models(ctx, backendName)
+	if err != nil || model == "" {
+		return nil
+	}
+	for _, m := range models {
+		if m.ID == model || strings.HasSuffix(m.ID, "/"+model) {
+			if len(m.ThinkingLevels) == 0 {
+				return nil
+			}
+			return m.ThinkingLevels
+		}
+	}
+	return nil
 }
 
 // senderForBackend returns the Sender for a backend, falling back to the
@@ -519,6 +619,7 @@ func (r *Router) listSessions(includeSubagents bool) []core.Session {
 		}
 		_, running := r.activeSend[sess.ID]
 		applyLiveStatus(sess, running, live)
+		r.applySwitchLocked(sess)
 		if !sess.IsSubagent {
 			r.applyCustomTitle(sess)
 		}
@@ -550,6 +651,7 @@ func (r *Router) GetSession(id string) (core.Session, bool) {
 	}
 	r.sendMu.Lock()
 	_, running := r.activeSend[id]
+	r.applySwitchLocked(&sess)
 	r.sendMu.Unlock()
 	applyLiveStatus(&sess, running, r.liveSet())
 	r.applyCustomTitle(&sess)
@@ -1258,6 +1360,10 @@ func (r *Router) releaseSend(sessionID string, tok *sendToken) {
 		delete(r.activeSend, sessionID)
 	}
 	delete(r.creating, sessionID) // discovery owns it once the turn hit disk
+	// The turn ran with any switch made before it, and reported what it ran.
+	if sw, ok := r.switches[sessionID]; ok && sw.at.Before(tok.started) {
+		delete(r.switches, sessionID)
+	}
 	// Belt over markSendIdle's bump — and the ONLY bump for create paths,
 	// which end their first turn here without ever calling markSendIdle.
 	r.bumpForeignBaseLocked(sessionID)

@@ -34,6 +34,17 @@ let detailStreaming = false;
 // From the last full session fetch: the runtime SSE event carries usage only.
 let detailActivity = {};
 let detailLive = false;
+// The open session's runtime, merged across runtime events, which carry only
+// what they observed. runtimeOwner is null when it cannot switch model or
+// effort; runtimeModels is its backend's catalog once fetched.
+let detailRuntime = {};
+let runtimeOwner = null;
+let runtimeBackend = '';
+let runtimeModels = null;
+let lastRuntimeHTML = '';
+let runtimeRerendering = false;
+let runtimeFold = ''; // the usage popover's open submenu: 'model' | 'effort' | ''
+
 let lastTranscriptSig = '';
 
 // Bumped on every showDetail entry. showDetail awaits (session fetch, transcript)
@@ -728,8 +739,8 @@ export async function showDetail(id) {
             <div class="composer-send">
               <div class="session-usage-wrap">
                 <button id="session-usage" class="session-usage" type="button" hidden
-                  aria-expanded="false" aria-controls="session-usage-detail"></button>
-                <div id="session-usage-detail" class="session-usage-detail" hidden></div>
+                  aria-expanded="false" aria-controls="session-usage-detail"><span class="usage-text"><span class="usage-model"></span><span class="usage-effort"></span></span><span class="usage-ring"></span></button>
+                <div id="session-usage-detail" class="session-usage-detail" tabindex="-1" hidden></div>
               </div>
               <button id="send">send</button>
             </div>
@@ -758,17 +769,53 @@ export async function showDetail(id) {
   const usageBtn = document.getElementById('session-usage');
   const usageDetail = document.getElementById('session-usage-detail');
   if (usageBtn && usageDetail) {
-    usageBtn.addEventListener('click', () => {
-      usageDetail.hidden = !usageDetail.hidden;
-      usageBtn.setAttribute('aria-expanded', usageDetail.hidden ? 'false' : 'true');
-    });
-    usageBtn.addEventListener('blur', () => {
+    const closeUsage = () => {
       usageDetail.hidden = true;
       usageBtn.setAttribute('aria-expanded', 'false');
+      if (runtimeFold) {
+        runtimeFold = '';
+        renderSessionRuntime(detailRuntime);
+      }
+    };
+    usageBtn.addEventListener('click', () => {
+      if (!usageDetail.hidden) { closeUsage(); return; }
+      usageDetail.hidden = false;
+      usageBtn.setAttribute('aria-expanded', 'true');
+    });
+    // Open while focus stays on the button or inside the popover.
+    const usageWrap = usageBtn.parentElement;
+    usageWrap.addEventListener('focusout', (e) => {
+      if (runtimeRerendering || usageWrap.contains(e.relatedTarget)) return;
+      closeUsage();
+    });
+    usageDetail.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.fold) {
+        runtimeFold = runtimeFold === b.dataset.fold ? '' : b.dataset.fold;
+        renderSessionRuntime(detailRuntime);
+      } else if (b.dataset.pick) {
+        const field = b.dataset.pick, value = b.dataset.value;
+        runtimeFold = '';
+        renderSessionRuntime(detailRuntime);
+        if (b.querySelector('.config-check').textContent === '') switchRuntime(id, field, value);
+      }
     });
   }
   noteActivity(sess);
+  detailRuntime = {};
+  lastRuntimeHTML = '';
+  runtimeModels = null;
+  runtimeOwner = sess.subagent ? null : id;
+  runtimeBackend = sess.backend || '';
   renderSessionRuntime(sess.runtime);
+  if (runtimeOwner) {
+    fetchBackends().then((c) => {
+      if (epoch !== detailEpoch) return;
+      runtimeModels = (c.models || {})[sess.backend] || [];
+      renderSessionRuntime(detailRuntime);
+    }).catch(() => {/* no pickers: the values still show */});
+  }
   restoreDraft(promptEl);
   wireCommandPreview(promptEl, id);
 
@@ -1194,7 +1241,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       }
       liveTurnDirty = true;
     },
-    'session.runtime': (d) => renderSessionRuntime(d),
+    'session.runtime': (d) => renderSessionRuntime({ ...detailRuntime, ...d }),
     'turn.ended': (d) => {
       // Failed/unconfirmed exits follow an explicit error event. Keep that
       // error bubble visible instead of reconciling it away as a successful turn.
@@ -1901,6 +1948,7 @@ function renderSessionRuntime(u) {
   const detail = document.getElementById('session-usage-detail');
   if (!el || !detail) return;
   u = u || {};
+  detailRuntime = u;
   const context = Number(u.context_tokens) || 0;
   const max = Number(u.context_window) || 0;
   const activityRows = renderActivityRows(detailActivity, detailLive);
@@ -1912,10 +1960,14 @@ function renderSessionRuntime(u) {
   const pct = measured ? Math.min(100, Math.max(0, context / max * 100)) : 0;
   el.classList.toggle('unknown', !measured);
   el.style.setProperty('--usage-pct', pct.toFixed(1) + '%');
-  el.setAttribute('aria-label', measured
-    ? 'Context ' + Math.round(pct) + '% used; show session details'
-    : 'Context usage unavailable; show session details');
-  el.title = measured ? 'Context ' + Math.round(pct) + '% used' : 'Context usage unavailable';
+  const name = u.model ? modelName(u.model) : '';
+  el.dataset.backend = runtimeBackend;
+  el.querySelector('.usage-model').textContent = name;
+  el.querySelector('.usage-effort').textContent = u.effort || '';
+  const label = [name, u.effort].filter(Boolean).join(', ');
+  const contextText = measured ? 'Context ' + Math.round(pct) + '% used' : 'Context usage unavailable';
+  el.setAttribute('aria-label', (label ? label + '; ' : '') + contextText + '; show session details');
+  el.title = contextText;
 
   let usage = 'unavailable';
   if (context > 0) {
@@ -1923,11 +1975,80 @@ function renderSessionRuntime(u) {
       ? formatTokenCount(max) + ' · ' + Math.round(pct) + '%'
       : 'unavailable');
   }
-  const rows = [];
-  if (u.model) rows.push(`<div><strong>Model</strong><span>${esc(u.model)}</span></div>`);
-  if (u.effort) rows.push(`<div><strong>Effort</strong><span>${esc(u.effort)}</span></div>`);
+  const { rows, submenu } = runtimeRows(u);
   rows.push(`<div><strong>Context</strong><span>${esc(usage)}</span></div>`);
-  detail.innerHTML = rows.concat(activityRows).join('');
+  const html = '<div class="config-menu-body">' + rows.concat(activityRows).join('') + '</div>' + submenu;
+  if (html === lastRuntimeHTML) return;
+  lastRuntimeHTML = html;
+  // Replacing a focused row would otherwise close the popover around it.
+  const focused = detail.contains(document.activeElement);
+  runtimeRerendering = true;
+  detail.innerHTML = html;
+  runtimeRerendering = false;
+  if (focused) detail.focus({ preventScroll: true });
+}
+
+// catalogModel finds a session's model in its backend's catalog. A pi session
+// reports its model without the provider prefix.
+function catalogModel(models, id) {
+  return (models || []).find(m => m.id === id || m.id.endsWith('/' + id)) || null;
+}
+
+function modelName(id) {
+  const m = catalogModel(runtimeModels, id);
+  return (m && m.display_name) || id;
+}
+
+// runtimeRows shows model and effort as fold rows, with the open fold's
+// submenu. Aliases are left out: a session reports the model behind one.
+function runtimeRows(u) {
+  const rows = [];
+  const row = (label, value) => rows.push(`<div><strong>${label}</strong><span>${esc(value)}</span></div>`);
+  const listed = runtimeOwner && runtimeModels ? runtimeModels.filter(m => !m.alias) : [];
+  const models = listed.length ? listed : null;
+  const current = models && u.model ? catalogModel(models, u.model) : null;
+  const fold = (name, value) => rows.push(
+    `<button type="button" class="config-row config-fold${runtimeFold === name ? ' open' : ''}" data-fold="${name}">` +
+    `<span class="config-fold-name">${name}</span><span>${esc(value)} <span class="muted">▸</span></span></button>`);
+  const choices = {};
+  if (models) {
+    choices.model = models.map(m => ({ id: m.id, label: m.display_name || m.id, on: m === current }));
+    fold('model', current ? (current.display_name || current.id) : (u.model || 'default'));
+  } else if (u.model) {
+    row('Model', u.model);
+  }
+  const levels = (current && current.thinking_levels) || [];
+  if (levels.length) {
+    choices.effort = levels.map(l => ({ id: l, label: l, on: l === u.effort }));
+    // Only Claude can drop a switch.
+    if (runtimeBackend === 'claude') {
+      choices.effort.unshift({ id: 'default', label: 'default', on: !u.effort || u.effort === 'default' });
+    }
+    fold('effort', u.effort || 'default');
+  } else if (u.effort) {
+    row('Effort', u.effort);
+  }
+  if (choices.model || choices.effort) rows.push('<div class="config-sep"></div>');
+  const open = choices[runtimeFold];
+  const submenu = open
+    ? '<div class="config-submenu">' + open.map(c =>
+        `<button type="button" class="config-row" data-pick="${runtimeFold}" data-value="${esc(c.id)}">` +
+        `<span>${esc(c.label)}</span><span class="config-check">${c.on ? '✓' : ''}</span></button>`).join('') + '</div>'
+    : '';
+  return { rows, submenu };
+}
+
+async function switchRuntime(id, field, value) {
+  if (id !== runtimeOwner) return;
+  try {
+    const res = await patchSession(id, { [field]: value });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error?.message || ('HTTP ' + res.status));
+    if (id === currentDetailId) renderSessionRuntime(body.runtime);
+  } catch (e) {
+    if (id !== currentDetailId) return;
+    appendChatMessage({ role: 'error', content: field + ' switch failed: ' + String(e.message || e), ts: new Date().toISOString() });
+  }
 }
 
 // A schedule without a live process is stopped; it comes back on resume.

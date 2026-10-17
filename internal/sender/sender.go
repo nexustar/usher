@@ -512,6 +512,24 @@ func (s *Sender) argsFor(id string) []string {
 	return lookup(id)
 }
 
+var _ backend.RuntimeSetter = (*Sender)(nil)
+
+// SetRuntime switches a session's model and effort. Codex takes them with its
+// next turn, then keeps them in the thread; Claude takes them now.
+func (s *Sender) SetRuntime(ctx context.Context, sessionID, _, model, effort string) error {
+	if s.app != nil {
+		if effort == "default" {
+			return errors.New("codex has no default effort to return to: pick a level")
+		}
+		s.app.SetRuntime(sessionID, model, effort)
+		return nil
+	}
+	if s.claude != nil {
+		return s.claude.SetRuntime(ctx, sessionID, model, effort)
+	}
+	return errors.New("sender has no headless backend")
+}
+
 // SetScheduled forwards the eviction-time transcript lookup to the Claude pool.
 func (s *Sender) SetScheduled(f func(id string) bool) {
 	if s.claude != nil {

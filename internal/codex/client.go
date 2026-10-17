@@ -834,7 +834,9 @@ func (c *Client) Skills(ctx context.Context, cwd string) ([]Skill, error) {
 	return skills, nil
 }
 
-func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan TurnResult, <-chan Delta, error) {
+// StartTurn starts a turn; a non-empty model or effort switches the thread to
+// it from this turn on.
+func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd, model, effort string) (<-chan TurnResult, <-chan Delta, error) {
 	if err := c.ensure(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -851,9 +853,16 @@ func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan 
 		c.threads[id] = cwd
 		c.mu.Unlock()
 	}
-	return c.startOperation(ctx, id, "turn/start", map[string]any{
+	params := map[string]any{
 		"threadId": id, "input": []map[string]string{{"type": "text", "text": prompt}},
-	})
+	}
+	if model != "" {
+		params["model"] = model
+	}
+	if effort != "" {
+		params["effort"] = effort
+	}
+	return c.startOperation(ctx, id, "turn/start", params)
 }
 
 func (c *Client) startOperation(ctx context.Context, id, method string, params any) (<-chan TurnResult, <-chan Delta, error) {

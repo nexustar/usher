@@ -34,6 +34,7 @@ while IFS= read -r line; do
       printf 'resume\n' >> "$FAKE_LOG"
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
     *'"method":"turn/start"'*)
+      printf '%s\n' "$line" >> "$FAKE_LOG.turns"
       thread=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
       printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"status":"completed"}}}\n' "$thread" ;;
@@ -144,6 +145,33 @@ func TestManagerLRUEvictsIdleWorkerAndColdResumes(t *testing.T) {
 	}
 	if m.Has(id) {
 		t.Fatalf("LRU did not evict %s", id)
+	}
+}
+
+func TestRuntimeSwitchRidesTheNextTurnOnly(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	t.Cleanup(m.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	m.SetRuntime("thread", "gpt-5.5", "")
+	m.SetRuntime("thread", "", "high")
+	for _, prompt := range []string{"one", "two"} {
+		turn, _, err := m.StartTurn(ctx, "thread", prompt, "/tmp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-turn
+	}
+	data, err := os.ReadFile(logPath + ".turns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(turns) != 2 ||
+		!strings.Contains(turns[0], `"effort":"high"`) || !strings.Contains(turns[0], `"model":"gpt-5.5"`) ||
+		strings.Contains(turns[1], `"effort"`) || strings.Contains(turns[1], `"model"`) {
+		t.Fatalf("turn/start requests = %q", turns)
 	}
 }
 

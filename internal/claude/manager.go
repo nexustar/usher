@@ -179,6 +179,15 @@ type Manager struct {
 	mu        sync.Mutex
 	processes map[string]*process
 	routerID  string
+	// runtimes are the switches made since spawn. Claude records neither in
+	// the transcript, so every respawn is told again.
+	runtimes map[string]Runtime
+}
+
+// Runtime is a model and effort switched to after a session started.
+type Runtime struct {
+	Model  string
+	Effort string
 }
 
 // SetAutoPause stops a process once it has held nothing for d; zero keeps
@@ -249,7 +258,7 @@ func New(bin, settings, hookSock string, mcpArgs []string, maxLive int, interact
 	if maxLive <= 0 {
 		maxLive = 8
 	}
-	m := &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, interactions: interactions, logger: logger, processes: map[string]*process{}, stop: make(chan struct{})}
+	m := &Manager{bin: bin, settings: settings, hookSock: hookSock, mcpArgs: append([]string(nil), mcpArgs...), maxLive: maxLive, interactions: interactions, logger: logger, processes: map[string]*process{}, runtimes: map[string]Runtime{}, stop: make(chan struct{})}
 	go m.reapLoop()
 	return m
 }
@@ -356,6 +365,15 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 	args = append(args, m.spawnArgs(id)...)
 	// Last, so a repeated flag from the session's agent profile wins.
 	args = append(args, extraArgs...)
+	// Except over a switch made since, which is newer than the profile.
+	if rt := m.runtimes[id]; rt.Model != "" || rt.Effort != "" {
+		if rt.Model != "" {
+			args = append(args, "--model", rt.Model)
+		}
+		if rt.Effort != "" {
+			args = append(args, "--effort", rt.Effort)
+		}
+	}
 	cmd := exec.CommandContext(context.Background(), m.bin, args...)
 	procutil.ConfigureGroup(cmd)
 	cmd.Dir = cwd
@@ -485,6 +503,53 @@ func (m *Manager) Settings(ctx context.Context, id string) (Settings, error) {
 		return Settings{}, err
 	}
 	return Settings{Model: payload.Applied.Model, Effort: payload.Applied.Effort}, nil
+}
+
+// SetRuntime switches id's model and effort; empty keeps the current one. A
+// live process changes from its next request, and every later spawn starts
+// with the switch.
+func (m *Manager) SetRuntime(ctx context.Context, id, model, effort string) error {
+	m.mu.Lock()
+	p := m.processes[id]
+	m.mu.Unlock()
+	if p != nil {
+		if err := waitForInitialization(ctx, p); err != nil {
+			return err
+		}
+		if model != "" {
+			if _, err := m.controlRequest(ctx, p, map[string]any{"subtype": "set_model", "model": model}); err != nil {
+				return fmt.Errorf("set model: %w", err)
+			}
+		}
+		if effort != "" {
+			// null falls back to the model's default, as a spawn without
+			// --effort does.
+			var level any = effort
+			if effort == "default" {
+				level = nil
+			}
+			if _, err := m.controlRequest(ctx, p, map[string]any{
+				"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": level},
+			}); err != nil {
+				return fmt.Errorf("set effort: %w", err)
+			}
+		}
+	}
+	m.mu.Lock()
+	rt := m.runtimes[id]
+	if model != "" {
+		rt.Model = model
+	}
+	switch effort {
+	case "":
+	case "default":
+		rt.Effort = ""
+	default:
+		rt.Effort = effort
+	}
+	m.runtimes[id] = rt
+	m.mu.Unlock()
+	return nil
 }
 
 func scrubEnv(hookSock string) []string {

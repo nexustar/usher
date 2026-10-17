@@ -707,3 +707,48 @@ func TestCodemodeCallShowsItsScript(t *testing.T) {
 		t.Errorf("result not fenced: %+v", parts)
 	}
 }
+
+// A switch reaches pi ahead of the next send, and only that one.
+func TestRuntimeSwitchRidesTheNextSend(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "rpc.log")
+	bin := filepath.Join(dir, "fake-pi")
+	body := `#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$FAKE_PI_LOG"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id"
+done
+`
+	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PI_LOG", logPath)
+	c, err := startClient(bin, dir, "", dir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.stop)
+	r := &Runtime{workers: map[string]*worker{}, switches: map[string]runtimeSwitch{}, max: 1, logger: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	if err := r.add("s1", &worker{c: c, cwd: dir, last: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetRuntime(context.Background(), "s1", dir, "anthropic/claude-x", "low"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one", "two"} {
+		events, err := r.Send(context.Background(), "s1", "/name "+name, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range events {
+		}
+	}
+	logged, _ := os.ReadFile(logPath)
+	got := string(logged)
+	if strings.Count(got, `"type":"set_model"`) != 1 || !strings.Contains(got, `"provider":"anthropic"`) ||
+		strings.Count(got, `"type":"set_thinking_level"`) != 1 ||
+		strings.Index(got, `"type":"set_thinking_level"`) > strings.Index(got, `"type":"set_session_name"`) {
+		t.Fatalf("requests = %s", got)
+	}
+}

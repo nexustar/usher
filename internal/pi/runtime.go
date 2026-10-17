@@ -520,9 +520,14 @@ type Runtime struct {
 	systemPrompt     func(string) string
 	extraArgs        func(string) []string
 	autoPause        time.Duration
-	stop             chan struct{}
-	stopOnce         sync.Once
+	// switches wait for the session's next send, which applies them before
+	// anything reaches the model; pi then keeps them in the session file.
+	switches map[string]runtimeSwitch
+	stop     chan struct{}
+	stopOnce sync.Once
 }
+
+type runtimeSwitch struct{ model, effort string }
 
 // SetAutoPause stops a worker once it has held nothing for d; zero keeps
 // workers until evicted.
@@ -594,7 +599,7 @@ func NewRuntime(bin, sessionsDir string, extra []string, max int, models Models,
 		logger = slog.Default()
 	}
 	logger = logger.With("backend", "pi")
-	r := &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, interactions: interactions, logger: logger, workers: map[string]*worker{}, stop: make(chan struct{})}
+	r := &Runtime{bin: bin, sessionsDir: sessionsDir, extra: append([]string(nil), extra...), max: max, models: models, interactions: interactions, logger: logger, workers: map[string]*worker{}, switches: map[string]runtimeSwitch{}, stop: make(chan struct{})}
 	go r.reapLoop()
 	return r
 }
@@ -922,6 +927,9 @@ func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan back
 		}
 	}
 	defer r.releaseWorker(w)
+	if err := r.applySwitch(ctx, id, w); err != nil {
+		return nil, err
+	}
 	if command, args, ok := backend.ParseSlashCommand(prompt); ok {
 		switch command {
 		case "/name":
@@ -1022,6 +1030,53 @@ func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
 	if err := r.add(id, w); err != nil {
 		c.stop()
 		return err
+	}
+	return nil
+}
+
+var _ backend.RuntimeSetter = (*Runtime)(nil)
+
+// SetRuntime switches the session's model and thinking level from its next
+// send; empty keeps the current one.
+func (r *Runtime) SetRuntime(_ context.Context, id, _, model, effort string) error {
+	if effort == "default" {
+		return errors.New("pi has no default thinking level to return to: pick a level")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sw := r.switches[id]
+	if model != "" {
+		sw.model = model
+	}
+	if effort != "" {
+		sw.effort = effort
+	}
+	r.switches[id] = sw
+	return nil
+}
+
+// applySwitch hands w a pending switch; a refused one is dropped.
+func (r *Runtime) applySwitch(ctx context.Context, id string, w *worker) error {
+	r.mu.Lock()
+	sw, ok := r.switches[id]
+	delete(r.switches, id)
+	r.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	if sw.model != "" {
+		provider, modelID, ok := strings.Cut(sw.model, "/")
+		if !ok {
+			return fmt.Errorf("pi model %q is not provider/id", sw.model)
+		}
+		if _, err := w.c.request(ctx, "set_model", map[string]any{"provider": provider, "modelId": modelID}); err != nil {
+			return fmt.Errorf("switch model: %w", err)
+		}
+	}
+	if sw.effort != "" {
+		if _, err := w.c.request(ctx, "set_thinking_level", map[string]any{"level": sw.effort}); err != nil {
+			return fmt.Errorf("switch thinking level: %w", err)
+		}
 	}
 	return nil
 }

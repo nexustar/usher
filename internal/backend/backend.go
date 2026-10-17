@@ -224,6 +224,13 @@ type RouterDesignator interface {
 	SetRouterSession(sessionID string)
 }
 
+// RuntimeSetter is an optional runtime capability: switching a session's model
+// and effort, from its next model request on. An empty value keeps the
+// current one; effort "default" drops a switch, where the backend can.
+type RuntimeSetter interface {
+	SetRuntime(ctx context.Context, sessionID, cwd, model, effort string) error
+}
+
 // Model is the backend-neutral model-picker projection. An Alias names
 // whichever model the CLI currently picks for it; a running session reports
 // the model instead.

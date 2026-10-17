@@ -420,10 +420,11 @@ func (f *FakeRouter) OpenSession(id string, _ time.Duration) (core.Session, bool
 	return f.GetSession(id)
 }
 
-func (f *FakeRouter) DefaultEffort(context.Context, string, string) string { return "" }
-func (f *FakeRouter) DeleteSession(string) error                           { return nil }
-func (f *FakeRouter) ForkSession(id, _ string) (string, error)             { return id + "_fork", nil }
-func (f *FakeRouter) CancelSend(string) error                              { return nil }
+func (f *FakeRouter) DefaultEffort(context.Context, string, string) string     { return "" }
+func (f *FakeRouter) SetRuntime(context.Context, string, string, string) error { return nil }
+func (f *FakeRouter) DeleteSession(string) error                               { return nil }
+func (f *FakeRouter) ForkSession(id, _ string) (string, error)                 { return id + "_fork", nil }
+func (f *FakeRouter) CancelSend(string) error                                  { return nil }
 func (f *FakeRouter) Rename(_ context.Context, _, title string) error {
 	if title == "" {
 		return core.ErrInvalidTitle

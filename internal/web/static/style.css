@@ -907,43 +907,86 @@ td.id { color: var(--text-disabled); }
   padding: 0.3rem 0.4rem 0.4rem;
 }
 .composer-tools { display: flex; align-items: center; gap: 0.5rem; }
-.composer-send { margin-left: auto; display: flex; align-items: center; gap: 0.35rem; }
-.session-usage-wrap { position: relative; display: flex; align-items: center; }
+.composer-send { margin-left: auto; display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.session-usage-wrap { position: relative; display: flex; align-items: center; min-width: 0; }
 button.session-usage {
-  --usage-pct: 0%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.25rem 0.4rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--font-sm);
+  cursor: pointer;
+}
+button.session-usage:hover { background: var(--bg-subtle); }
+/* Shows what fits in the bar: one clipped line that wraps, so the effort and
+ * then the model drop out whole as the bar narrows. The empty ::before holds
+ * the line's head, where the model could never wrap away, and its height
+ * pushes whatever wraps below the clip. */
+.usage-text {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+  height: 1.4em;
+  line-height: 1.4;
+  overflow: hidden;
+}
+.usage-text::before { content: ""; height: 100%; }
+.usage-model {
+  flex: none;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--claude);
+}
+button.session-usage[data-backend="codex"] .usage-model { color: var(--codex); }
+button.session-usage[data-backend="pi"] .usage-model { color: var(--pi); }
+.usage-effort { white-space: nowrap; margin-left: 0.4rem; color: var(--text-disabled); }
+.usage-model:empty,
+.usage-effort:empty { display: none; }
+.usage-ring {
+  flex: none;
   width: 1.25rem;
   height: 1.25rem;
-  padding: 0;
-  border: none;
   border-radius: 50%;
-  background: conic-gradient(var(--accent) var(--usage-pct), var(--border-strong) 0);
+  background: conic-gradient(var(--accent) var(--usage-pct, 0%), var(--border-strong) 0);
   position: relative;
 }
-button.session-usage::after {
+.usage-ring::after {
   content: "";
   position: absolute;
   inset: 0.16rem;
   border-radius: 50%;
   background: var(--bg-chrome);
 }
-button.session-usage.unknown {
+button.session-usage.unknown .usage-ring {
   background: var(--border-strong);
 }
+/* Built like the new-session config menu: this shell positions, the
+ * .config-menu-body inside is the box, and the submenu hangs beside it. */
 .session-usage-detail {
   position: absolute;
   right: 0;
   bottom: calc(100% + 0.5rem);
   z-index: 20;
-  min-width: 0;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-chrome);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
   color: var(--text);
 }
-.session-usage-detail > div { display: flex; align-items: baseline; gap: 0.55rem; }
-.session-usage-detail strong { width: 3.6rem; flex: none; font-weight: 500; color: var(--text-faint); }
+.session-usage-detail:focus { outline: none; }
+.session-usage-detail .config-menu-body > div:not(.config-sep) {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0.6rem;
+}
+.session-usage-detail strong { flex: none; font-weight: normal; color: var(--text-muted); }
 .session-usage-detail span { white-space: nowrap; }
 /* Goal text is prose: let it wrap. */
 .session-usage-detail span.wrap { white-space: normal; max-width: 24rem; }

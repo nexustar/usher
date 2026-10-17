@@ -43,6 +43,7 @@ type Router interface {
 	SubscribeSession(id string) (<-chan broker.Event, func())
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	Rename(ctx context.Context, id, title string) error
+	SetRuntime(ctx context.Context, id, model, effort string) error
 	Archive(id string)
 	Unarchive(id string)
 	IsArchived(id string) bool

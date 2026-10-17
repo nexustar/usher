@@ -151,12 +151,16 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // PatchRequest sets the flags usher keeps about a session; omitted fields are
-// left as they are.
+// left as they are. Model and Effort switch the session from its next model
+// request; Effort "default" drops a Claude switch. A Claude switch does not
+// survive a usher restart.
 type PatchRequest struct {
 	Title       *string `json:"title,omitempty"`
 	Archived    *bool   `json:"archived,omitempty"`
 	Pinned      *bool   `json:"pinned,omitempty"`
 	AutoApprove *bool   `json:"auto_approve,omitempty"`
+	Model       string  `json:"model,omitempty"`
+	Effort      string  `json:"effort,omitempty"`
 }
 
 func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +171,12 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	var req PatchRequest
 	if !Decode(w, r, &req) {
 		return
+	}
+	if req.Model != "" || req.Effort != "" {
+		if err := s.Router.SetRuntime(r.Context(), id, req.Model, req.Effort); err != nil {
+			WriteError(w, ErrStatus(err), err.Error())
+			return
+		}
 	}
 	if req.Title != nil {
 		if err := s.Router.Rename(r.Context(), id, strings.TrimSpace(*req.Title)); err != nil {

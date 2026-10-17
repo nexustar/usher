@@ -1372,3 +1372,76 @@ func TestRoutedRepliesFromReadsTurnStarts(t *testing.T) {
 		t.Errorf("work the idle session never took up = %+v, want settled with no reply", got[1])
 	}
 }
+
+type runtimeSwitchRuntime struct {
+	backend.Runtime
+	calls []string
+}
+
+func (r *runtimeSwitchRuntime) SetRuntime(_ context.Context, id, _, model, effort string) error {
+	r.calls = append(r.calls, id+" "+model+" "+effort)
+	return nil
+}
+
+func (*runtimeSwitchRuntime) LiveSessions() []backend.LiveSession { return nil }
+
+type runtimeSwitchModels struct{}
+
+func (runtimeSwitchModels) Models(context.Context) ([]backend.Model, error) {
+	return []backend.Model{
+		{ID: "claude-opus-5-5", ThinkingLevels: []string{"low", "high"}},
+		{ID: "haiku"},
+	}, nil
+}
+
+func (runtimeSwitchModels) ValidateModel(context.Context, string) error { return nil }
+
+func (runtimeSwitchModels) DefaultEffort(context.Context, string) (string, error) { return "", nil }
+
+// TestSetRuntime: effort is checked against the catalog before the backend
+// sees it, and a switch shows over the transcript until a later turn ends.
+func TestSetRuntime(t *testing.T) {
+	root := t.TempDir()
+	logPath := filepath.Join(root, "-tmp", "sw.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","cwd":"/tmp","message":{"role":"user","content":"hi"}}
+{"type":"assistant","timestamp":"2026-04-26T10:00:01.000Z","message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"hello"}]}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(logPath)
+	rt := &runtimeSwitchRuntime{}
+	r := New(d, map[string]backend.Backend{
+		"claude": {Runtime: rt, Transcript: transcript.Claude{}, Models: runtimeSwitchModels{}},
+	}, "claude", broker.New(), nil, sessionmeta.New("", 0), nil)
+	ctx := context.Background()
+
+	if err := r.SetRuntime(ctx, "sw", "", "max"); err == nil || len(rt.calls) != 0 {
+		t.Fatalf("an unlisted effort: err = %v, backend calls = %q", err, rt.calls)
+	}
+	// Checked against the model just switched to, which lists no levels.
+	if err := r.SetRuntime(ctx, "sw", "haiku", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetRuntime(ctx, "sw", "", "max"); err != nil {
+		t.Fatal(err)
+	}
+	d.Complete("sw")
+	if sess, _ := r.GetSession("sw"); sess.Runtime.Model != "haiku" || sess.Runtime.Effort != "max" {
+		t.Fatalf("runtime after a reread = %+v", sess.Runtime)
+	}
+	r.releaseSend("sw", &sendToken{cancel: func() {}, started: time.Now().Add(-time.Minute)})
+	if sess, _ := r.GetSession("sw"); sess.Runtime.Model != "haiku" {
+		t.Fatalf("a turn begun before the switch cleared it: %+v", sess.Runtime)
+	}
+	r.releaseSend("sw", &sendToken{cancel: func() {}, started: time.Now()})
+	if sess, _ := r.GetSession("sw"); sess.Runtime.Model != "claude-opus-5-5" {
+		t.Fatalf("runtime after the next turn = %+v, want the transcript's", sess.Runtime)
+	}
+}

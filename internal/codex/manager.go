@@ -44,9 +44,14 @@ type Manager struct {
 	systemPrompt func(string) string
 	extraArgs    func(string) []string
 	autoPause    time.Duration
-	stop         chan struct{}
-	stopOnce     sync.Once
+	// switches wait for the thread's next turn/start, after which Codex keeps
+	// them in the rollout.
+	switches map[string]runtimeSwitch
+	stop     chan struct{}
+	stopOnce sync.Once
 }
+
+type runtimeSwitch struct{ model, effort string }
 
 func NewManager(bin string, interactions *interaction.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
 	if logger == nil {
@@ -55,7 +60,7 @@ func NewManager(bin string, interactions *interaction.Manager, sandbox, config m
 	if maxLive <= 0 {
 		maxLive = 8
 	}
-	m := &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}, stop: make(chan struct{})}
+	m := &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}, switches: map[string]runtimeSwitch{}, stop: make(chan struct{})}
 	go m.reapLoop()
 	return m
 }
@@ -372,9 +377,35 @@ func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, err
 }
 
 func (m *Manager) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan TurnResult, <-chan Delta, error) {
-	return m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
-		return c.StartTurn(ctx, id, prompt, cwd)
+	m.mu.Lock()
+	sw := m.switches[id]
+	m.mu.Unlock()
+	done, deltas, err := m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
+		return c.StartTurn(ctx, id, prompt, cwd, sw.model, sw.effort)
 	})
+	if err == nil {
+		m.mu.Lock()
+		if m.switches[id] == sw {
+			delete(m.switches, id)
+		}
+		m.mu.Unlock()
+	}
+	return done, deltas, err
+}
+
+// SetRuntime switches the thread's model and effort from its next turn; empty
+// keeps the current one.
+func (m *Manager) SetRuntime(id, model, effort string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sw := m.switches[id]
+	if model != "" {
+		sw.model = model
+	}
+	if effort != "" {
+		sw.effort = effort
+	}
+	m.switches[id] = sw
 }
 
 func (m *Manager) Compact(ctx context.Context, id, cwd string) (<-chan TurnResult, <-chan Delta, error) {

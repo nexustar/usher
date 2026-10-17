@@ -33,6 +33,10 @@ while IFS= read -r line; do
       request_id=$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
       printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"commands":[{"name":"rename"},{"name":"compact"}]}}}\n' "$request_id"
       ;;
+    *'"subtype":"set_model"'*|*'"subtype":"apply_flag_settings"'*)
+      request_id=$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$request_id"
+      ;;
     *control_request*) ;;
     *)
       uuid=$(printf '%s\n' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
@@ -128,6 +132,50 @@ func TestExtraArgsPassedOnSpawn(t *testing.T) {
 	// Per-session flags must land after the manager-wide ones so a repeat wins.
 	if !strings.Contains(string(data), "--permission-mode default --permission-mode plan") {
 		t.Fatalf("args = %s", data)
+	}
+}
+
+func TestRuntimeSwitchReachesLiveProcessAndRespawns(t *testing.T) {
+	bin, log := fakeClaude(t)
+	m := New(bin, `{"hooks":{}}`, "/tmp/h.sock", nil, 4, nil, nil)
+	t.Setenv("FAKE_CLAUDE_LOG", log)
+	t.Cleanup(m.Shutdown)
+	ch, _, _, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ch
+
+	if err := m.SetRuntime(context.Background(), "sid", "opus", "max"); err != nil {
+		t.Fatal(err)
+	}
+	in, _ := os.ReadFile(log + ".input")
+	if !strings.Contains(string(in), `"model":"opus","subtype":"set_model"`) ||
+		!strings.Contains(string(in), `"settings":{"effortLevel":"max"},"subtype":"apply_flag_settings"`) {
+		t.Fatalf("control requests = %s", in)
+	}
+
+	// Back to the default: Claude clears its flag, and no spawn passes one.
+	if err := m.SetRuntime(context.Background(), "sid", "", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if in, _ := os.ReadFile(log + ".input"); !strings.Contains(string(in), `"settings":{"effortLevel":null}`) {
+		t.Fatalf("control requests = %s", in)
+	}
+
+	if err := m.Kill("sid"); err != nil {
+		t.Fatal(err)
+	}
+	ch, _, _, _, err = m.Send(context.Background(), "sid", "again", "/tmp", "", "",
+		[]string{"--model", "sonnet"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ch
+	args, _ := os.ReadFile(log)
+	spawns := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(spawns) != 2 || !strings.HasSuffix(spawns[1], "--model sonnet --model opus") {
+		t.Fatalf("respawn args = %q", spawns)
 	}
 }
 
