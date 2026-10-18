@@ -30,6 +30,7 @@ window.marked.use({
   renderer: {
     code(token) {
       if (/^diff\b/.test(token.lang)) return '<pre><code>' + diffHTML(token.text) + '</code></pre>';
+      if (/^mermaid\b/.test(token.lang)) return diagramHTML(token);
       return false;
     },
     html(token) { return esc(typeof token === 'string' ? token : token.text); },
@@ -55,6 +56,48 @@ export function diffHTML(text) {
     if (line.startsWith('@@')) return '<span class="diff-hunk">' + e + '</span>';
     return e;
   }).join('\n');
+}
+
+// Mermaid fences render as diagrams through the vendored pele, imported on the
+// first one. A fence still being streamed, and one pele rejects, stays a code
+// block.
+let pele = null;
+let peleImport = null;
+const diagrams = new Map();
+
+function diagramHTML(token) {
+  if (!/\n {0,3}(?:`{3,}|~{3,})[ \t]*\n*$/.test(token.raw)) return false;
+  if (!pele) {
+    peleImport ??= import('./vendor/pele.js').then(m => { pele = m; rerenderAllContent(); }, () => {});
+    return false;
+  }
+  const src = token.text;
+  let html = diagrams.get(src);
+  if (html === undefined) {
+    try {
+      // Node ids become element ids, so a per-source prefix keeps them from
+      // colliding with the page's own.
+      const { svg } = pele.render(src, {
+        idPrefix: 'd' + hashString(src) + '-',
+        fontFamily: getComputedStyle(document.body).fontFamily,
+        fontSize: 14,
+        links: false,
+        images: false,
+      });
+      html = '<div class="diagram">' + svg + '</div>';
+    } catch {
+      html = false;
+    }
+    if (diagrams.size >= 200) diagrams.clear();
+    diagrams.set(src, html);
+  }
+  return html;
+}
+
+function hashString(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h, 31) + s.charCodeAt(i) | 0;
+  return (h >>> 0).toString(36);
 }
 
 function sessionImageHTML(path, alt, titleAttr) {
@@ -103,8 +146,8 @@ function linkSessions(html) {
   const texts = [];
   while (walker.nextNode()) {
     const node = walker.currentNode;
-    // Not inside a link already, and not inside a code block.
-    if (!node.parentElement?.closest('a, pre')) texts.push(node);
+    // Not inside a link already, a code block or a diagram.
+    if (!node.parentElement?.closest('a, pre, svg')) texts.push(node);
   }
   let linked = false;
   for (const node of texts) {

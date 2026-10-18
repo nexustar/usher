@@ -772,6 +772,21 @@ td.id { color: var(--text-faint); }
   padding: 0;
   font-size: inherit;
 }
+/* Mermaid diagrams (pele), colored from the palette so they follow dark mode. */
+.content .diagram { margin: 0.5rem 0; overflow-x: auto; }
+.content .diagram svg { display: block; }
+.pele {
+  --pele-bg: var(--bg-canvas);
+  --pele-fg: var(--text);
+  --pele-muted: var(--text-muted);
+  --pele-line: var(--text-muted);
+  --pele-surface: var(--bg-inset);
+  --pele-surface-alt: var(--bg-sidebar);
+  --pele-border: var(--border-strong);
+  --pele-accent: var(--accent);
+  --pele-critical: var(--danger);
+  --pele-error: var(--danger);
+}
 .diff-add { color: #3fb950; }
 .diff-del { color: #f85149; }
 .diff-hunk { color: #939393; }
