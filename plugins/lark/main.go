@@ -111,10 +111,10 @@ func run(args []string) error {
 	}
 
 	hub, err := NewHub(newLarkClient(*appID, secret, baseURL), router, Config{
-		AppID:           *appID,
-		ChatID:          *chatID,
-		StatePath:       *statePath,
-		AllowedUserIDs:  splitIDs(*allowedUsers),
+		AppID:             *appID,
+		ChatID:            *chatID,
+		StatePath:         *statePath,
+		AllowedUserIDs:    splitIDs(*allowedUsers),
 		GuestDefaultCwd:   *defaultCwd,
 		GuestDefaultAgent: *defaultAgent,
 	}, logger)

@@ -51,7 +51,7 @@ type Config struct {
 	StatePath string // session→thread map file; "" = in-memory (tests)
 	// AllowedUserIDs whitelists open ids (ou_...) that may drive sessions;
 	// empty = any member of ChatID (the private group is the trust boundary).
-	AllowedUserIDs  []string
+	AllowedUserIDs    []string
 	GuestDefaultCwd   string
 	GuestDefaultAgent string
 }

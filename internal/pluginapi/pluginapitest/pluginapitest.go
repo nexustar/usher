@@ -359,7 +359,7 @@ func Start(t *testing.T, f *FakeRouter) *pluginapi.Client {
 // that create sessions through a named agent.
 func StartWithAgents(t *testing.T, f *FakeRouter, agents *agentprofile.Store) *pluginapi.Client {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "plugin.sock")
+	sock := TempSocketPath(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

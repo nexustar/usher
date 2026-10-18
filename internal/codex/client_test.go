@@ -109,7 +109,8 @@ while IFS= read -r line; do :; done
 		t.Fatal(err)
 	}
 	c := New(script, interaction.New(), nil, nil, []string{"FAKE_LOG=" + logPath}, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Generous: the test is about ordering, not latency.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)

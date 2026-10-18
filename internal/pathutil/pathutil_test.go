@@ -67,16 +67,21 @@ func TestResolveImagePathAllowsCodexGeneratedImages(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, "result.png")
-	if err := os.WriteFile(want, []byte("image"), 0o600); err != nil {
+	file := filepath.Join(dir, "result.png")
+	if err := os.WriteFile(file, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The resolver returns the real path (/var is a symlink on macOS).
+	want, err := filepath.EvalSymlinks(file)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	got, ok := ResolveWithinDir(CodexGeneratedImagesDir(sessionID), want)
+	got, ok := ResolveWithinDir(CodexGeneratedImagesDir(sessionID), file)
 	if !ok || got != want {
 		t.Fatalf("ResolveWithinDir() = %q, %v; want %q, true", got, ok, want)
 	}
-	if _, ok := ResolveWithinDir(CodexGeneratedImagesDir("another-session"), want); ok {
+	if _, ok := ResolveWithinDir(CodexGeneratedImagesDir("another-session"), file); ok {
 		t.Fatal("another session must not resolve this generated image")
 	}
 }

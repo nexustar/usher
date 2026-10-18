@@ -1059,18 +1059,28 @@ type routerDesignationRuntime struct {
 	designated   string
 	designatedAt int // number of Start calls before the designation
 	starts       int
+	streams      []chan sender.StreamEvent
 }
 
 func (r *routerDesignationRuntime) SetRouterSession(id string) {
 	r.designated, r.designatedAt = id, r.starts
 }
 
+// The stream stays open, as a real backend's does until the log is on disk:
+// a session without one is visible only while its turn runs. See endTurns.
 func (r *routerDesignationRuntime) Start(_ context.Context, req backend.StartRequest) (string, <-chan sender.StreamEvent, error) {
 	r.starts++
 	r.req = req
 	ch := make(chan sender.StreamEvent)
-	close(ch)
+	r.streams = append(r.streams, ch)
 	return r.newID, ch, nil
+}
+
+func (r *routerDesignationRuntime) endTurns() {
+	for _, ch := range r.streams {
+		close(ch)
+	}
+	r.streams = nil
 }
 
 func TestStartSessionDesignatesRouter(t *testing.T) {
@@ -1080,6 +1090,7 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 	}
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
 	rt := &routerDesignationRuntime{newID: "router-1"}
+	t.Cleanup(rt.endTurns)
 	r := New(d, map[string]backend.Backend{
 		"claude": {Runtime: rt, Transcript: transcript.Claude{}},
 		"codex":  {Runtime: rt, Transcript: transcript.Claude{}},
@@ -1100,7 +1111,7 @@ func TestStartSessionDesignatesRouter(t *testing.T) {
 	if !rt.req.Router {
 		t.Fatal("StartRequest.Router was not passed to the backend")
 	}
-	if rt.req.Cwd != routerDir || rt.req.Model != "" || rt.req.AppendSystemPrompt == "" ||
+	if rt.req.Cwd != r.RouterDir() || rt.req.Model != "" || rt.req.AppendSystemPrompt == "" ||
 		!slices.Equal(rt.req.ExtraArgs, routerArgs["codex"]) {
 		t.Fatalf("router start request = %+v", rt.req)
 	}
@@ -1297,6 +1308,7 @@ func TestRouteNewSessionDefaultsToTheTempDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := &routerDesignationRuntime{newID: "worker-1"}
+	t.Cleanup(rt.endTurns)
 	r := New(d, map[string]backend.Backend{"claude": {Runtime: rt, Transcript: transcript.Claude{}}}, "claude",
 		broker.New(), nil, sessionmeta.New("", 0), nil)
 
@@ -1548,6 +1560,7 @@ func TestStartSessionEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := &routerDesignationRuntime{newID: "s-1"}
+	t.Cleanup(rt.endTurns)
 	r := New(d, map[string]backend.Backend{
 		"claude": {Runtime: rt, Transcript: transcript.Claude{}, Models: runtimeSwitchModels{}},
 	}, "claude", broker.New(), nil, sessionmeta.New("", 0), nil)
