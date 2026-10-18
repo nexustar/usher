@@ -41,27 +41,20 @@ type fileFormat struct {
 	Agents []Profile `json:"agents"`
 }
 
-// Load reads the configured agents from path. A missing file is not an error:
-// it is the ordinary state before the first agent is created.
-func Load(path string) (*Store, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			s := New(nil)
-			s.path = path
-			return s, nil
+// Open builds a store from data, the agents list as JSON (empty for none),
+// that keeps itself through save.
+func Open(data json.RawMessage, save func([]Profile) error) (*Store, error) {
+	var profiles []Profile
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &profiles); err != nil {
+			return nil, fmt.Errorf("parse agents: %w", err)
 		}
-		return nil, fmt.Errorf("read agents file: %w", err)
-	}
-	var file fileFormat
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("parse agents file: %w", err)
 	}
 	// Same rules as the write path, so a hand-edited file can't hold anything
 	// the UI would refuse to save.
-	seen := make(map[string]struct{}, len(file.Agents))
-	for i := range file.Agents {
-		p, err := validate(file.Agents[i])
+	seen := make(map[string]struct{}, len(profiles))
+	for i := range profiles {
+		p, err := validate(profiles[i])
 		if err != nil {
 			return nil, fmt.Errorf("agents[%d]: %w", i, err)
 		}
@@ -69,18 +62,36 @@ func Load(path string) (*Store, error) {
 			return nil, fmt.Errorf("duplicate agent name %q", p.Name)
 		}
 		seen[p.Name] = struct{}{}
-		file.Agents[i] = p
+		profiles[i] = p
 	}
-	s := New(file.Agents)
-	s.path = path
+	s := New(profiles)
+	s.save = save
 	return s, nil
+}
+
+// Load opens the agents of a file of their own, {"agents": [...]}. A missing
+// file is no agents yet.
+func Load(path string) (*Store, error) {
+	var file fileFormat
+	data, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		return nil, fmt.Errorf("read agents file: %w", err)
+	default:
+		if err := json.Unmarshal(data, &file); err != nil {
+			return nil, fmt.Errorf("parse agents file: %w", err)
+		}
+	}
+	raw, _ := json.Marshal(file.Agents)
+	return Open(raw, func(profiles []Profile) error { return writeFile(path, profiles) })
 }
 
 // Store provides lookup while preserving configuration order for the UI.
 // New builds one directly from memory; production goes through Load.
 type Store struct {
 	mu       sync.RWMutex
-	path     string
+	save     func([]Profile) error
 	profiles []Profile
 	byName   map[string]Profile
 	// defaultBackend is the built-in default agent's backend.
@@ -265,22 +276,26 @@ func (s *Store) Delete(name string) error {
 }
 
 func (s *Store) persistLocked() error {
-	if s.path == "" {
+	if s.save == nil {
 		return errors.New("agents store is not writable")
 	}
-	data, err := json.MarshalIndent(fileFormat{Agents: s.profiles}, "", "  ")
+	return s.save(s.profiles)
+}
+
+func writeFile(path string, profiles []Profile) error {
+	data, err := json.MarshalIndent(fileFormat{Agents: profiles}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode agents file: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create agents directory: %w", err)
 	}
-	tmp := s.path + ".tmp"
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write agents file: %w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("replace agents file: %w", err)
 	}
 	return nil

@@ -16,9 +16,10 @@ identical but never match); and `/`, `.` and `..` (the name is a path segment
 in `/api/v1/agents/{name}`, which path-normalizing proxies rewrite before usher
 sees them).
 
-Manage them from **Settings → Agents** in the Web UI. That writes
-`<data-dir>/agents.json`, which is also the file to back up, keep in version
-control, or edit by hand:
+Manage them from **Settings → Agents** in the Web UI. That writes the
+`agents` list of `<data-dir>/settings.json`, which is also the file to back
+up, keep in version control, or edit by hand (an `agents.json` from an older
+usher moves in there on start):
 
 ```json
 {
@@ -58,7 +59,7 @@ One agent always exists: `default`. A request that names no agent, backend or
 model is created from it — a session the router starts on its own, a chat
 frontend's plain instruction, an API call with only a message. Until you save
 it, it is usher's first available backend with that backend's default model,
-and it is not written to `agents.json`. Saving it in Settings stores it like
+and it is not written to `settings.json`. Saving it in Settings stores it like
 any other agent, its prompt, flags and auto-approve included; it cannot be
 renamed, and deleting it brings the built-in one back.
 

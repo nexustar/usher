@@ -109,15 +109,10 @@ func TestUpdate(t *testing.T) {
 
 // A failed write leaves the store as it was, rather than half-applied.
 func TestWriteFailureLeavesStoreUnchanged(t *testing.T) {
-	dir := t.TempDir()
 	store := testStore(t, Task{Name: "a", Enabled: true, Cron: "0 3 * * *", Prompt: "p"})
 	before := store.List()
 
-	// A directory where the file goes: the rename cannot land.
-	store.path = filepath.Join(dir, "blocked")
-	if err := os.MkdirAll(store.path, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	store.save = func([]Task) error { return errors.New("disk full") }
 	if _, err := store.Create(Task{Name: "b", Enabled: true, Cron: "0 4 * * *", Prompt: "p"}); err == nil {
 		t.Fatal("Create succeeded with an unwritable path")
 	}

@@ -208,11 +208,21 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load auth: %w", err)
 	}
-	agents, err := agentprofile.Load(filepath.Join(*dataDir, "agents.json"))
+	cfg := settings.New(filepath.Join(*dataDir, "settings.json"))
+	// A read-only companion leaves the files to the instance that owns them,
+	// which may predate settings.json holding them.
+	if !*readOnly {
+		for _, key := range []string{"agents", "schedules"} {
+			if err := cfg.ImportFile(key, filepath.Join(*dataDir, key+".json")); err != nil {
+				return fmt.Errorf("move %s into settings.json: %w", key, err)
+			}
+		}
+	}
+	agents, err := agentprofile.Open(cfg.Agents(), func(p []agentprofile.Profile) error { return cfg.SetAgents(p) })
 	if err != nil {
 		return err
 	}
-	schedules, err := schedule.Load(filepath.Join(*dataDir, "schedules.json"))
+	schedules, err := schedule.Open(cfg.Schedules(), func(t []schedule.Task) error { return cfg.SetSchedules(t) })
 	if err != nil {
 		return err
 	}
@@ -316,7 +326,7 @@ func serve(args []string) error {
 	term := terminal.New("tmux", *tmuxSocket+"-terminal", *terminalShell, logger)
 	agents.SetDefaultBackend(defaultBackend)
 	r := router.New(d, backends, defaultBackend, b, h, meta, term)
-	r.SetSettings(settings.New(filepath.Join(*dataDir, "settings.json")), filepath.Join(*dataDir, "router"))
+	r.SetSettings(cfg, filepath.Join(*dataDir, "router"))
 
 	// Web push: a second consumer of the broker/hook event seams, delivering
 	// turn-done and permission notifications to subscribed browsers. On by

@@ -56,30 +56,25 @@ type fileFormat struct {
 // handful of them, so a slice is the whole index.
 type Store struct {
 	mu    sync.RWMutex
-	path  string
+	save  func([]Task) error
 	tasks []Task
 }
 
-// Load reads tasks from path. A missing file is not an error: it is the
-// ordinary state before the first task is created.
-func Load(path string) (*Store, error) {
-	s := New(nil)
-	s.path = path
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return s, nil
+// Open builds a store from data, the tasks as JSON (empty for none), that
+// keeps itself through save.
+func Open(data json.RawMessage, save func([]Task) error) (*Store, error) {
+	var tasks []Task
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &tasks); err != nil {
+			return nil, fmt.Errorf("parse schedules: %w", err)
 		}
-		return nil, fmt.Errorf("read schedules file: %w", err)
 	}
-	var file fileFormat
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("parse schedules file: %w", err)
-	}
+	s := New(nil)
+	s.save = save
 	// Same rules as the write path, so a hand-edited file cannot hold a spec
 	// that would fail silently at 3am.
-	for i := range file.Schedules {
-		task, err := validate(file.Schedules[i])
+	for i := range tasks {
+		task, err := validate(tasks[i])
 		if err != nil {
 			return nil, fmt.Errorf("schedules[%d]: %w", i, err)
 		}
@@ -92,6 +87,24 @@ func Load(path string) (*Store, error) {
 		s.tasks = append(s.tasks, task)
 	}
 	return s, nil
+}
+
+// Load opens the tasks of a file of their own, {"schedules": [...]}. A
+// missing file is no tasks yet.
+func Load(path string) (*Store, error) {
+	var file fileFormat
+	data, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		return nil, fmt.Errorf("read schedules file: %w", err)
+	default:
+		if err := json.Unmarshal(data, &file); err != nil {
+			return nil, fmt.Errorf("parse schedules file: %w", err)
+		}
+	}
+	raw, _ := json.Marshal(file.Schedules)
+	return Open(raw, func(tasks []Task) error { return writeFile(path, tasks) })
 }
 
 func New(tasks []Task) *Store {
@@ -194,31 +207,38 @@ func (s *Store) copyLocked() []Task {
 	return append([]Task(nil), s.tasks...)
 }
 
-// commitLocked writes tasks to the file and adopts them only once that lands,
-// so a store that failed to save is a store that did not change.
+// commitLocked saves tasks and adopts them only once that lands, so a store
+// that failed to save is a store that did not change.
 func (s *Store) commitLocked(tasks []Task) error {
-	if s.path == "" {
+	if s.save == nil {
 		return errors.New("schedule store is not writable")
 	}
 	if tasks == nil {
 		tasks = []Task{}
 	}
+	if err := s.save(tasks); err != nil {
+		return err
+	}
+	s.tasks = tasks
+	return nil
+}
+
+func writeFile(path string, tasks []Task) error {
 	data, err := json.MarshalIndent(fileFormat{Schedules: tasks}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode schedules file: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create schedules directory: %w", err)
 	}
-	tmp := s.path + ".tmp"
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write schedules file: %w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("replace schedules file: %w", err)
 	}
-	s.tasks = tasks
 	return nil
 }
 

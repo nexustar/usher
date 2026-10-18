@@ -4,6 +4,7 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,8 +19,11 @@ type Router struct {
 	SessionID string `json:"session_id,omitempty"`
 }
 
+// fileFormat keeps agents and schedules raw: their packages own their shape.
 type fileFormat struct {
-	Router Router `json:"router,omitzero"`
+	Router    Router          `json:"router,omitzero"`
+	Agents    json.RawMessage `json:"agents,omitempty"`
+	Schedules json.RawMessage `json:"schedules,omitempty"`
 }
 
 type Store struct {
@@ -57,28 +61,98 @@ func (s *Store) SetRouterSession(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.f.Router.SessionID = id
-	s.persist()
+	if err := s.persistLocked(); err != nil {
+		slog.Warn("settings: save", "err", err)
+	}
 }
 
-func (s *Store) persist() {
-	if s.path == "" {
-		return
-	}
-	data, err := json.Marshal(s.f)
+func (s *Store) Agents() json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.f.Agents
+}
+
+func (s *Store) SetAgents(v any) error { return s.setRaw(&s.f.Agents, v) }
+
+func (s *Store) Schedules() json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.f.Schedules
+}
+
+func (s *Store) SetSchedules(v any) error { return s.setRaw(&s.f.Schedules, v) }
+
+// setRaw saves v as field, keeping the old value if that fails.
+func (s *Store) setRaw(field *json.RawMessage, v any) error {
+	data, err := json.Marshal(v)
 	if err != nil {
-		slog.Warn("settings: encode", "err", err)
-		return
+		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := *field
+	*field = data
+	if err := s.persistLocked(); err != nil {
+		*field = prev
+		return err
+	}
+	return nil
+}
+
+// ImportFile moves the agents or schedules of a file from before settings.json
+// held them — the same key at its top level — into this store, then removes
+// the file. A section already here wins.
+func (s *Store) ImportFile(key, path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var legacy map[string]json.RawMessage
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var field *json.RawMessage
+	switch key {
+	case "agents":
+		field = &s.f.Agents
+	case "schedules":
+		field = &s.f.Schedules
+	default:
+		return fmt.Errorf("settings has no %q section", key)
+	}
+	if len(*field) == 0 && len(legacy[key]) > 0 {
+		*field = legacy[key]
+		if err := s.persistLocked(); err != nil {
+			*field = nil
+			return err
+		}
+	}
+	return os.Remove(path)
+}
+
+func (s *Store) persistLocked() error {
+	if s.path == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(s.f, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode settings: %w", err)
+	}
+	data = append(data, '\n')
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		slog.Warn("settings: mkdir", "err", err)
-		return
+		return fmt.Errorf("create settings directory: %w", err)
 	}
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		slog.Warn("settings: write", "err", err)
-		return
+		return fmt.Errorf("write settings: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
-		slog.Warn("settings: rename", "err", err)
+		return fmt.Errorf("replace settings: %w", err)
 	}
+	return nil
 }
