@@ -2415,6 +2415,25 @@ pre.raw-markdown {
   .details-dialog .details-body { max-height: calc(100dvh - 1.5rem - 52px); }
 }
 
+/* ----- Installed app without a title bar -------------------------------- */
+/* The window controls float over the top corners (right on Windows/Linux,
+ * both on macOS). Content steps below them instead of beside them, so the
+ * header keeps its full width. */
+@media (display-mode: window-controls-overlay) {
+  .main-wrap > header,
+  .sidebar-brand {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+  .main-wrap > header :is(a, button, input, select),
+  .sidebar-brand :is(a, button) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+  .main-wrap > header { padding-top: env(titlebar-area-height, 0px); }
+  #sidebar { padding-top: max(1rem, env(titlebar-area-height, 0px)); }
+}
+
 /* ----- Dark mode -------------------------------------------------------- */
 /* Neutral grays from #131313 (sidebar) to #242424 (raised). */
 @media (prefers-color-scheme: dark) {
