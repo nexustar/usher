@@ -7,11 +7,11 @@ import {
 // Base 16-colour ANSI palette (30-37 normal, 90-97 bright), toned to read on
 // the dark terminal background.
 const ANSI_COLORS = [
-  '#484f58', '#ff7b72', '#3fb950', '#d29922', '#58a6ff', '#bc8cff', '#39c5cf', '#b1bac4',
-  '#6e7681', '#ffa198', '#56d364', '#e3b341', '#79c0ff', '#d2a8ff', '#56d4dd', '#f0f6fc',
+  '#4e4e4e', '#ff7b72', '#3fb950', '#d29922', '#58a6ff', '#bc8cff', '#39c5cf', '#b9b9b9',
+  '#757575', '#ffa198', '#56d364', '#e3b341', '#79c0ff', '#d2a8ff', '#56d4dd', '#f5f5f5',
 ];
-const TERM_BG = '#0d1117';
-const TERM_FG = '#c9d1d9';
+const TERM_BG = 'var(--term-bg)';
+const TERM_FG = 'var(--term-fg)';
 
 function color256(n) {
   if (n < 16) return ANSI_COLORS[n];

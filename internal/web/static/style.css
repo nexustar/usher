@@ -6,62 +6,72 @@
    * media query below activates. */
   color-scheme: light dark;
 
-  /* Surfaces. Inverted layering: --bg is the main canvas (slightly subdued),
-   * --bg-chrome is the "lifted chrome" (sidebar, header, modal, inputs).
-   * The page never has a pure-white expanse — content sits on canvas. */
-  --bg-canvas: #fafafa;
-  --bg-chrome: #ffffff;       /* sidebar, header, modal, inputs */
-  --bg-subtle: #f6f8fa;         /* table hover, render-mode hover, modal tool-input */
-  --bg-faint: #fcfcfc;          /* raw-markdown container */
-  --bg-router: #f0f2f5;        /* sidebar Router entry fill */
-  --bg-hover: #eef0f3;          /* sidebar item hover, sidebar-new hover */
-  --bg-accent: #e3edf9;         /* sidebar router/list/new active */
+  /* Surfaces. In both themes: sidebar < canvas < raised. */
+  --bg-sidebar: #f0f0f2;        /* sidebar */
+  --bg-canvas: #fbfbfc;         /* main column, header, dialog body */
+  --bg-raised: #ffffff;         /* composer, popovers, cards, inputs, buttons */
+  --bg-inset: #f2f2f4;          /* recessed blocks: tool input, table head */
+  --bg-hover: rgb(0 0 6 / 7%);  /* overlay, so it works on any surface */
+  --toggle-thumb: #ffffff;
+  --scrollbar: rgb(0 0 6 / 22%);
 
-  /* Text — three muted levels, plus a faint empty-state shade */
-  --text: #1f2328;
-  --text-muted: #4b5563;        /* secondary copy, toggle labels */
-  --text-faint: #6b7280;        /* headings, hints, muted */
-  --text-disabled: #9ca3af;     /* placeholders, empty-state listings */
-  --text-empty-state: #b1b6bd;  /* "(no response yet)" italic */
+  /* Text */
+  --text: #232325;
+  --text-muted: #545456;        /* secondary copy, toggle labels */
+  --text-faint: #68686a;        /* headings, hints, muted */
+  --text-disabled: #a2a2a4;     /* archived rows */
 
   /* Borders */
-  --border: #d0d7de;            /* default visible border */
-  --border-muted: #eee;         /* subtle separators */
-  --border-strong: #b1b6bd;     /* disabled button surface */
-  --border-hr: #e0e3e8;
+  --border: #d6d6d8;            /* default visible border */
+  --border-muted: #e2e2e4;     /* subtle separators */
+  --border-strong: #b5b5b7;     /* disabled button surface */
 
   /* Accent (blue) */
-  --accent: #1f6feb;
-  --accent-bg: #e3edf9;
-  --accent-border: #9ec5fe;
+  --accent: #2061b6;
+  --accent-fill: #2a6ac0;       /* filled buttons, under white text */
+  --accent-bg: #d9e9ff;
+  --bubble-bg: #e4eefc;         /* user message */
+  --accent-border: #9dc0f1;
+
+  /* Navigation: where you are, in a warm gray rather than the action blue */
+  --nav-selected-bg: #e3dfda;
+  --nav-accent: #7c4a25;        /* the Router icon */
+  --nav-card-bg: var(--bg-canvas); /* the Router entry at rest */
+  --card-ring: rgb(0 0 0 / 6%);
 
   /* Agent purple */
   --purple: #6e40c9;
 
   /* Backend marks: Claude coral, Codex periwinkle, Pi's official monochrome. */
-  --claude: #bd5b3d;
-  --codex: #6f76d6;
+  --claude: #af4f31;
+  --codex: #5e64c2;
   --pi: #09090b;
 
   /* Code */
-  --inline-code-bg: #e4e7eb;
-  --code-block-bg: #1f2328;
-  --code-block-text: #e6edf3;
+  --inline-code-bg: #e7e7e9;
+  --code-block-bg: #232325;
+  --code-block-text: #ececee;
 
   /* Terminal mirror font. Sarasa Fixed keeps CJK at 2× the cell and box-drawing
    * half-width so columns align. Region variants listed so whichever is installed
    * wins before the system-monospace fallback. */
   --term-font: "Sarasa Fixed SC", "Sarasa Fixed TC", "Sarasa Fixed HC", "Sarasa Fixed J", "Sarasa Fixed K", ui-monospace, "SF Mono", Menlo, monospace;
 
+  /* Terminal panel: always dark, in both themes */
+  --term-bg: #111111;
+  --term-fg: #d0d0d0;
+  --term-muted: #939393;
+  --term-border: #353535;
+  --term-seam: #262626;
+  --term-hover: #1b1b1b;
+
   /* Semantic */
   --danger: #cf222e;
+  --danger-fill: #cf222e;       /* filled buttons, under white text */
   --danger-text: #b42318;
-  --warning-bg: #fff8e1;
-  --warning-border: #b08800;
   --warning-text: #8a6700;
-  --success: #1a7f37;
   --live-dot: #1f9e53; /* green for the session status dot */
-  --unread: #3b82f6;   /* status dot for a session with an unseen response */
+  --unread: var(--accent-fill); /* status dot for a session with an unseen response */
 
   /* Layout */
   --sidebar-pad-x: 0.75rem;
@@ -101,13 +111,14 @@
      no radius at all. */
   --radius-sm: 4px;  /* chips, menu rows, nested surfaces */
   --radius: 6px;     /* standalone controls: buttons, inputs, images */
-  --radius-lg: 8px;  /* floating panels: composer, popovers, cards */
+  --radius-lg: 8px;  /* floating panels: popovers, menus, cards; the send button */
+  --radius-card: 12px; /* the composer and tool cards */
   --radius-xl: 10px; /* the settings dialog */
 
   /* Overlays / shadows */
   --shadow-sidebar: rgba(0, 0, 0, 0.15);
   --shadow-modal: rgba(0, 0, 0, 0.25);
-  --modal-overlay: rgba(15, 23, 42, 0.45);
+  --modal-overlay: rgba(0, 0, 6, 0.45);
 }
 
 /* The UA's [hidden]{display:none} loses to any author display rule, so every
@@ -115,6 +126,15 @@
  * has bitten .term-panel, .term-ctrl-menu and .new-cwd-field; one rule ends
  * the category. */
 [hidden] { display: none !important; }
+
+/* Thin scrollbars on a clear track instead of the platform's classic bars.
+ * scrollbar-color inherits; scrollbar-width does not. */
+:root { scrollbar-color: var(--scrollbar) transparent; }
+* { scrollbar-width: thin; }
+.content pre,
+.chat-message.assistant .tool-details .tool-input,
+.chat-message.assistant .tool-details .tool-body pre,
+.term-screen { scrollbar-color: rgb(255 255 255 / 22%) transparent; }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -141,7 +161,7 @@ body {
   transform: translateX(0);
   transition: transform 0.15s ease;
   border-right: 1px solid var(--border-muted);
-  background: var(--bg-chrome);
+  background: var(--bg-sidebar);
   padding: 1rem 0 0;
   overflow: hidden;
   display: flex;
@@ -166,15 +186,20 @@ body {
   margin-left: 1.15rem;
   margin-right: 1.15rem;
   border: none;
-  background: var(--bg-router);
+  background: var(--nav-card-bg);
+  box-shadow: 0 0 0 1px var(--card-ring), 0 1px 2px rgb(0 0 0 / 6%);
   border-radius: var(--radius);
   margin-bottom: 0.5rem;
-  color: var(--accent);
+  color: var(--text);
   text-decoration: none;
 }
-.sidebar-router .router-icon { flex-shrink: 0; opacity: 0.85; }
-.sidebar-router:hover { background: var(--bg-hover); }
-.sidebar-router.active { background: var(--bg-accent); font-weight: 500; }
+.sidebar-router .router-icon { flex-shrink: 0; opacity: 0.85; color: var(--nav-accent); }
+.sidebar-router:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
+.sidebar-router.active {
+  background: var(--nav-selected-bg);
+  box-shadow: none;
+  font-weight: 500;
+}
 .sidebar-section { margin-bottom: 0; flex: 1; overflow-y: auto; min-height: 0; padding: 0 var(--sidebar-pad-x); }
 .sidebar-heading {
   border-top: 1px solid var(--border-muted);
@@ -210,7 +235,7 @@ body {
   font-weight: 400;
 }
 .sidebar-new:hover, .sidebar-group-toggle:hover { background: var(--bg-hover); color: var(--text); }
-.sidebar-new.active { background: var(--bg-accent); color: var(--accent); }
+.sidebar-new.active { background: var(--nav-selected-bg); color: var(--text); }
 .sidebar-list {
   list-style: none;
   padding: 0;
@@ -250,9 +275,9 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: var(--font-sm);
-  color: var(--text-disabled);
+  color: var(--text-faint);
 }
-.sidebar-list li.sidebar-item a.active { background: var(--bg-accent); color: var(--accent); }
+.sidebar-list li.sidebar-item a.active { background: var(--nav-selected-bg); color: var(--text); }
 .sidebar-list li.sidebar-item a .running-dot {
   margin-left: 0;
   margin-right: 0.25rem;
@@ -283,14 +308,17 @@ body {
   line-height: 1;
   border-radius: var(--radius-sm);
   padding: 0;
-  /* Row-hover color (uniform on every row, incl. focused) so the chip masks
-   * the title tail. pointer-events:none keeps that tail clickable while hidden. */
-  background: var(--bg-hover);
+  /* The row's own fill, made opaque, so the chip masks the title tail.
+   * pointer-events:none keeps that tail clickable while hidden. */
+  background: linear-gradient(var(--bg-hover), var(--bg-hover)), var(--bg-sidebar);
   opacity: 0;
   pointer-events: none;
   /* No transition: mouse-out is instant, so the chip vanishes with the
    * (untransitioned) row highlight instead of lingering. Fade-IN is on the
-   * hover rule below, over the now-solid --bg-hover row, so only the ⋮ shows. */
+   * hover rule below, over the matching row fill, so only the ⋮ shows. */
+}
+.sidebar-list li.sidebar-item a.active ~ .kebab-btn {
+  background: var(--nav-selected-bg);
 }
 
 /* Hover visuals gated behind real hover support (see iOS tap-to-hover note
@@ -309,7 +337,7 @@ body {
   .sidebar-list li.sidebar-item:hover .row-cwd,
   .sidebar-list li.sidebar-item:has(.kebab-btn:is(:focus, .open)) .row-cwd { opacity: 0; }
   .kebab-btn:hover { color: var(--text); }
-  .sidebar-list li.sidebar-item a.active ~ .kebab-btn:hover { color: var(--accent); }
+  .sidebar-list li.sidebar-item a.active ~ .kebab-btn:hover { color: var(--text); }
 }
 
 /* The row whose actions popover is open — needed on touch, where the kebab
@@ -336,7 +364,7 @@ body {
   margin: 0;
   font-family: inherit;
   font-size: var(--font-meta);
-  color: var(--text-disabled);
+  color: var(--text-faint);
   cursor: pointer;
   border-radius: var(--radius-sm);
 }
@@ -346,7 +374,7 @@ body {
 #kebab-popover {
   position: fixed;
   z-index: 200;
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
@@ -372,7 +400,7 @@ body {
 #kebab-popover .kebab-item.kebab-danger { color: var(--danger-text); }
 .sidebar-empty {
   padding: 0.4rem 0.5rem;
-  color: var(--text-disabled);
+  color: var(--text-faint);
   font-style: italic;
 }
 #sidebar-pinned:not(:empty) { margin-bottom: 0.75rem; }
@@ -382,7 +410,7 @@ body {
   /* Group chrome, not a group member: the session rows it heads are a tier up,
    * the archive toggle closing the group a tier down. */
   font-size: var(--font-sm);
-  color: var(--text-disabled);
+  color: var(--text-faint);
   padding: 0.3rem 0.5rem 0.1rem;
   display: flex;
   align-items: center;
@@ -428,7 +456,7 @@ body {
   padding: 0 0.45rem 0 0.6rem;
   height: 42px;
   border-bottom: 1px solid var(--border-muted);
-  background: var(--bg-chrome);
+  background: var(--bg-canvas);
   position: sticky;
   top: 0;
   z-index: 10;
@@ -589,7 +617,7 @@ body.sidebar-collapsed .mobile-toggle {
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   color: var(--text);
   flex: 1 1 12rem; /* fill the row; "show archived" sits at the right edge */
   min-width: 0; /* let the select shrink below its longest option on phones */
@@ -664,7 +692,7 @@ body.sidebar-collapsed .mobile-toggle {
    * box instead so it sits on the title's optical midline. */
   align-self: center;
 }
-.subtitle-menu:active, .subtitle-menu.open { background: var(--bg-router); }
+.subtitle-menu:active, .subtitle-menu.open { background: var(--bg-hover); }
 @media (hover: hover) {
   .subtitle-menu:hover .subtitle-chevron { color: var(--text); }
 }
@@ -687,15 +715,15 @@ th, td {
   border-bottom: 1px solid var(--border-muted);
   vertical-align: top;
 }
-th { color: var(--text-faint); font-weight: 500; background: var(--bg-chrome); }
+th { color: var(--text-faint); font-weight: 500; background: var(--bg-canvas); }
 tbody tr { cursor: pointer; }
-tbody tr:hover { background: var(--bg-subtle); }
+tbody tr:hover { background: var(--bg-hover); }
 td.title { font-weight: 500; }
 td.id, td.cwd {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--font-sm);
 }
-td.id { color: var(--text-disabled); }
+td.id { color: var(--text-faint); }
 
 .session-title {
   color: var(--text);
@@ -746,7 +774,7 @@ td.id { color: var(--text-disabled); }
 }
 .diff-add { color: #3fb950; }
 .diff-del { color: #f85149; }
-.diff-hunk { color: #8b949e; }
+.diff-hunk { color: #939393; }
 .content ul, .content ol { margin: 0.4rem 0; padding-left: 1.4rem; }
 .content li { margin: 0.15rem 0; }
 .content a { color: var(--accent); text-decoration: underline; }
@@ -813,7 +841,7 @@ td.id { color: var(--text-disabled); }
   border-left: 3px solid var(--border);
   color: var(--text-muted);
 }
-.content hr { border: 0; border-top: 1px solid var(--border-hr); margin: 0.6rem 0; }
+.content hr { border: 0; border-top: 1px solid var(--border-muted); margin: 0.6rem 0; }
 .content img { max-width: 100%; height: auto; }
 .content table {
   border-collapse: collapse;
@@ -827,7 +855,7 @@ td.id { color: var(--text-disabled); }
   padding: 0.3rem 0.6rem;
   text-align: left;
 }
-.content th { background: var(--bg-subtle); font-weight: 600; }
+.content th { background: var(--bg-inset); font-weight: 600; }
 .content del { color: var(--text-faint); }
 
 /* Composer: one bordered card, textarea above a toolbar (tools left, send
@@ -837,8 +865,8 @@ td.id { color: var(--text-disabled); }
   position: relative;
   margin-top: 0.5rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-chrome);
+  border-radius: var(--radius-card);
+  background: var(--bg-raised);
 }
 .command-preview {
   position: absolute;
@@ -851,7 +879,7 @@ td.id { color: var(--text-disabled); }
   padding: 0.3rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
 }
 .command-option {
@@ -868,8 +896,8 @@ td.id { color: var(--text-disabled); }
   font: inherit;
   text-align: left;
 }
-.command-option:hover,
-.command-option.selected { background: var(--bg-subtle); }
+.command-option:hover { background: var(--bg-hover); }
+.command-option.selected { background: var(--accent-bg); }
 .command-option-main {
   display: flex;
   min-width: 0;
@@ -923,7 +951,7 @@ button.session-usage {
   font-size: var(--font-sm);
   cursor: pointer;
 }
-button.session-usage:hover { background: var(--bg-subtle); }
+button.session-usage:hover { background: var(--bg-hover); }
 /* Shows what fits in the bar: one clipped line that wraps, so the effort and
  * then the model drop out whole as the bar narrows. The empty ::before holds
  * the line's head, where the model could never wrap away, and its height
@@ -948,7 +976,7 @@ button.session-usage:hover { background: var(--bg-subtle); }
 }
 button.session-usage[data-backend="codex"] .usage-model { color: var(--codex); }
 button.session-usage[data-backend="pi"] .usage-model { color: var(--pi); }
-.usage-effort { white-space: nowrap; margin-left: 0.4rem; color: var(--text-disabled); }
+.usage-effort { white-space: nowrap; margin-left: 0.4rem; color: var(--text-faint); }
 .usage-model:empty,
 .usage-effort:empty { display: none; }
 .usage-ring {
@@ -957,14 +985,7 @@ button.session-usage[data-backend="pi"] .usage-model { color: var(--pi); }
   height: 1.25rem;
   border-radius: 50%;
   background: conic-gradient(var(--accent) var(--usage-pct, 0%), var(--border-strong) 0);
-  position: relative;
-}
-.usage-ring::after {
-  content: "";
-  position: absolute;
-  inset: 0.16rem;
-  border-radius: 50%;
-  background: var(--bg-chrome);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 0.16rem), #000 calc(100% - 0.16rem + 0.5px));
 }
 button.session-usage.unknown .usage-ring {
   background: var(--border-strong);
@@ -993,14 +1014,16 @@ button.session-usage.unknown .usage-ring {
 /* Direct children only: not the model picker or its menu, which sit inside. */
 .composer-send > button {
   padding: 0.32rem 0.8rem;
-  border: 1px solid var(--accent);
-  background: var(--accent);
+  border: 1px solid var(--accent-fill);
+  background: var(--accent-fill);
   color: white;
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   cursor: pointer;
   font: inherit;
   line-height: 1.2;
 }
+::placeholder { color: var(--text-faint); opacity: 1; }
+.composer-send > button:hover:not(:disabled) { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
 .composer-send > button:disabled {
   background: var(--border-strong);
   border-color: var(--border-strong);
@@ -1008,7 +1031,7 @@ button.session-usage.unknown .usage-ring {
 }
 .render-pill {
   display: inline-flex;
-  background: var(--bg-router);
+  background: color-mix(in srgb, currentColor 10%, transparent);
   border-radius: var(--radius);
   padding: 2px;
   margin-left: 0.25rem;
@@ -1021,14 +1044,14 @@ button.session-usage.unknown .usage-ring {
   background: transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  color: var(--text-faint);
+  color: var(--text-muted);
   line-height: 1.4;
 }
-.render-pill-opt:hover { color: var(--text-muted); }
+.render-pill-opt:hover { color: var(--text); background: var(--bg-hover); }
 .render-pill-opt[aria-pressed="true"] {
-  background: var(--bg-chrome);
+  background: var(--toggle-thumb);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px 1px rgb(0 0 0 / 7%), 0 2px 6px 2px rgb(0 0 0 / 3%);
 }
 
 .sidebar-footer {
@@ -1056,7 +1079,7 @@ button.session-usage.unknown .usage-ring {
   bottom: calc(100% - 0.3rem);
   left: 0.35rem;
   right: 0.35rem;
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
@@ -1079,7 +1102,7 @@ button.session-usage.unknown .usage-ring {
   box-sizing: border-box;
 }
 .settings-item:hover { background: var(--bg-hover); }
-.settings-item.active { background: var(--bg-accent); color: var(--accent); }
+.settings-item.active { background: var(--nav-selected-bg); color: var(--text); }
 .settings-item.settings-danger { color: var(--danger-text); }
 
 /* `pre.raw-markdown` (not just `.raw-markdown`) — equal specificity to
@@ -1125,7 +1148,7 @@ pre.raw-markdown {
 .chat-message .role:empty { display: none; }
 .chat-message.user .role .ts { margin-left: 0; }
 .chat-message.user .content {
-  background: var(--accent-bg);
+  background: var(--bubble-bg);
   border-radius: 20px;
   padding: 0.45rem 0.75rem;
   max-width: min(85%, 640px);
@@ -1168,7 +1191,7 @@ pre.raw-markdown {
 .chat-message.assistant .tool-details {
   margin: 0.4rem 0;
   border: 1px solid var(--border-muted);
-  border-radius: 12px;
+  border-radius: var(--radius-card);
 }
 /* Consecutive tool calls merge into one visual group. */
 .chat-message.assistant .tool-details + .tool-details {
@@ -1237,7 +1260,7 @@ pre.raw-markdown {
   color: var(--code-block-text);
   padding: 0.6rem 0.75rem;
   margin: 0;
-  border-radius: 0 0 12px 12px;
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--font-sm);
   line-height: 1.4;
@@ -1257,9 +1280,9 @@ pre.raw-markdown {
   content: '$ ';
   opacity: 0.5;
 }
-.chat-message.placeholder .content { color: var(--text-disabled); font-style: italic; }
+.chat-message.placeholder .content { color: var(--text-faint); font-style: italic; }
 .live-working {
-  color: var(--text-disabled);
+  color: var(--text-faint);
   font-style: italic;
   padding: 0.4rem 0.25rem;
   flex-shrink: 0;
@@ -1278,15 +1301,15 @@ pre.raw-markdown {
   padding: 0.3rem 0.9rem;
   border: 1px dashed var(--border);
   border-radius: 999px;
-  background: var(--bg-subtle);
+  background: var(--bg-inset);
   color: var(--text-faint);
   font-size: var(--font-base);
   cursor: pointer;
 }
-.load-earlier:hover { background: var(--bg-hover); color: var(--text); }
+.load-earlier:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); color: var(--text); }
 .chat-message .role .ts {
   font-size: var(--font-meta);
-  color: var(--text-disabled);
+  color: var(--text-faint);
   margin-left: 0.5rem;
   text-transform: none;
   letter-spacing: 0;
@@ -1304,7 +1327,7 @@ pre.raw-markdown {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--text-disabled);
+  color: var(--text-faint);
   font-size: var(--font-meta);
   line-height: 1.4;
   cursor: pointer;
@@ -1343,7 +1366,7 @@ pre.raw-markdown {
 }
 
 .pinned-label {
-  color: var(--text-disabled);
+  color: var(--text-faint);
 }
 
 /* Backend mark before a session title; tinted per backend via currentColor. */
@@ -1379,7 +1402,7 @@ pre.raw-markdown {
 }
 .auto-approve-toggle:hover,
 .term-toggle:hover,
-.upload-btn:hover { background: var(--bg-subtle); }
+.upload-btn:hover { background: var(--bg-hover); }
 .auto-approve-toggle:disabled,
 .term-toggle:disabled,
 .upload-btn:disabled { opacity: 0.6; cursor: progress; }
@@ -1418,7 +1441,7 @@ pre.raw-markdown {
   height: 11rem;
   overflow: auto;
   padding: 0.4rem 0.6rem;
-  background: #0d1117;
+  background: var(--term-bg);
   border: 1px solid var(--border);
   border-bottom: none;
   border-radius: var(--radius) var(--radius) 0 0;
@@ -1434,11 +1457,10 @@ pre.raw-markdown {
   font-family: var(--term-font);
   font-size: var(--term-size);
   line-height: 1.25;
-  color: #c9d1d9;
+  color: var(--term-fg);
 }
-/* Status messages ("connecting…", "terminal closed") wrap within the box and
- * use the page's muted colour instead of the terminal palette. */
-.term-grid.muted { color: var(--text-faint); white-space: pre-wrap; width: auto; max-width: 100%; }
+/* Status messages ("connecting…", "terminal closed") wrap within the box. */
+.term-grid.muted { color: var(--term-muted); white-space: pre-wrap; width: auto; max-width: 100%; }
 .term-keys {
   display: grid;
   grid-template-columns: repeat(8, 1fr);  /* one row; columns shrink to fit narrow phones */
@@ -1460,7 +1482,7 @@ pre.raw-markdown {
   max-height: 60vh;   /* short viewports (landscape phone): scroll, don't clip */
   overflow-y: auto;
   padding: 0.25rem;
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
@@ -1476,22 +1498,22 @@ pre.raw-markdown {
   text-align: left;
   cursor: pointer;
 }
-.term-ctrl-menu button:hover { background: var(--bg-subtle); }
+.term-ctrl-menu button:hover { background: var(--bg-hover); }
 .term-keys button {
   min-width: 0;          /* let the grid column shrink below content width */
   min-height: 2rem;      /* finger-friendly tap target */
   font-size: var(--font-input);       /* ≥16px keeps one font set; tappable on mobile */
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   border: 1px solid var(--border);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   color: var(--text);
   border-radius: var(--radius);
   cursor: pointer;
 }
-.term-keys button:hover { background: var(--bg-subtle); }
-.term-keys button:active { background: var(--bg-hover); }
+.term-keys button:hover,
+.term-keys button:active { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
 .term-keys button.term-key-err,
-.term-ctrl-menu button.term-key-err { background: var(--danger); border-color: var(--danger); color: #fff; }
+.term-ctrl-menu button.term-key-err { background: var(--danger-fill); border-color: var(--danger-fill); color: #fff; }
 /* Command line joined to the terminal screen. */
 .term-input-row {
   box-sizing: border-box;
@@ -1500,9 +1522,9 @@ pre.raw-markdown {
   gap: 0.5rem;
   align-items: center;
   padding: 0.25rem 0.4rem 0.25rem 0.6rem;
-  background: #0d1117;
+  background: var(--term-bg);
   border: 1px solid var(--border);
-  border-top: 1px solid #21262d;  /* faint internal seam below the screen */
+  border-top: 1px solid var(--term-seam);  /* faint internal seam below the screen */
   border-radius: 0 0 var(--radius) var(--radius);
 }
 .term-prompt {
@@ -1521,27 +1543,27 @@ pre.raw-markdown {
   padding: 0.3rem 0;
   border: none;
   background: transparent;
-  color: #c9d1d9;
+  color: var(--term-fg);
 }
 .term-input-row textarea:focus { outline: none; }
-.term-input-row textarea::placeholder { color: #6e7681; }
+.term-input-row textarea::placeholder { color: var(--term-muted); }
 .term-input-row button {
   align-self: center;
   padding: 0.2rem 0.6rem;
   min-width: 3.5rem;
   font-size: var(--font-input);
-  border: 1px solid #30363d;
+  border: 1px solid var(--term-border);
   border-radius: var(--radius);
   background: transparent;
-  color: #c9d1d9;
+  color: var(--term-fg);
   cursor: pointer;
 }
-.term-input-row button:hover { background: #161b22; }
+.term-input-row button:hover { background: var(--term-hover); }
 .term-input-row button:disabled { opacity: 0.6; cursor: progress; }
 
 .composer-send > button.cancel {
-  border-color: var(--danger);
-  background: var(--danger);
+  border-color: var(--danger-fill);
+  background: var(--danger-fill);
 }
 .composer-send > button.cancel:disabled {
   background: var(--border-strong);
@@ -1553,7 +1575,7 @@ pre.raw-markdown {
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
 }
 .session-permission .interaction { padding: 0; border: 0; }
 .session-interactions {
@@ -1561,7 +1583,7 @@ pre.raw-markdown {
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
 }
 .session-interactions .interaction:first-child { padding-top: 0; }
 .session-interactions .interaction:last-child { padding-bottom: 0; }
@@ -1572,7 +1594,7 @@ pre.raw-markdown {
 .interaction .meta .interaction-source:hover { text-decoration: underline; }
 .interaction .meta .muted { margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--font-sm); }
 .interaction .tool-input {
-  background: var(--bg-subtle);
+  background: var(--bg-inset);
   padding: 0.5rem;
   font-size: var(--font-sm);
   max-height: 10rem;
@@ -1588,26 +1610,26 @@ pre.raw-markdown {
   border: 1px solid transparent;
 }
 .interaction button.allow.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: white;
 }
 .interaction button.deny.primary {
-  background: var(--danger);
-  border-color: var(--danger);
+  background: var(--danger-fill);
+  border-color: var(--danger-fill);
   color: white;
 }
 .interaction button.allow.secondary {
-  background: var(--bg-canvas);
+  background: var(--bg-raised);
   border-color: var(--accent);
   color: var(--accent);
 }
 .interaction button.deny.secondary {
-  background: var(--bg-canvas);
+  background: var(--bg-raised);
   border-color: var(--danger);
   color: var(--danger);
 }
-.interaction button:hover { filter: brightness(0.95); }
+.interaction button:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
 
 /* AskUserQuestion picker (interaction.ask) */
 /* A divider above every question — including the first, to set it off from
@@ -1636,7 +1658,7 @@ pre.raw-markdown {
   font: inherit; /* buttons don't inherit the body font on their own */
   width: 100%;
   padding: 0.5rem 0.7rem;
-  background: var(--bg-subtle);
+  background: var(--bg-inset);
   border: 1px solid var(--border-muted);
   border-radius: var(--radius);
 }
@@ -1654,7 +1676,7 @@ pre.raw-markdown {
   max-height: 12rem;
   overflow: auto;
   white-space: pre;
-  background: var(--bg-subtle);
+  background: var(--bg-inset);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--font-meta);
   color: var(--text);
@@ -1671,7 +1693,7 @@ pre.raw-markdown {
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   color: var(--text);
 }
 .interaction.ask .qother:focus { outline: none; border-color: var(--accent); }
@@ -1686,23 +1708,23 @@ pre.raw-markdown {
   position: sticky;
   bottom: 0;
   padding: 0.4rem 0 0;
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
 }
 .interaction.ask .actions { justify-content: flex-end; }
 .interaction.ask .qignore {
-  background: var(--bg-canvas);
+  background: var(--bg-raised);
   border-color: var(--border-strong);
   color: var(--text-muted);
 }
 .interaction.ask .qback {
   margin-right: auto;
-  background: var(--bg-canvas);
+  background: var(--bg-raised);
   border-color: var(--border-strong);
   color: var(--text);
 }
 .interaction.ask .qsubmit {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: white;
 }
 .interaction.ask .qsubmit:disabled { opacity: 0.5; cursor: default; }
@@ -1749,10 +1771,8 @@ pre.raw-markdown {
 }
 .composer-config-wrap[data-backend="codex"] .config-label { color: var(--codex); }
 .composer-config-wrap[data-backend="pi"] .config-label { color: var(--pi); }
-.picker-effort { color: var(--text-disabled); }
-/* Translucent gray tint: reads against the white composer in light mode and
- * still lifts the segment in dark, with no per-scheme override. */
-.composer-picker:hover { background: rgba(110, 118, 129, 0.12); }
+.picker-effort { color: var(--text-faint); }
+.composer-picker:hover { background: var(--bg-hover); }
 .composer-picker:focus { outline: none; }
 .composer-picker:focus-visible { box-shadow: 0 0 0 2px var(--accent-border); }
 /* Below ~360px "Claude · Opus Plan" pushes send out of the composer. Drop the
@@ -1775,7 +1795,7 @@ pre.raw-markdown {
   max-height: 55vh;
   overflow-y: auto;
   padding: 0.25rem;
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 4px 12px var(--shadow-modal);
@@ -1843,8 +1863,7 @@ pre.raw-markdown {
   padding-left: 0.95rem;
 }
 /* Ghost field (no border/fill); focus shows a fill since there's no border
- * left to highlight. --bg-hover (not --bg-subtle) so it reads against the
- * near-white canvas in light mode. */
+ * left to highlight. */
 .new-cwd-field input:focus { outline: none; background: var(--bg-hover); }
 @media (max-width: 720px) {
   /* cwd is a path: give it the row instead of the desktop's fixed 18rem. */
@@ -1882,7 +1901,7 @@ pre.raw-markdown {
   height: 52px;
   box-sizing: border-box;
   border-bottom: 1px solid var(--border-muted);
-  background: var(--bg-chrome);
+  background: var(--bg-canvas);
 }
 .settings-dialog-header h1 { margin: 0; font-size: var(--font-lg); font-weight: 600; }
 /* Both titles and the back link ship in the markup; the media query below
@@ -1942,7 +1961,7 @@ pre.raw-markdown {
 }
 .settings-nav-chevron { display: none; flex-shrink: 0; color: var(--text-faint); }
 .settings-nav-item:hover { background: var(--bg-hover); }
-.settings-nav-item.active { background: var(--bg-accent); color: var(--accent); }
+.settings-nav-item.active { background: var(--nav-selected-bg); color: var(--text); }
 .settings-pane { overflow-y: auto; min-width: 0; }
 
 /* ----- Generic pane content --------------------------------------------- */
@@ -1979,13 +1998,13 @@ pre.raw-markdown {
   min-width: 11.5rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   color: var(--text);
   padding: 0.4rem 0.65rem;
   font: inherit;
   cursor: pointer;
 }
-.settings-row-action:hover:not(:disabled) { background: var(--bg-hover); }
+.settings-row-action:hover:not(:disabled) { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
 .settings-row-action:disabled { color: var(--text-faint); cursor: default; }
 /* push.js hides the button when the browser or server can't do push; the note
  * takes its place rather than leaving a row with nothing on the right. */
@@ -2029,14 +2048,14 @@ pre.raw-markdown {
 .cfg-form-actions button {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   color: var(--text);
   padding: 0.4rem 0.65rem;
   font: inherit;
   cursor: pointer;
 }
 .cfg-pane-heading button:hover,
-.cfg-form-actions button:hover { background: var(--bg-hover); }
+.cfg-form-actions button:hover:not(:disabled) { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
 .cfg-row {
   display: flex;
   flex-direction: column;
@@ -2052,7 +2071,8 @@ pre.raw-markdown {
   cursor: pointer;
 }
 .cfg-row:hover { background: var(--bg-hover); }
-.cfg-row.active { background: var(--bg-accent); color: var(--accent); }
+.cfg-row.active { background: var(--nav-selected-bg); color: var(--text); }
+.cfg-row.active small { color: var(--text-muted); }
 .cfg-row-name { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .cfg-row small {
   font-size: var(--font-meta);
@@ -2073,7 +2093,7 @@ pre.raw-markdown {
   box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   color: var(--text);
   padding: 0.55rem 0.65rem;
   font: inherit;
@@ -2122,7 +2142,7 @@ pre.raw-markdown {
   max-width: min(92%, 760px);
   margin: 0.5rem 0.25rem;
   padding: 0.5rem 0.75rem;
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   border: 1px solid var(--border-muted);
   border-radius: 14px;
 }
@@ -2184,8 +2204,8 @@ pre.raw-markdown {
 }
 .cfg-form-actions button[type="submit"] { margin-left: auto; }
 .cfg-form-actions button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background-color: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: white;
 }
 /* Keeps the shared button box — in a row of peers, dropping the border reads
@@ -2194,7 +2214,7 @@ pre.raw-markdown {
 .cfg-form-actions button.danger { color: var(--danger-text); }
 .cfg-form-actions button.danger:hover {
   border-color: var(--danger-text);
-  background: var(--bg-hover);
+  background-image: linear-gradient(var(--bg-hover), var(--bg-hover));
 }
 /* ----- Scheduled pane --------------------------------------------------- */
 /* Enable switch, overlaid on the right of each row rather than sitting in the
@@ -2231,14 +2251,14 @@ pre.raw-markdown {
 .sched-preset {
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--bg-chrome);
+  background: var(--bg-raised);
   color: var(--text-muted);
   padding: 0.25rem 0.65rem;
   font: inherit;
   cursor: pointer;
 }
 .sched-preset:hover {
-  background: var(--bg-hover);
+  background-image: linear-gradient(var(--bg-hover), var(--bg-hover));
   color: var(--text);
 }
 /* Paused tasks stay in the list rather than sorting away: the pane is short,
@@ -2364,7 +2384,7 @@ pre.raw-markdown {
     border-right: 0;
     padding: 0;
     overflow-y: auto;
-    background: var(--bg-chrome);
+    background: var(--bg-raised);
   }
   .settings-nav-item {
     padding: 1rem 1.25rem;
@@ -2396,65 +2416,54 @@ pre.raw-markdown {
 }
 
 /* ----- Dark mode -------------------------------------------------------- */
-/* Palette is GitHub-Primer-inspired: warm-neutral surfaces (#0d1117 base,
- * progressively elevated to #21262d), brighter accent blue (#58a6ff) and
- * semantic colors with reduced saturation so they don't strobe on a dark
- * background. Auto-approve "armed" state stays warm-amber but uses a
- * translucent fill instead of solid #fff8e1 to blend with the page. */
+/* Neutral grays from #131313 (sidebar) to #242424 (raised). */
 @media (prefers-color-scheme: dark) {
   :root {
-    /* Dark inverts the relationship the same way light does: canvas (--bg)
-     * sits at a mid shade, chrome (--bg-chrome) goes to the extreme —
-     * in light that means brighter, in dark that means *darker*. So in
-     * dark mode --bg-chrome is actually less bright than --bg-canvas; the name
-     * tracks "chrome that stands apart from canvas", not "always lighter". */
-    --bg-canvas: #161b22;
-    --bg-chrome: #0d1117;
-    --bg-subtle: #21262d;
-    --bg-faint: #1c2128;
-    --bg-router: #1c2128;
-    --bg-hover: #21262d;
-    --bg-accent: rgba(56, 139, 253, 0.15);
+    --bg-sidebar: #131313;
+    --bg-canvas: #181818;
+    --bg-raised: #242424;
+    --bg-inset: #1e1e1e;
+    --bg-hover: rgb(255 255 255 / 7%);
+    --toggle-thumb: rgb(255 255 255 / 20%);
+    --scrollbar: rgb(255 255 255 / 22%);
 
-    --text: #e6edf3;
-    --text-muted: #b1bac4;
-    --text-faint: #8b949e;
-    --text-disabled: #6e7681;
-    --text-empty-state: #484f58;
+    --text: #ececec;
+    --text-muted: #b9b9b9;
+    --text-faint: #939393;
+    --text-disabled: #757575;
 
-    --border: #30363d;
-    --border-muted: #2d333b;
-    --border-strong: #3d444d;
-    --border-hr: #2d333b;
+    --border: #353535;
+    --border-muted: #323232;
+    --border-strong: #434343;
 
-    --accent: #58a6ff;
-    --accent-bg: rgba(56, 139, 253, 0.15);
-    --unread: #58a6ff;
-    --accent-border: rgba(56, 139, 253, 0.4);
+    --accent: #7cb5f5;
+    --accent-fill: #2d68b8;
+    --accent-bg: rgba(124, 181, 245, 0.16);
+    --bubble-bg: var(--accent-bg);
+    --unread: var(--accent);
+    --accent-border: rgba(124, 181, 245, 0.45);
+    --nav-selected-bg: #34312d;
+    --nav-card-bg: var(--bg-raised);
+    --card-ring: rgb(255 255 255 / 8%);
+    --nav-accent: #e4bb95;
 
     --purple: #bc8cff;
     --claude: #e0916f;
     --codex: #8e93e0;
     --pi: #fff;
 
-    --inline-code-bg: rgba(110, 118, 129, 0.3);
-    --code-block-bg: #0a0d12;
-    --code-block-text: #e6edf3;
+    --inline-code-bg: rgba(117, 117, 117, 0.3);
+    --code-block-bg: #0d0d0d;
+    --code-block-text: #ececec;
 
     --danger: #f85149;
+    --danger-fill: #da3633;
     --danger-text: #ff7b72;
-    --warning-bg: rgba(187, 128, 9, 0.2);
-    --warning-border: #d29922;
     --warning-text: #d29922;
-    --success: #3fb950;
     --live-dot: #56d98e; /* green for the session status dot */
 
     --shadow-sidebar: rgba(0, 0, 0, 0.5);
     --shadow-modal: rgba(0, 0, 0, 0.6);
     --modal-overlay: rgba(0, 0, 0, 0.65);
-  }
-  .render-pill-opt[aria-pressed="true"] {
-    background: #2d333b;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   }
 }
