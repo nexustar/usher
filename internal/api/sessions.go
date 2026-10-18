@@ -23,6 +23,10 @@ type Session struct {
 	Router            bool `json:"router,omitempty"`
 	TerminalOpen      bool `json:"terminal_open,omitempty"`
 	TerminalAvailable bool `json:"terminal_available,omitempty"`
+	// AppendSystemPrompt and ExtraArgs are the launch options, on a single
+	// session's view only.
+	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
+	ExtraArgs          []string `json:"extra_args,omitempty"`
 }
 
 // SessionList is the body of GET /sessions.
@@ -77,14 +81,17 @@ func (s *Server) view(ctx context.Context, id string, wait time.Duration) (Sessi
 	if sess.Runtime.Effort == "" {
 		sess.Runtime.Effort = s.Router.DefaultEffort(ctx, sess.Backend, sess.Runtime.Model)
 	}
+	prompt, args := s.Router.LaunchOptions(id)
 	return Session{
-		Session:           sess,
-		AutoApprove:       s.Router.IsAutoApprove(id),
-		Archived:          s.Router.IsArchived(id),
-		Pinned:            s.Router.IsPinned(id),
-		Router:            id == s.Router.RouterSession(),
-		TerminalOpen:      s.Router.HasTerminal(id),
-		TerminalAvailable: s.Router.TerminalAvailable(),
+		Session:            sess,
+		AutoApprove:        s.Router.IsAutoApprove(id),
+		Archived:           s.Router.IsArchived(id),
+		Pinned:             s.Router.IsPinned(id),
+		Router:             id == s.Router.RouterSession(),
+		TerminalOpen:       s.Router.HasTerminal(id),
+		TerminalAvailable:  s.Router.TerminalAvailable(),
+		AppendSystemPrompt: prompt,
+		ExtraArgs:          args,
 	}, true
 }
 
@@ -152,15 +159,18 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 // PatchRequest sets the flags usher keeps about a session; omitted fields are
 // left as they are. Model and Effort switch the session from its next model
-// request; Effort "default" drops a Claude switch. A Claude switch does not
-// survive a usher restart.
+// request; Effort "default" drops a Claude switch. After a usher restart a
+// Claude session keeps the model its last turn ran on but not the effort.
+// ExtraArgs apply from the session's next spawn — pause and resume it to apply
+// them now; an empty list clears them.
 type PatchRequest struct {
-	Title       *string `json:"title,omitempty"`
-	Archived    *bool   `json:"archived,omitempty"`
-	Pinned      *bool   `json:"pinned,omitempty"`
-	AutoApprove *bool   `json:"auto_approve,omitempty"`
-	Model       string  `json:"model,omitempty"`
-	Effort      string  `json:"effort,omitempty"`
+	Title       *string   `json:"title,omitempty"`
+	Archived    *bool     `json:"archived,omitempty"`
+	Pinned      *bool     `json:"pinned,omitempty"`
+	AutoApprove *bool     `json:"auto_approve,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	Effort      string    `json:"effort,omitempty"`
+	ExtraArgs   *[]string `json:"extra_args,omitempty"`
 }
 
 func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +184,12 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Model != "" || req.Effort != "" {
 		if err := s.Router.SetRuntime(r.Context(), id, req.Model, req.Effort); err != nil {
+			WriteError(w, ErrStatus(err), err.Error())
+			return
+		}
+	}
+	if req.ExtraArgs != nil {
+		if err := s.Router.SetExtraArgs(id, *req.ExtraArgs); err != nil {
 			WriteError(w, ErrStatus(err), err.Error())
 			return
 		}

@@ -1445,3 +1445,43 @@ func TestSetRuntime(t *testing.T) {
 		t.Fatalf("runtime after the next turn = %+v, want the transcript's", sess.Runtime)
 	}
 }
+
+func TestSetExtraArgs(t *testing.T) {
+	root := t.TempDir()
+	logPath := filepath.Join(root, "-tmp", "abc12345.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","cwd":"/tmp","message":{"role":"user","content":"hi"}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(logPath)
+	r := New(d, map[string]backend.Backend{
+		"claude": {Runtime: &runtimeSwitchRuntime{}, Transcript: transcript.Claude{}},
+	}, "claude", broker.New(), nil, sessionmeta.New("", 0), nil)
+	r.settings = settings.New("")
+	if err := r.SetExtraArgs("abc12345", []string{"--tools", "", "--strict-mcp-config"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, a := r.LaunchOptions("abc12345"); !slices.Equal(a, []string{"--tools", "", "--strict-mcp-config"}) {
+		t.Fatalf("extra args = %q", a)
+	}
+	if err := r.SetExtraArgs("abc12345", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, a := r.LaunchOptions("abc12345"); len(a) != 0 {
+		t.Fatalf("after clearing = %q", a)
+	}
+	if err := r.SetExtraArgs("nope", nil); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("unknown session: err = %v", err)
+	}
+	r.settings.SetRouterSession("abc12345")
+	if err := r.SetExtraArgs("abc12345", nil); !errors.Is(err, core.ErrRouterSession) {
+		t.Errorf("router session: err = %v", err)
+	}
+}

@@ -23,6 +23,7 @@ const SHELL = [
   '/list.js',
   '/detail.js',
   '/settings.js',
+  '/details.js',
   '/terminal.js',
   '/interaction.js',
   '/push.js',

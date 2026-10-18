@@ -44,25 +44,25 @@ func TestExtraArgsRequireBackend(t *testing.T) {
 	if _, err := store.Create(Profile{Name: "loose", ExtraArgs: []string{"--flag"}}); err == nil {
 		t.Fatal("extra_args without a backend accepted")
 	}
-	// Empty entries are dropped, and dropping them all lifts the requirement.
-	if _, err := store.Create(Profile{Name: "blank", ExtraArgs: []string{"", ""}}); err != nil {
-		t.Fatalf("all-empty extra_args rejected: %v", err)
+	if _, err := store.Create(Profile{Name: "blank", ExtraArgs: []string{}}); err != nil {
+		t.Fatalf("empty extra_args rejected: %v", err)
 	}
+	// An empty entry is an argument, not a gap to drop.
 	created, err := store.Create(Profile{
-		Name: "yolo", Backend: "claude",
-		ExtraArgs: []string{"--permission-mode", "", "plan"},
+		Name: "bare", Backend: "claude",
+		ExtraArgs: []string{"--tools", "", "--strict-mcp-config"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(created.ExtraArgs, []string{"--permission-mode", "plan"}) {
-		t.Fatalf("ExtraArgs = %v, want empty entries dropped", created.ExtraArgs)
+	if !reflect.DeepEqual(created.ExtraArgs, []string{"--tools", "", "--strict-mcp-config"}) {
+		t.Fatalf("ExtraArgs = %q, want empty entries kept", created.ExtraArgs)
 	}
-	got, err := store.Resolve("yolo", "/w", "", "")
+	got, err := store.Resolve("bare", "/w", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got.ExtraArgs, []string{"--permission-mode", "plan"}) {
+	if !reflect.DeepEqual(got.ExtraArgs, []string{"--tools", "", "--strict-mcp-config"}) {
 		t.Fatalf("Resolve.ExtraArgs = %v", got.ExtraArgs)
 	}
 }

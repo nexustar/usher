@@ -148,6 +148,7 @@ var (
 	ErrReadOnlySession = errors.New("subagent transcripts are read-only")
 	ErrSendQueueFull   = errors.New("send queue full for session")
 	ErrInvalidTitle    = errors.New("session title must not be empty")
+	ErrRouterSession   = errors.New("the router session's flags are usher's")
 )
 
 // EventRelayLanded is published on the router session when a session it routed

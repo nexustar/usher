@@ -11,6 +11,7 @@ import {
 } from './state.js';
 import { statusDot, backendMark } from './render.js';
 import { loadList } from './list.js';
+import { showSessionDetails } from './details.js';
 
 // --- sidebar-private state ---
 // Last sidebar HTML written to the DOM. The sidebar re-polls every 5s; skipping
@@ -342,6 +343,7 @@ function openKebabPopover(btn) {
     reloadItem +
     editorItem +
     subItem +
+    `<button type="button" class="kebab-item" data-action="details" data-id="${esc(id)}">Details</button>` +
     `<button type="button" class="kebab-item" data-action="rename" data-id="${esc(id)}">Rename</button>` +
     `<button type="button" class="kebab-item" data-action="${pinAction}" data-id="${esc(id)}">${pinLabel}</button>` +
     `<button type="button" class="kebab-item" data-action="${action}" data-id="${esc(id)}">${label}</button>` +
@@ -560,6 +562,10 @@ async function handleKebabAction(action, id) {
     if (subagentExpanded.has(id)) subagentExpanded.delete(id);
     else subagentExpanded.add(id);
     loadSidebar();
+    return;
+  }
+  if (action === 'details') {
+    showSessionDetails(id);
     return;
   }
   if (action === 'rename') {

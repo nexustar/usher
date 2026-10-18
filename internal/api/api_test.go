@@ -239,3 +239,21 @@ func TestBackendsAndInfo(t *testing.T) {
 		t.Errorf("info = %s", body)
 	}
 }
+
+func TestPatchExtraArgs(t *testing.T) {
+	f := pluginapitest.NewFakeRouter()
+	f.AddSession(core.Session{ID: "s1"})
+	f.AddSession(core.Session{ID: "r1"})
+	f.SetRouterSession("r1")
+	do := serve(t, api.Config{Router: f})
+	code, body := do(http.MethodPatch, "/sessions/s1", `{"extra_args":["--effort","high"]}`)
+	if code != http.StatusOK || !strings.Contains(body, `"extra_args":["--effort","high"]`) {
+		t.Errorf("patch = %d %s", code, body)
+	}
+	if _, body := do(http.MethodGet, "/sessions", ""); strings.Contains(body, "--effort") {
+		t.Errorf("list carries launch options: %s", body)
+	}
+	if code, body := do(http.MethodPatch, "/sessions/r1", `{"extra_args":[]}`); code != http.StatusConflict {
+		t.Errorf("router session = %d %s", code, body)
+	}
+}

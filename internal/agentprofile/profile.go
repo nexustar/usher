@@ -143,13 +143,10 @@ func validate(p Profile) (Profile, error) {
 	if p.Name == "." || p.Name == ".." {
 		return Profile{}, errors.New(`name may not be "." or ".."`)
 	}
-	var args []string
-	for _, a := range p.ExtraArgs {
-		if a != "" {
-			args = append(args, a)
-		}
+	// An empty entry is a real argument, as in `--tools ""`.
+	if len(p.ExtraArgs) == 0 {
+		p.ExtraArgs = nil
 	}
-	p.ExtraArgs = args
 	// Extra args are backend CLI flags; without a pinned backend they would go
 	// to whichever backend the create request picks and break its spawn.
 	if len(p.ExtraArgs) > 0 && p.Backend == "" {

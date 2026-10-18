@@ -820,6 +820,32 @@ func (r *Router) Archive(sessionID string)       { r.meta.Archive(sessionID) }
 func (r *Router) IsPinned(sessionID string) bool { return r.meta.IsPinned(sessionID) }
 func (r *Router) Pin(sessionID string)           { r.meta.Pin(sessionID) }
 func (r *Router) Unpin(sessionID string)         { r.meta.Unpin(sessionID) }
+
+// LaunchOptions are the system prompt addition and CLI flags a session is
+// spawned with.
+func (r *Router) LaunchOptions(sessionID string) (string, []string) {
+	return r.meta.AppendSystemPrompt(sessionID), r.meta.ExtraArgs(sessionID)
+}
+
+// SetExtraArgs replaces the CLI flags a session is spawned with, from its next
+// spawn. The system prompt addition stays as created: Claude and Codex keep
+// the one a session started with across resumes whatever they are passed.
+func (r *Router) SetExtraArgs(sessionID string, args []string) error {
+	sess, ok := r.GetSession(sessionID)
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if sess.IsSubagent {
+		return ErrReadOnlySession
+	}
+	if sessionID == r.routerInbox() {
+		return core.ErrRouterSession
+	}
+	r.meta.SetExtraArgs(sessionID, args)
+	slog.Info("extra args changed", "session", sessionID)
+	return nil
+}
+
 func (r *Router) Rename(ctx context.Context, sessionID, title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {

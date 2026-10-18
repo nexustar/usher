@@ -6,7 +6,7 @@ import {
   setSuppressAppendScroll, setRoutedTargets, getLastSessions,
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
-  registerRefreshSubtitle, fetchBackends, patchSession,
+  registerRefreshSubtitle, fetchBackends, patchSession, copyText,
 } from './state.js';
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
@@ -2221,25 +2221,3 @@ document.addEventListener('click', (e) => {
     setTimeout(() => btn.classList.remove('copied'), 1200);
   });
 });
-
-// navigator.clipboard needs a secure context; plain-HTTP deployments (e.g. a
-// raw tailnet IP) fall back to execCommand. Both require a user gesture.
-function copyText(s) {
-  if (navigator.clipboard && window.isSecureContext) {
-    return navigator.clipboard.writeText(s).then(() => true, () => legacyCopy(s));
-  }
-  return Promise.resolve(legacyCopy(s));
-}
-
-function legacyCopy(s) {
-  const ta = document.createElement('textarea');
-  ta.value = s;
-  ta.style.position = 'fixed';
-  ta.style.opacity = '0';
-  document.body.appendChild(ta);
-  ta.select();
-  let ok = false;
-  try { ok = document.execCommand('copy'); } catch (_) {}
-  ta.remove();
-  return ok;
-}

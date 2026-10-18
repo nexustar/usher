@@ -196,13 +196,75 @@ export async function fetchBackends() {
   };
 }
 
-// patchSession sets title, archived, pinned or auto_approve.
+// patchSession sets the fields of PATCH /api/v1/sessions/{id}.
 export function patchSession(id, fields) {
   return fetch('/api/v1/sessions/' + encodeURIComponent(id), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(fields),
   });
+}
+
+// navigator.clipboard needs a secure context; plain-HTTP deployments (e.g. a
+// raw tailnet IP) fall back to execCommand. Both require a user gesture.
+export function copyText(s) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(s).then(() => true, () => legacyCopy(s));
+  }
+  return Promise.resolve(legacyCopy(s));
+}
+
+function legacyCopy(s) {
+  const ta = document.createElement('textarea');
+  ta.value = s;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) {}
+  ta.remove();
+  return ok;
+}
+
+// formatArgs and parseArgs move CLI flags between an argv array and one line
+// of shell-style text, so empty arguments and ones with spaces survive the
+// round trip: ['--tools', ''] is `--tools ''`.
+export function formatArgs(args) {
+  return (args || []).map(a =>
+    /^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`
+  ).join(' ');
+}
+
+// parseArgs takes single quotes literally; in double quotes and bare text a
+// backslash escapes the next character. It throws on an unclosed quote.
+export function parseArgs(text) {
+  const args = [];
+  let cur = '', inArg = false, quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'") quote = ''; else cur += c;
+    } else if (c === '\\' && i + 1 < text.length && (!quote || '"\\'.includes(text[i + 1]))) {
+      cur += text[++i];
+      inArg = true;
+    } else if (quote === '"') {
+      if (c === '"') quote = ''; else cur += c;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+      inArg = true;
+    } else if (/\s/.test(c)) {
+      if (inArg) args.push(cur);
+      cur = '';
+      inArg = false;
+    } else {
+      cur += c;
+      inArg = true;
+    }
+  }
+  if (quote) throw new Error(`Unclosed ${quote} in flags`);
+  if (inArg) args.push(cur);
+  return args;
 }
 
 export function esc(s) {

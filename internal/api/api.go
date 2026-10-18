@@ -44,6 +44,8 @@ type Router interface {
 	SubscribeAllSessions() (<-chan broker.Event, func())
 	Rename(ctx context.Context, id, title string) error
 	SetRuntime(ctx context.Context, id, model, effort string) error
+	LaunchOptions(id string) (prompt string, args []string)
+	SetExtraArgs(id string, args []string) error
 	Archive(id string)
 	Unarchive(id string)
 	IsArchived(id string) bool
@@ -185,7 +187,7 @@ func ErrStatus(err error) int {
 	switch {
 	case errors.Is(err, core.ErrSessionNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, core.ErrSendQueueFull):
+	case errors.Is(err, core.ErrSendQueueFull), errors.Is(err, core.ErrRouterSession):
 		return http.StatusConflict
 	case errors.Is(err, core.ErrReadOnlySession):
 		return http.StatusForbidden

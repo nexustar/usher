@@ -179,8 +179,10 @@ type Manager struct {
 	mu        sync.Mutex
 	processes map[string]*process
 	routerID  string
-	// runtimes are the switches made since spawn. Claude records neither in
-	// the transcript, so every respawn is told again.
+	// runtimes are the switches made since spawn, told again on every respawn.
+	// --resume without --model takes the model of the transcript's last
+	// assistant message, so a model switch needs this only until a turn runs
+	// under it; effort is not recorded and falls back to the model's default.
 	runtimes map[string]Runtime
 }
 

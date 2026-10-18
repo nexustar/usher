@@ -15,7 +15,7 @@
 // column is visible is left entirely to CSS — no viewport branching here, so
 // there is nothing to re-run on resize or rotate.
 
-import { esc, getLastSessions, fetchBackends } from './state.js';
+import { esc, getLastSessions, fetchBackends, formatArgs, parseArgs } from './state.js';
 import { bindPushToggle } from './push.js';
 
 const dialog = document.getElementById('settings-dialog');
@@ -251,9 +251,9 @@ function renderForm(agent, copy = false) {
           <textarea name="append_system_prompt" rows="6" placeholder="Additional instructions for sessions created with this agent…">${esc(value.append_system_prompt || '')}</textarea>
         </label>
         <label><span>Extra CLI flags</span>
-          <input name="extra_args" class="mono" value="${esc((value.extra_args || []).join(' '))}"
+          <input name="extra_args" class="mono" value="${esc(formatArgs(value.extra_args))}"
                  autocapitalize="off" autocorrect="off" spellcheck="false"
-                 placeholder="Space-separated flags added when spawning this agent's backend">
+                 placeholder="Flags added when spawning this agent's backend, quoted as in a shell">
         </label>
       </details>
       <div class="cfg-form-error err" hidden></div>
@@ -287,9 +287,14 @@ function renderForm(agent, copy = false) {
     const payload = Object.fromEntries(new FormData(form));
     // FormData reports a checkbox as "on" or omits it; the API wants a bool.
     payload.auto_approve = form.elements.auto_approve.checked;
-    // The API wants an array; an empty field must not send [""].
-    const extraArgs = form.elements.extra_args.value.trim();
-    payload.extra_args = extraArgs ? extraArgs.split(/\s+/) : undefined;
+    let extraArgs;
+    try {
+      extraArgs = parseArgs(form.elements.extra_args.value);
+    } catch (error) {
+      showError(error.message);
+      return;
+    }
+    payload.extra_args = extraArgs.length ? extraArgs : undefined;
     const response = await fetch(creating ? '/api/v1/agents' : '/api/v1/agents/' + encodeURIComponent(value.name), {
       method: creating ? 'POST' : 'PUT',
       headers: {'Content-Type': 'application/json'},

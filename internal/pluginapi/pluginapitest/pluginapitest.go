@@ -42,6 +42,7 @@ type FakeRouter struct {
 	relayErr      error
 	routerSession string
 	queued        map[string][]QueuedRelay
+	args          map[string][]string
 }
 
 func NewFakeRouter() *FakeRouter {
@@ -54,6 +55,7 @@ func NewFakeRouter() *FakeRouter {
 		archived:  map[string]bool{},
 		autoAppr:  map[string]bool{},
 		queued:    map[string][]QueuedRelay{},
+		args:      map[string][]string{},
 	}
 }
 
@@ -439,6 +441,22 @@ func (f *FakeRouter) TerminalAvailable() bool { return false }
 
 func (f *FakeRouter) SubscribeSession(id string) (<-chan broker.Event, func()) {
 	return f.broker.Subscribe(id)
+}
+
+func (f *FakeRouter) LaunchOptions(id string) (string, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return "", f.args[id]
+}
+
+func (f *FakeRouter) SetExtraArgs(id string, args []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id == f.routerSession {
+		return core.ErrRouterSession
+	}
+	f.args[id] = args
+	return nil
 }
 
 func (f *FakeRouter) PauseSession(id string) error {
