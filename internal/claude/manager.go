@@ -12,12 +12,14 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/claude/jsonl"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/procutil"
@@ -1004,6 +1006,8 @@ func (m *Manager) handleControlRequest(p *process, raw []byte) {
 			Input                 json.RawMessage   `json:"input"`
 			ToolUseID             string            `json:"tool_use_id"`
 			PermissionSuggestions []json.RawMessage `json:"permission_suggestions"`
+			DecisionReason        string            `json:"decision_reason"`
+			SuppressAlwaysAllow   bool              `json:"suppress_always_allow_rule"`
 		} `json:"request"`
 	}
 	if json.Unmarshal(raw, &msg) != nil || msg.RequestID == "" || msg.Request.Subtype != "can_use_tool" {
@@ -1040,7 +1044,9 @@ func (m *Manager) handleControlRequest(p *process, raw []byte) {
 			ToolName:    msg.Request.ToolName,
 			ToolInput:   msg.Request.Input,
 			Cwd:         p.cwd,
-			AllowAlways: hasAllowSuggestion(msg.Request.PermissionSuggestions),
+			Preview:     jsonl.ToolPreview(msg.Request.ToolName, msg.Request.Input),
+			Reason:      ansiEscape.ReplaceAllString(msg.Request.DecisionReason, ""),
+			AllowAlways: !msg.Request.SuppressAlwaysAllow && hasAllowSuggestion(msg.Request.PermissionSuggestions),
 		})
 		if err != nil {
 			m.writeControlError(p, msg.RequestID, err.Error())
@@ -1091,6 +1097,9 @@ func (m *Manager) writeControlError(p *process, requestID, message string) {
 		},
 	})
 }
+
+// ansiEscape matches the CSI and OSC sequences decision_reason may carry.
+var ansiEscape = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))`)
 
 func hasAllowSuggestion(suggestions []json.RawMessage) bool {
 	return len(allowSuggestions(suggestions)) > 0

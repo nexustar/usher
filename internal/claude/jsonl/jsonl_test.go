@@ -1,6 +1,7 @@
 package jsonl
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -789,5 +790,20 @@ func TestAssemblerAPIErrorIsErrorTurn(t *testing.T) {
 	if part != nil || len(completed) != 2 || completed[0].Role != "assistant" ||
 		completed[1].Role != "error" || completed[1].Content != "API Error: 529 Overloaded" {
 		t.Fatalf("completed = %+v, part = %+v", completed, part)
+	}
+}
+
+func TestToolPreview(t *testing.T) {
+	edit := ToolPreview("Edit", json.RawMessage(`{"file_path":"/w/a.go","old_string":"a\nb","new_string":"c\n"}`))
+	if edit.ToolTarget != "/w/a.go" || edit.Content != "-a\n-b\n+c" || edit.ContentKind != core.ContentDiff || edit.ToolInput != "" {
+		t.Fatalf("Edit preview = %+v", edit)
+	}
+	bash := ToolPreview("Bash", json.RawMessage(`{"command":"ls -la","description":"List files"}`))
+	if bash.ToolTarget != "List files" || bash.ToolInput != "ls -la" || bash.Content != "" {
+		t.Fatalf("Bash preview = %+v", bash)
+	}
+	fetch := ToolPreview("WebFetch", json.RawMessage(`{"url":"https://example.com"}`))
+	if fetch.ToolInput != "{\n  \"url\": \"https://example.com\"\n}" {
+		t.Fatalf("WebFetch preview = %+v", fetch)
 	}
 }

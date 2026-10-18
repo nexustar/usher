@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 )
 
@@ -346,6 +347,34 @@ func TestClientTracksCommandsPastTheirTurn(t *testing.T) {
 	}
 }
 
+// A file-change approval names only its item; the diff comes from the item.
+func TestFileChangeApprovalPreviewsItsDiff(t *testing.T) {
+	interactions := interaction.New("")
+	out := new(testWriteCloser)
+	c := New("unused", interactions, nil, nil, nil, nil, nil)
+	c.in = out
+	c.dispatch(rpcMessage{Method: "item/started", Params: json.RawMessage(`{"threadId":"s","item":{"type":"fileChange","id":"call-1","status":"inProgress","changes":[` +
+		`{"path":"/w/a.go","kind":{"type":"update","move_path":null},"diff":"@@ -1 +1 @@\n-old\n+new\n"},` +
+		`{"path":"/w/b.txt","kind":{"type":"add"},"diff":"one\ntwo\n"}]}}`)})
+	sub, cancel := interactions.SubscribePending()
+	defer cancel()
+	go c.approval(rpcMessage{ID: json.RawMessage(`3`), Method: "item/fileChange/requestApproval",
+		Params: json.RawMessage(`{"threadId":"s","turnId":"t","itemId":"call-1","reason":"needs write access"}`)})
+	p := <-sub
+	want := "@@ -1 +1 @@\n-old\n+new\n+one\n+two"
+	if p.Preview == nil || p.Preview.ToolTarget != "/w/a.go, /w/b.txt" || p.Preview.Content != want ||
+		p.Preview.ContentKind != core.ContentDiff || p.Reason != "needs write access" {
+		t.Fatalf("pending = %+v preview = %+v", p, p.Preview)
+	}
+	if err := interactions.Respond(p.ID, interaction.Response{Behavior: "deny"}); err != nil {
+		t.Fatal(err)
+	}
+	c.dispatch(rpcMessage{Method: "item/completed", Params: json.RawMessage(`{"threadId":"s","item":{"type":"fileChange","id":"call-1","status":"declined","changes":[]}}`)})
+	if len(c.patches) != 0 {
+		t.Fatalf("patches kept after completion: %v", c.patches)
+	}
+}
+
 func TestResumeErrorNamesAnotherWriter(t *testing.T) {
 	err := resumeError(errors.New("rpc -32600: thread 01a0 already has an active writer"))
 	if !strings.Contains(err.Error(), "another Codex client") {
@@ -354,5 +383,20 @@ func TestResumeErrorNamesAnotherWriter(t *testing.T) {
 	other := errors.New("rpc -32600: no rollout found")
 	if resumeError(other) != other {
 		t.Fatal("unrelated resume error was rewritten")
+	}
+}
+
+func TestShellScript(t *testing.T) {
+	for in, want := range map[string]string{
+		`/bin/bash -lc 'touch made-by-shell.txt'`: "touch made-by-shell.txt",
+		`bash -lc 'echo it'"'"'s | wc -c'`:        "echo it's | wc -c",
+		`zsh -c "printf \"%s\" \$HOME"`:           `printf "%s" $HOME`,
+		`/bin/bash -lc 'a' && rm -rf x`:           `/bin/bash -lc 'a' && rm -rf x`,
+		`python3 -c 'print(1)'`:                   `python3 -c 'print(1)'`,
+		`ls -la`:                                  `ls -la`,
+	} {
+		if got := shellScript(in); got != want {
+			t.Errorf("shellScript(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

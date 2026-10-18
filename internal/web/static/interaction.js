@@ -5,6 +5,7 @@ import {
   esc, currentDetailId, setPendingInteractionCounts, growPrompt,
   routedTargets, getLastSessions,
 } from './state.js';
+import { diffHTML } from './render.js';
 
 // The open session's own interactions, and those of the sessions it routed
 // work to.
@@ -100,21 +101,37 @@ function renderQuestions(p, sid) {
     </div>`;
 }
 
+// permissionBody falls back to the raw input without a preview.
+function permissionBody(p) {
+  const v = p.preview;
+  if (!v) {
+    let inputJSON = '';
+    try { inputJSON = JSON.stringify(p.tool_input || {}, null, 2); }
+    catch { inputJSON = String(p.tool_input || ''); }
+    return `<pre class="tool-input">${esc(inputJSON)}</pre>`;
+  }
+  const shell = /^(bash|shell)$/i.test(v.tool_name || '') ? ' shell' : '';
+  return (v.tool_input ? `<pre class="tool-input${shell}">${esc(v.tool_input)}</pre>` : '') +
+    (v.content
+      ? `<pre class="tool-input">${v.content_kind === 'diff' ? diffHTML(v.content) : esc(v.content)}</pre>`
+      : '');
+}
+
 function renderPermission(p, position, total) {
-  let inputJSON = '';
-  try { inputJSON = JSON.stringify(p.tool_input || {}, null, 2); }
-  catch { inputJSON = String(p.tool_input || ''); }
   const always = p.allow_always
     ? '<button class="allow secondary" data-scope="always">allow always</button>'
     : '';
+  const target = p.preview && p.preview.tool_target;
   return `
     <div class="interaction" data-id="${esc(p.id)}">
       <div class="meta">
         <strong>${esc(p.tool_name || p.kind)}</strong>
+        ${target ? `<span class="interaction-target">${esc(target)}</span>` : ''}
         ${sourceHTML(p)}
         ${total > 1 ? `<span class="muted">${position} of ${total}</span>` : ''}
       </div>
-      <pre class="tool-input">${esc(inputJSON)}</pre>
+      ${p.reason ? `<div class="interaction-reason">${esc(p.reason)}</div>` : ''}
+      ${permissionBody(p)}
       <div class="actions">
         <button class="allow primary" data-scope="once">allow</button>
         ${always}

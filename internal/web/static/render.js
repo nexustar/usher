@@ -47,7 +47,7 @@ window.marked.use({
   },
 });
 
-function diffHTML(text) {
+export function diffHTML(text) {
   return String(text).split('\n').map(line => {
     const e = esc(line);
     if (line.startsWith('+')) return '<span class="diff-add">' + e + '</span>';

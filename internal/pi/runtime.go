@@ -830,6 +830,7 @@ func (r *Runtime) handleExtensionUI(ctx context.Context, sessionID string, w *wo
 		// one that can map onto scopes and blanket auto-approve.
 		ev.Kind, ev.ToolName = interaction.KindPermission, "pi-permission-system"
 		ev.ToolInput, _ = json.Marshal(map[string]string{"request": req.Title})
+		ev.Preview = &core.TurnPart{Type: "tool", ToolName: ev.ToolName, ToolTarget: req.Title}
 		ev.AllowAlways = true
 	}
 	decision, err := r.interactions.Submit(ctx, ev)

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 	"github.com/nexustar/usher/internal/procutil"
+	"github.com/nexustar/usher/internal/textutil"
 )
 
 type rpcMessage struct {
@@ -95,7 +97,8 @@ type Client struct {
 	active       map[string]string // thread id -> id of the turn app-server is running
 	threads      map[string]string // thread id -> cwd
 	goals        map[string]core.Goal
-	commands     map[string]struct{} // item ids of commands still running, turn or no turn
+	commands     map[string]struct{}       // item ids of commands still running, turn or no turn
+	patches      map[string]*core.TurnPart // file-change item id -> its diff, until it completes
 	next         atomic.Uint64
 	init         *initState
 	waitDone     chan struct{}
@@ -343,11 +346,26 @@ func (c *Client) dispatch(m rpcMessage) {
 	if m.Method == "item/started" || m.Method == "item/completed" {
 		var p struct {
 			Item struct {
-				ID   string `json:"id"`
-				Type string `json:"type"`
+				ID      string       `json:"id"`
+				Type    string       `json:"type"`
+				Changes []fileChange `json:"changes"`
 			} `json:"item"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
+		// The approval for a file change names only its item, which has
+		// already started with the change in it.
+		if p.Item.Type == "fileChange" && p.Item.ID != "" {
+			c.mu.Lock()
+			if m.Method == "item/completed" {
+				delete(c.patches, p.Item.ID)
+			} else {
+				if c.patches == nil {
+					c.patches = map[string]*core.TurnPart{}
+				}
+				c.patches[p.Item.ID] = patchPreview(p.Item.Changes)
+			}
+			c.mu.Unlock()
+		}
 		if p.Item.Type == "commandExecution" && p.Item.ID != "" {
 			c.mu.Lock()
 			if m.Method == "item/completed" {
@@ -595,6 +613,7 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 	var p struct {
 		ThreadID    string          `json:"threadId"`
 		Cwd         string          `json:"cwd"`
+		Reason      string          `json:"reason"`
 		Permissions json.RawMessage `json:"permissions"`
 	}
 	if err := json.Unmarshal(m.Params, &p); err != nil {
@@ -616,6 +635,7 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 			ToolName:    "Permissions",
 			ToolInput:   json.RawMessage(m.Params),
 			Cwd:         p.Cwd,
+			Reason:      p.Reason,
 			AllowAlways: true,
 		})
 		if err == nil && r.Behavior == "allow" {
@@ -636,10 +656,12 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 func (c *Client) approval(m rpcMessage) {
 	var p map[string]json.RawMessage
 	_ = json.Unmarshal(m.Params, &p)
-	var sid, cwd, command string
+	var sid, cwd, command, itemID, reason string
 	_ = json.Unmarshal(p["threadId"], &sid)
 	_ = json.Unmarshal(p["cwd"], &cwd)
 	_ = json.Unmarshal(p["command"], &command)
+	_ = json.Unmarshal(p["itemId"], &itemID)
+	_ = json.Unmarshal(p["reason"], &reason)
 	tool := "Bash"
 	if strings.Contains(strings.ToLower(m.Method), "filechange") || strings.Contains(strings.ToLower(m.Method), "applypatch") {
 		tool = "Edit"
@@ -649,15 +671,17 @@ func (c *Client) approval(m rpcMessage) {
 	if cwd == "" {
 		cwd = c.threads[sid]
 	}
+	preview := c.patches[itemID]
 	c.mu.Unlock()
 	input := json.RawMessage(m.Params)
 	if tool == "Bash" && command != "" {
 		input, _ = json.Marshal(map[string]any{"command": command})
+		preview = &core.TurnPart{Type: "tool", ToolName: tool, ToolInput: textutil.ClampBody(shellScript(command))}
 	}
 	decision := "decline"
 	if h != nil {
 		allowAlways := supportsAllowAlways(m.Method, p["availableDecisions"])
-		if r, err := h.Submit(context.Background(), interaction.Request{SessionID: sid, ToolName: tool, ToolInput: input, Cwd: cwd, AllowAlways: allowAlways}); err == nil && r.Behavior == "allow" {
+		if r, err := h.Submit(context.Background(), interaction.Request{SessionID: sid, ToolName: tool, ToolInput: input, Cwd: cwd, Preview: preview, Reason: reason, AllowAlways: allowAlways}); err == nil && r.Behavior == "allow" {
 			if r.Scope == "always" && allowAlways {
 				decision = "acceptForSession"
 			} else {
@@ -1046,4 +1070,99 @@ func retryDetail(message, cause string) string {
 		cause = message
 	}
 	return backend.RetryDetail(attempt, max, cause)
+}
+
+// fileChange is one file of an app-server fileChange item. diff is a unified
+// diff for an update and the whole file for an add or delete.
+type fileChange struct {
+	Path string `json:"path"`
+	Kind struct {
+		Type string `json:"type"`
+	} `json:"kind"`
+	Diff string `json:"diff"`
+}
+
+func patchPreview(changes []fileChange) *core.TurnPart {
+	paths := make([]string, 0, len(changes))
+	var body []string
+	for _, ch := range changes {
+		paths = append(paths, ch.Path)
+		diff := strings.TrimSuffix(ch.Diff, "\n")
+		switch ch.Kind.Type {
+		case "add":
+			diff = "+" + strings.ReplaceAll(diff, "\n", "\n+")
+		case "delete":
+			diff = "-" + strings.ReplaceAll(diff, "\n", "\n-")
+		}
+		body = append(body, diff)
+	}
+	return &core.TurnPart{
+		Type:        "tool",
+		ToolName:    "Edit",
+		ToolTarget:  strings.Join(paths, ", "),
+		Content:     textutil.ClampBody(strings.Join(body, "\n")),
+		ContentKind: core.ContentDiff,
+	}
+}
+
+// shellScript unwraps the `bash -lc '<script>'` an approval's command string
+// usually is; anything else comes back as is.
+func shellScript(command string) string {
+	shell, rest, ok := strings.Cut(command, " ")
+	if !ok {
+		return command
+	}
+	switch filepath.Base(shell) {
+	case "bash", "zsh", "sh":
+	default:
+		return command
+	}
+	flag, word, ok := strings.Cut(rest, " ")
+	if !ok || (flag != "-lc" && flag != "-c") {
+		return command
+	}
+	if script, ok := unquoteWord(word); ok {
+		return script
+	}
+	return command
+}
+
+// unquoteWord undoes POSIX shell quoting of exactly one word.
+func unquoteWord(s string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '\'':
+			j := strings.IndexByte(s[i+1:], '\'')
+			if j < 0 {
+				return "", false
+			}
+			b.WriteString(s[i+1 : i+1+j])
+			i += j + 1
+		case '"':
+			for i++; ; i++ {
+				if i >= len(s) {
+					return "", false
+				}
+				if s[i] == '"' {
+					break
+				}
+				if s[i] == '\\' && i+1 < len(s) && strings.IndexByte("\"\\$`", s[i+1]) >= 0 {
+					i++
+				}
+				b.WriteByte(s[i])
+			}
+		case '\\':
+			if i+1 >= len(s) {
+				return "", false
+			}
+			i++
+			b.WriteByte(s[i])
+		case ' ', '\t', '\n', ';', '&', '|', '<', '>', '(', ')':
+			return "", false
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), true
 }

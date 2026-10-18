@@ -724,6 +724,45 @@ func patchBody(hunks []patchHunk) string {
 	return b.String()
 }
 
+// ToolPreview renders a tool call that has not run yet.
+func ToolPreview(name string, input json.RawMessage) *core.TurnPart {
+	p := &core.TurnPart{Type: "tool", ToolName: name, ToolTarget: toolTarget(input)}
+	switch name {
+	case "Bash":
+		p.ToolInput = textutil.ClampBody(inputString(input, "command"))
+	case "Edit":
+		p.Content = lineDiff(inputString(input, "old_string"), inputString(input, "new_string"))
+	case "Write":
+		p.Content = lineDiff("", inputString(input, "content"))
+	default:
+		p.ToolInput = textutil.ClampBody(textutil.IndentJSON(input))
+	}
+	if p.Content != "" {
+		p.Content = textutil.ClampBody(p.Content)
+		p.ContentKind = core.ContentDiff
+	}
+	return p
+}
+
+// lineDiff marks every old line removed and every new line added.
+func lineDiff(old, new string) string {
+	var b strings.Builder
+	for _, side := range []struct {
+		text, mark string
+	}{{old, "-"}, {new, "+"}} {
+		if side.text == "" {
+			continue
+		}
+		for _, ln := range strings.Split(strings.TrimSuffix(side.text, "\n"), "\n") {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(side.mark + ln)
+		}
+	}
+	return b.String()
+}
+
 // toolTarget picks the most informative non-command argument to show beside a
 // tool name: a file path, a human description, or a search pattern. A Bash
 // command travels separately as the part's ToolInput.

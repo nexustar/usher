@@ -342,6 +342,40 @@ func TestCanUseToolControlRequest(t *testing.T) {
 	}
 }
 
+// The classifier's escalation carries its reason in color and may forbid a
+// standing rule.
+func TestCanUseToolCarriesPreviewAndReason(t *testing.T) {
+	h := interaction.New("")
+	m := New("", "", "", nil, 2, h, nil)
+	_, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	p := &process{id: "sid", cwd: "/work", in: w, done: make(chan struct{})}
+	defer close(p.done)
+	m.handleControlRequest(p, []byte(`{
+		"type":"control_request","request_id":"req-2","request":{
+			"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tool-2",
+			"input":{"command":"rm -rf build"},
+			"decision_reason":"\u001b[1mDeletes\u001b[0m files","decision_reason_type":"classifier",
+			"suppress_always_allow_rule":true,
+			"permission_suggestions":[{"type":"addRules","behavior":"allow","destination":"session","rules":[{"toolName":"Bash"}]}]
+		}}`))
+	deadline := time.Now().Add(time.Second)
+	for len(h.List()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	pending := h.List()
+	if len(pending) != 1 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	got := pending[0]
+	if got.AllowAlways || got.Reason != "Deletes files" || got.Preview == nil || got.Preview.ToolInput != "rm -rf build" {
+		t.Fatalf("pending = %+v preview = %+v", got, got.Preview)
+	}
+}
+
 func TestPermissionPromptToolFlagWhenHandlerConfigured(t *testing.T) {
 	bin, log := fakeClaude(t)
 	os.Setenv("FAKE_CLAUDE_LOG", log)

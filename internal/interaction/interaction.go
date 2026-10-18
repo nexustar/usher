@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/nexustar/usher/internal/core"
 )
 
 // Interaction kinds. The frontend picks its control from these, never from a
@@ -34,6 +36,11 @@ type Pending struct {
 	ToolName  string          `json:"tool_name,omitempty"`
 	ToolInput json.RawMessage `json:"tool_input,omitempty"`
 	Cwd       string          `json:"cwd,omitempty"`
+	// Preview shows a permission's tool call as a transcript tool part would;
+	// clients fall back to ToolInput without it.
+	Preview *core.TurnPart `json:"preview,omitempty"`
+	// Reason is the backend's own words for why it asks.
+	Reason string `json:"reason,omitempty"`
 	// AllowAlways is true only when the originating backend advertised a
 	// native rule or repeated-approval decision for this request.
 	AllowAlways bool      `json:"allow_always"`
@@ -77,6 +84,8 @@ type Request struct {
 	ToolName    string
 	ToolInput   json.RawMessage
 	Cwd         string
+	Preview     *core.TurnPart
+	Reason      string
 	AllowAlways bool
 }
 
@@ -255,6 +264,8 @@ func (m *Manager) submit(ctx context.Context, ev Request) (Response, error) {
 			ToolName:    ev.ToolName,
 			ToolInput:   ev.ToolInput,
 			Cwd:         ev.Cwd,
+			Preview:     ev.Preview,
+			Reason:      ev.Reason,
 			AllowAlways: ev.AllowAlways,
 			CreatedAt:   time.Now().UTC(),
 		},

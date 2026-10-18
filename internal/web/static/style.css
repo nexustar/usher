@@ -1601,6 +1601,18 @@ pre.raw-markdown {
   overflow: auto;
   margin: 0 0 0.5rem 0;
 }
+.interaction .tool-input.shell::before { content: '$ '; opacity: 0.5; }
+.interaction .meta .interaction-target {
+  margin-left: 0.5rem;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--font-sm);
+  overflow-wrap: anywhere;
+}
+.interaction .interaction-reason {
+  margin-bottom: 0.4rem;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}
 .interaction .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .interaction button {
   padding: 0.4rem 0.8rem;
