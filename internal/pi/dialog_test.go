@@ -165,7 +165,7 @@ func TestPermissionFastPathIsExact(t *testing.T) {
 // stream nothing read it between turns, so an extension that asked a question
 // outside a turn waited forever.
 func TestIdleWorkerAnswersDialog(t *testing.T) {
-	interactions := interaction.New("")
+	interactions := interaction.New()
 	r, w := fakePiRuntime(t, `{"sessionId":"s1"}`, `:`)
 	r.interactions = interactions
 

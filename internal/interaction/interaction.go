@@ -12,8 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -26,6 +24,7 @@ const (
 	KindPermission = "permission" // allow/deny, answered by Response.Behavior
 	KindChoice     = "choice"     // pick an option, answered by Response.Answers
 	KindText       = "text"       // free text, answered by Response.Answers
+	KindPlan       = "plan"       // approve a plan, answered by Response.Behavior
 )
 
 // Pending describes an interaction waiting for a user decision.
@@ -103,22 +102,25 @@ func kindOf(ev Request) string {
 	return KindPermission
 }
 
-// Manager owns pending interactions and the per-session blanket auto-approve
-// flag. Auto-approve is persisted to disk so the trust boundary survives
-// restarts.
+// Manager owns pending interactions and each session's approval.
 type Manager struct {
 	mu      sync.Mutex
 	pending map[string]*pendingEntry
 
-	autoMu      sync.Mutex
-	autoApprove map[string]bool // sessionID → true when blanket-allow is on
-	autoPath    string          // empty = no disk persistence (tests)
+	approvalMu sync.Mutex
+	approvals  ApprovalStore
 
 	subMu       sync.Mutex
 	pendingSubs map[*pendingSub]struct{} // notified when a new interaction is submitted
 
 	dedupMu sync.Mutex
 	dedup   map[string]*dedupDecision
+}
+
+// ApprovalStore keeps each session's approval; "" is unset.
+type ApprovalStore interface {
+	Approval(id string) string
+	SetApproval(id, approval string)
 }
 
 type dedupDecision struct {
@@ -133,86 +135,81 @@ type pendingSub struct {
 	ch chan Pending
 }
 
-// New constructs a Manager. autoPath is the file backing the auto-approve
-// flag map; pass "" to disable persistence (e.g. in tests). If the file
-// exists at construction time, its state is loaded; subsequent calls to
-// SetAutoApprove rewrite it atomically.
-func New(autoPath string) *Manager {
-	m := &Manager{
+// New constructs a Manager that keeps approvals in memory until SetApprovalStore.
+func New() *Manager {
+	return &Manager{
 		pending:     map[string]*pendingEntry{},
-		autoApprove: map[string]bool{},
-		autoPath:    autoPath,
+		approvals:   memApprovals{},
 		pendingSubs: map[*pendingSub]struct{}{},
 		dedup:       map[string]*dedupDecision{},
 	}
-	if autoPath != "" {
-		m.loadAutoApprove()
-	}
-	return m
 }
 
-// loadAutoApprove reads autoPath into m.autoApprove. Best-effort: a missing
-// file is normal on first run; a corrupt file is logged and treated as empty.
-func (m *Manager) loadAutoApprove() {
-	data, err := os.ReadFile(m.autoPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("auto-approve: read", "path", m.autoPath, "err", err)
+type memApprovals map[string]string
+
+func (m memApprovals) Approval(id string) string { return m[id] }
+
+func (m memApprovals) SetApproval(id, approval string) {
+	if approval == "" {
+		delete(m, id)
+	} else {
+		m[id] = approval
+	}
+}
+
+func (m *Manager) SetApprovalStore(s ApprovalStore) {
+	m.approvalMu.Lock()
+	m.approvals = s
+	m.approvalMu.Unlock()
+}
+
+// Approval is id's approval; one never set asks.
+func (m *Manager) Approval(id string) string {
+	m.approvalMu.Lock()
+	defer m.approvalMu.Unlock()
+	if approval := m.approvals.Approval(id); approval != "" {
+		return approval
+	}
+	return core.ApprovalAsk
+}
+
+// SetApproval records id's approval; "" returns it to ask. Entering
+// full allows what the session is already waiting on.
+func (m *Manager) SetApproval(id, approval string) {
+	m.approvalMu.Lock()
+	m.approvals.SetApproval(id, approval)
+	m.approvalMu.Unlock()
+	if m.Approval(id) != core.ApprovalFull {
+		return
+	}
+	m.mu.Lock()
+	var waiting []*pendingEntry
+	for _, p := range m.pending {
+		if p.SessionID == id && p.Kind == KindPermission {
+			waiting = append(waiting, p)
 		}
-		return
 	}
-	var loaded map[string]bool
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		slog.Warn("auto-approve: decode", "path", m.autoPath, "err", err)
-		return
-	}
-	m.autoMu.Lock()
-	defer m.autoMu.Unlock()
-	for k, v := range loaded {
-		if v {
-			m.autoApprove[k] = true
+	m.mu.Unlock()
+	for _, p := range waiting {
+		select {
+		case p.response <- Response{Behavior: "allow", Reason: "approval: full"}:
+		default:
 		}
 	}
 }
 
-// persistAutoApprove writes the current map to autoPath via temp-file +
-// rename so a partial write can't corrupt the on-disk state. Caller must
-// hold m.autoMu. Best-effort: failures are logged but don't surface.
-func (m *Manager) persistAutoApprove() {
-	if m.autoPath == "" {
-		return
-	}
-	data, err := json.Marshal(m.autoApprove)
-	if err != nil {
-		slog.Warn("auto-approve: encode", "err", err)
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(m.autoPath), 0o700); err != nil {
-		slog.Warn("auto-approve: mkdir", "err", err)
-		return
-	}
-	tmp := m.autoPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		slog.Warn("auto-approve: write tmp", "err", err)
-		return
-	}
-	if err := os.Rename(tmp, m.autoPath); err != nil {
-		slog.Warn("auto-approve: rename", "err", err)
-	}
-}
-
-// QuickDecide settles ev from blanket auto-approve without UI; returns
-// (zero, false) when input is needed.
+// QuickDecide settles ev without UI in full; returns (zero, false) when
+// input is needed.
 func (m *Manager) QuickDecide(ev Request) (Response, bool) {
 	// A bare allow carries no answer, so it can only settle a permission.
 	if kindOf(ev) != KindPermission {
 		return Response{}, false
 	}
-	if m.IsAutoApprove(ev.SessionID) {
+	if m.Approval(ev.SessionID) == core.ApprovalFull {
 		slog.Info("interaction auto-approved", "session", ev.SessionID, "tool", ev.ToolName)
 		return Response{
 			Behavior: "allow",
-			Reason:   "auto-approve",
+			Reason:   "approval: full",
 		}, true
 	}
 	return Response{}, false
@@ -376,24 +373,4 @@ func newID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-// SetAutoApprove flips the blanket "allow every tool call" flag for a
-// session and persists the change to disk so it survives restarts.
-func (m *Manager) SetAutoApprove(sessionID string, enabled bool) {
-	m.autoMu.Lock()
-	defer m.autoMu.Unlock()
-	if enabled {
-		m.autoApprove[sessionID] = true
-	} else {
-		delete(m.autoApprove, sessionID)
-	}
-	m.persistAutoApprove()
-}
-
-// IsAutoApprove reports whether sessionID is currently in blanket-allow mode.
-func (m *Manager) IsAutoApprove(sessionID string) bool {
-	m.autoMu.Lock()
-	defer m.autoMu.Unlock()
-	return m.autoApprove[sessionID]
 }

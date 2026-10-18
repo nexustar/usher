@@ -37,7 +37,7 @@ type FakeRouter struct {
 	startErr      error
 	started       []core.CreateOptions
 	archived      map[string]bool
-	autoAppr      map[string]bool
+	approvals     map[string]string
 	relayGate     chan struct{}
 	relayErr      error
 	routerSession string
@@ -53,7 +53,7 @@ func NewFakeRouter() *FakeRouter {
 		pendingCh: make(chan interaction.Pending, 8),
 		responses: map[string]interaction.Response{},
 		archived:  map[string]bool{},
-		autoAppr:  map[string]bool{},
+		approvals: map[string]string{},
 		queued:    map[string][]QueuedRelay{},
 		args:      map[string][]string{},
 	}
@@ -309,16 +309,24 @@ func (f *FakeRouter) IsArchived(id string) bool {
 	return f.archived[id]
 }
 
-func (f *FakeRouter) SetAutoApprove(id string, enabled bool) {
+func (f *FakeRouter) SetApproval(_ context.Context, id, approval string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.autoAppr[id] = enabled
+	f.approvals[id] = approval
+	return nil
 }
 
-func (f *FakeRouter) IsAutoApprove(id string) bool {
+func (f *FakeRouter) Approval(id string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.autoAppr[id]
+	if approval := f.approvals[id]; approval != "" {
+		return approval
+	}
+	return core.ApprovalAsk
+}
+
+func (f *FakeRouter) Approvals(string) []string {
+	return []string{core.ApprovalAsk, core.ApprovalFull}
 }
 
 func (f *FakeRouter) ListPendingInteractions() []interaction.Pending {

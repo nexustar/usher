@@ -132,8 +132,8 @@ func LastLine(tail []byte) []byte {
 }
 
 // StartRequest describes the first turn of a new backend session. Runtimes
-// must record AutoApprove before submitting the prompt: escalations are
-// answered by session id, so a decision recorded later misses the first turn.
+// must record Approval before submitting the prompt: escalations are
+// answered by session id, so an approval recorded later misses the first turn.
 type StartRequest struct {
 	Cwd                string
 	Prompt             string
@@ -141,7 +141,7 @@ type StartRequest struct {
 	Effort             string
 	AppendSystemPrompt string
 	ExtraArgs          []string
-	AutoApprove        bool
+	Approval           string
 	// Router asks for usher's session-routing MCP tools: a new session has no
 	// id to be designated by until its process is already running.
 	Router bool
@@ -230,6 +230,14 @@ type RouterDesignator interface {
 // current one; effort "default" drops a switch, where the backend can.
 type RuntimeSetter interface {
 	SetRuntime(ctx context.Context, sessionID, cwd, model, effort string) error
+}
+
+// Approver is an optional runtime capability: the approvals a
+// backend supports, and switching a live session to one. The approval itself is
+// recorded in interaction.Manager, which a runtime reads at spawn.
+type Approver interface {
+	Approvals() []string
+	SetApproval(ctx context.Context, sessionID, approval string) error
 }
 
 // Model is the backend-neutral model-picker projection. An Alias names

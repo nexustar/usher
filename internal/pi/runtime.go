@@ -894,8 +894,8 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	}
 	defer r.releaseWorker(w)
 	// Recorded before the prompt so first-turn escalations see it.
-	if req.AutoApprove && r.interactions != nil {
-		r.interactions.SetAutoApprove(state.SessionID, true)
+	if r.interactions != nil {
+		r.interactions.SetApproval(state.SessionID, req.Approval)
 	}
 	ch, err := r.prompt(ctx, state.SessionID, w, req.Prompt, true)
 	if err != nil {
@@ -905,8 +905,8 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 		}
 		r.mu.Unlock()
 		c.stop()
-		if req.AutoApprove && r.interactions != nil {
-			r.interactions.SetAutoApprove(state.SessionID, false)
+		if r.interactions != nil {
+			r.interactions.SetApproval(state.SessionID, "")
 		}
 		return "", nil, err
 	}
@@ -1045,6 +1045,14 @@ var _ backend.RuntimeSetter = (*Runtime)(nil)
 
 // SetRuntime switches the session's model and thinking level from its next
 // send; empty keeps the current one.
+var _ backend.Approver = (*Runtime)(nil)
+
+// Approvals: pi asks only through its permission extension, which usher
+// either shows or allows.
+func (r *Runtime) Approvals() []string { return []string{core.ApprovalAsk, core.ApprovalFull} }
+
+func (r *Runtime) SetApproval(context.Context, string, string) error { return nil }
+
 func (r *Runtime) SetRuntime(_ context.Context, id, _, model, effort string) error {
 	if effort == "default" {
 		return errors.New("pi has no default thinking level to return to: pick a level")

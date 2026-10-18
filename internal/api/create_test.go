@@ -4,27 +4,30 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/nexustar/usher/internal/agentprofile"
+	"github.com/nexustar/usher/internal/core"
 )
 
-// An omitted auto_approve keeps the agent profile's default; an explicit false
-// turns it off for this one session.
-func TestCreateSessionAutoApproveDistinguishesOmittedFromFalse(t *testing.T) {
-	decode := func(body string) *bool {
+// An omitted approval keeps the agent profile's; a given one wins.
+func TestCreateSessionApprovalOverridesAgent(t *testing.T) {
+	agents := agentprofile.New([]agentprofile.Profile{{Name: "dev", Approval: core.ApprovalFull}})
+	resolve := func(body string) string {
 		t.Helper()
 		var req CreateRequest
 		if err := json.NewDecoder(strings.NewReader(body)).Decode(&req); err != nil {
 			t.Fatal(err)
 		}
-		return req.AutoApprove
+		opts, err := req.Options(agents)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return opts.Approval
 	}
-
-	if got := decode(`{"agent":"dev"}`); got != nil {
-		t.Errorf("omitted auto_approve = %v, want nil", *got)
+	if got := resolve(`{"agent":"dev"}`); got != core.ApprovalFull {
+		t.Errorf("omitted approval = %q, want the agent's full", got)
 	}
-	if got := decode(`{"agent":"dev","auto_approve":false}`); got == nil || *got {
-		t.Errorf("explicit false = %v, want non-nil false", got)
-	}
-	if got := decode(`{"agent":"dev","auto_approve":true}`); got == nil || !*got {
-		t.Errorf("explicit true = %v, want non-nil true", got)
+	if got := resolve(`{"agent":"dev","approval":"ask"}`); got != core.ApprovalAsk {
+		t.Errorf("explicit ask = %q", got)
 	}
 }

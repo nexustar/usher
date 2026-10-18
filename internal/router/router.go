@@ -174,7 +174,7 @@ func (r *Router) retireRouter(id string) {
 		r.meta.SetExtraArgs(id, nil)
 	}
 	if r.interactions != nil {
-		r.interactions.SetAutoApprove(id, false)
+		r.interactions.SetApproval(id, "")
 	}
 	r.stopLive(id)
 }
@@ -802,8 +802,8 @@ func (r *Router) StartRouter(prompt, backend, model string) (string, error) {
 	return r.StartSession(core.CreateOptions{
 		Backend: backend, Model: model, Cwd: r.routerDir, InitialMessage: prompt,
 		AppendSystemPrompt: routerPrompt, ExtraArgs: slices.Clone(routerArgs[backend]),
-		AutoApprove: true,
-		Router:      true,
+		Approval: core.ApprovalFull,
+		Router:   true,
 	})
 }
 
@@ -916,7 +916,6 @@ func (r *Router) DeleteSession(id string) error {
 	// racing the fsnotify Remove event (mirror of fork's Upsert).
 	r.discovery.Remove(id)
 	r.meta.Forget(id)
-	r.interactions.SetAutoApprove(id, false)
 	r.clearTurnError(id)
 	slog.Info("session deleted", "session", id)
 	return nil
@@ -1672,12 +1671,57 @@ func (r *Router) HandleHook(ctx context.Context, ev interaction.Request) (intera
 	return r.interactions.Submit(ctx, ev)
 }
 
-func (r *Router) SetAutoApprove(sessionID string, enabled bool) {
-	r.interactions.SetAutoApprove(sessionID, enabled)
+// Approvals lists what backendName supports; nil when it does not say.
+func (r *Router) Approvals(backendName string) []string {
+	b, ok := r.backends[backendName]
+	if !ok {
+		return nil
+	}
+	if m, ok := b.Runtime.(backendpkg.Approver); ok {
+		return m.Approvals()
+	}
+	return nil
 }
 
-func (r *Router) IsAutoApprove(sessionID string) bool {
-	return r.interactions.IsAutoApprove(sessionID)
+// checkApproval accepts any known approval on a backend that does not list.
+func (r *Router) checkApproval(backendName, approval string) error {
+	approvals := r.Approvals(backendName)
+	if approval == "" || !core.ValidApproval(approval) || (approvals != nil && !slices.Contains(approvals, approval)) {
+		return fmt.Errorf("%w: backend %q has no approval %q", ErrBackendUnavailable, backendName, approval)
+	}
+	return nil
+}
+
+func (r *Router) Approval(id string) string {
+	return r.interactions.Approval(id)
+}
+
+// SetApproval sets id's approval, live where its backend can.
+func (r *Router) SetApproval(ctx context.Context, id, approval string) error {
+	sess, ok := r.GetSession(id)
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if sess.IsSubagent {
+		return ErrReadOnlySession
+	}
+	if err := r.checkApproval(sess.Backend, approval); err != nil {
+		return err
+	}
+	prev := r.interactions.Approval(id)
+	if approval == prev {
+		return nil
+	}
+	// Recorded first, so the switch Claude reports back reads as this one.
+	r.interactions.SetApproval(id, approval)
+	if approver, ok := r.backends[sess.Backend].Runtime.(backendpkg.Approver); ok {
+		if err := approver.SetApproval(ctx, id, approval); err != nil {
+			r.interactions.SetApproval(id, prev)
+			return err
+		}
+	}
+	slog.Info("approval changed", "session", id, "from", prev, "to", approval)
+	return nil
 }
 
 // flattenTurnText renders a core.Turn to plain text. User turns carry their
@@ -2016,6 +2060,9 @@ func (r *Router) prepare(ctx context.Context, o core.CreateOptions) (core.Create
 			return o, fmt.Errorf("model %s supports effort %s, not %q", o.Model, strings.Join(levels, "/"), o.Effort)
 		}
 	}
+	if err := r.checkApproval(o.Backend, o.Approval); o.Approval != "" && err != nil {
+		return o, err
+	}
 	return o, nil
 }
 
@@ -2071,7 +2118,7 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 	}
 	id, ch, err := r.senderForBackend(o.Backend).Start(ctx, backendpkg.StartRequest{
 		Cwd: o.Cwd, Prompt: o.InitialMessage, Model: o.Model, Effort: o.Effort,
-		AppendSystemPrompt: o.AppendSystemPrompt, ExtraArgs: o.ExtraArgs, AutoApprove: o.AutoApprove, Router: o.Router,
+		AppendSystemPrompt: o.AppendSystemPrompt, ExtraArgs: o.ExtraArgs, Approval: o.Approval, Router: o.Router,
 	})
 	if err != nil {
 		if o.Router {

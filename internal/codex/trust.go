@@ -12,8 +12,8 @@ type projectConfig struct {
 }
 
 // threadParamsFor is threadParams plus project trust.
-func (c *Client) threadParamsFor(ctx context.Context, cwd, model string) map[string]any {
-	p := c.threadParams(cwd, model)
+func (c *Client) threadParamsFor(ctx context.Context, cwd, model, approval string) map[string]any {
+	p := c.threadParams(cwd, model, approval)
 	config := p["config"].(map[string]any)
 	for k := range config {
 		if k == "projects" || strings.HasPrefix(k, "projects.") {

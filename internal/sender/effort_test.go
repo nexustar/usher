@@ -16,7 +16,7 @@ import (
 func TestStartSpawnsClaudeWithEffort(t *testing.T) {
 	argsPath := filepath.Join(t.TempDir(), "args")
 	t.Setenv("FAKE_CLAUDE_ARGS", argsPath)
-	s := New(fakeClaude(t), "", t.TempDir(), "", 1, false, interaction.New(""), nil)
+	s := New(fakeClaude(t), t.TempDir(), "", 1, false, interaction.New(), nil)
 	s.tail.appearWait = 50 * time.Millisecond
 	t.Cleanup(s.Shutdown)
 

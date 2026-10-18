@@ -52,8 +52,9 @@ type Router interface {
 	Pin(id string)
 	Unpin(id string)
 	IsPinned(id string) bool
-	SetAutoApprove(id string, enabled bool)
-	IsAutoApprove(id string) bool
+	Approval(id string) string
+	SetApproval(ctx context.Context, id, approval string) error
+	Approvals(backendName string) []string
 	HasTerminal(id string) bool
 	TerminalAvailable() bool
 	ComposerItems(ctx context.Context, id, cwd string) (backend.ComposerCatalog, error)

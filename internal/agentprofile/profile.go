@@ -27,7 +27,9 @@ type Profile struct {
 	Effort             string   `json:"effort,omitempty"`
 	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
 	ExtraArgs          []string `json:"extra_args,omitempty"`
-	AutoApprove        bool     `json:"auto_approve,omitempty"`
+	Approval           string   `json:"approval,omitempty"`
+	// LegacyAutoApprove is read from older files as auto.
+	LegacyAutoApprove bool `json:"auto_approve,omitempty"`
 	// Builtin marks the default agent while nothing is stored for it.
 	Builtin bool `json:"builtin,omitempty"`
 }
@@ -154,6 +156,13 @@ func validate(p Profile) (Profile, error) {
 	}
 	if p.Name == "." || p.Name == ".." {
 		return Profile{}, errors.New(`name may not be "." or ".."`)
+	}
+	if p.LegacyAutoApprove && p.Approval == "" {
+		p.Approval = core.ApprovalAuto
+	}
+	p.LegacyAutoApprove = false
+	if !core.ValidApproval(p.Approval) {
+		return Profile{}, fmt.Errorf("unknown approval %q", p.Approval)
 	}
 	// An empty entry is a real argument, as in `--tools ""`.
 	if len(p.ExtraArgs) == 0 {
@@ -364,6 +373,6 @@ func (s *Store) Resolve(name, cwd, backend, model, effort string) (core.CreateOp
 	return core.CreateOptions{
 		Backend: p.Backend, Cwd: p.Cwd, Model: p.Model, Effort: p.Effort,
 		AppendSystemPrompt: p.AppendSystemPrompt, ExtraArgs: p.ExtraArgs,
-		AutoApprove: p.AutoApprove,
+		Approval: p.Approval,
 	}, nil
 }

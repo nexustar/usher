@@ -17,12 +17,12 @@ import (
 // Session is a core.Session plus the flags usher keeps outside the log.
 type Session struct {
 	core.Session
-	AutoApprove       bool `json:"auto_approve"`
-	Archived          bool `json:"archived"`
-	Pinned            bool `json:"pinned"`
-	Router            bool `json:"router,omitempty"`
-	TerminalOpen      bool `json:"terminal_open,omitempty"`
-	TerminalAvailable bool `json:"terminal_available,omitempty"`
+	Approval          string `json:"approval,omitempty"`
+	Archived          bool   `json:"archived"`
+	Pinned            bool   `json:"pinned"`
+	Router            bool   `json:"router,omitempty"`
+	TerminalOpen      bool   `json:"terminal_open,omitempty"`
+	TerminalAvailable bool   `json:"terminal_available,omitempty"`
 	// AppendSystemPrompt and ExtraArgs are the launch options, on a single
 	// session's view only.
 	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
@@ -55,11 +55,11 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out = append(out, Session{
-			Session:     sess,
-			AutoApprove: s.Router.IsAutoApprove(sess.ID),
-			Archived:    archived,
-			Pinned:      s.Router.IsPinned(sess.ID),
-			Router:      sess.ID == routerID,
+			Session:  sess,
+			Approval: s.Router.Approval(sess.ID),
+			Archived: archived,
+			Pinned:   s.Router.IsPinned(sess.ID),
+			Router:   sess.ID == routerID,
 		})
 	}
 	WriteJSON(w, http.StatusOK, SessionList{Sessions: out})
@@ -84,7 +84,7 @@ func (s *Server) view(ctx context.Context, id string, wait time.Duration) (Sessi
 	prompt, args := s.Router.LaunchOptions(id)
 	return Session{
 		Session:            sess,
-		AutoApprove:        s.Router.IsAutoApprove(id),
+		Approval:           s.Router.Approval(id),
 		Archived:           s.Router.IsArchived(id),
 		Pinned:             s.Router.IsPinned(id),
 		Router:             id == s.Router.RouterSession(),
@@ -104,8 +104,7 @@ func (s *Server) WriteCreated(w http.ResponseWriter, r *http.Request, id string)
 
 // CreateRequest spawns a session. When Agent names a configured agent,
 // non-empty Cwd/Backend/Model/Effort override that agent's defaults; without it they
-// are the request in full. AutoApprove is a pointer: omitted keeps the agent's
-// default, an explicit false turns it off for this session only.
+// are the request in full, Approval included.
 type CreateRequest struct {
 	Agent          string `json:"agent,omitempty"`
 	Cwd            string `json:"cwd,omitempty"`
@@ -113,7 +112,7 @@ type CreateRequest struct {
 	Backend        string `json:"backend,omitempty"`
 	Model          string `json:"model,omitempty"`
 	Effort         string `json:"effort,omitempty"`
-	AutoApprove    *bool  `json:"auto_approve,omitempty"`
+	Approval       string `json:"approval,omitempty"`
 }
 
 // Options resolves the request against the configured agents.
@@ -123,8 +122,8 @@ func (req CreateRequest) Options(agents *agentprofile.Store) (core.CreateOptions
 		return opts, err
 	}
 	opts.InitialMessage = req.InitialMessage
-	if req.AutoApprove != nil {
-		opts.AutoApprove = *req.AutoApprove
+	if req.Approval != "" {
+		opts.Approval = req.Approval
 	}
 	return opts, nil
 }
@@ -163,15 +162,16 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 // request; Effort "default" drops a Claude switch. After a usher restart a
 // Claude session keeps the model its last turn ran on but not the effort.
 // ExtraArgs apply from the session's next spawn — pause and resume it to apply
-// them now; an empty list clears them.
+// them now; an empty list clears them. Approval applies at once on
+// Claude, from the next turn on Codex.
 type PatchRequest struct {
-	Title       *string   `json:"title,omitempty"`
-	Archived    *bool     `json:"archived,omitempty"`
-	Pinned      *bool     `json:"pinned,omitempty"`
-	AutoApprove *bool     `json:"auto_approve,omitempty"`
-	Model       string    `json:"model,omitempty"`
-	Effort      string    `json:"effort,omitempty"`
-	ExtraArgs   *[]string `json:"extra_args,omitempty"`
+	Title     *string   `json:"title,omitempty"`
+	Archived  *bool     `json:"archived,omitempty"`
+	Pinned    *bool     `json:"pinned,omitempty"`
+	Approval  string    `json:"approval,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	Effort    string    `json:"effort,omitempty"`
+	ExtraArgs *[]string `json:"extra_args,omitempty"`
 }
 
 func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
@@ -222,8 +222,11 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			s.Router.Unpin(id)
 		}
 	}
-	if req.AutoApprove != nil {
-		s.Router.SetAutoApprove(id, *req.AutoApprove)
+	if req.Approval != "" {
+		if err := s.Router.SetApproval(r.Context(), id, req.Approval); err != nil {
+			WriteError(w, ErrStatus(err), err.Error())
+			return
+		}
 	}
 	sess, _ := s.view(r.Context(), id, 0)
 	WriteJSON(w, http.StatusOK, sess)

@@ -32,12 +32,12 @@ func TestSessionRoutes(t *testing.T) {
 		t.Errorf("list with archived = %s", body)
 	}
 
-	code, body := do(http.MethodPatch, "/sessions/s1", `{"archived":false,"auto_approve":true}`)
-	if code != http.StatusOK || !strings.Contains(body, `"archived":false`) || !strings.Contains(body, `"auto_approve":true`) {
+	code, body := do(http.MethodPatch, "/sessions/s1", `{"archived":false,"approval":"full"}`)
+	if code != http.StatusOK || !strings.Contains(body, `"archived":false`) || !strings.Contains(body, `"approval":"full"`) {
 		t.Errorf("patch = %d %s", code, body)
 	}
-	if f.IsArchived("s1") || !f.IsAutoApprove("s1") {
-		t.Errorf("patch left archived=%v auto_approve=%v", f.IsArchived("s1"), f.IsAutoApprove("s1"))
+	if f.IsArchived("s1") || f.Approval("s1") != "full" {
+		t.Errorf("patch left archived=%v approval=%v", f.IsArchived("s1"), f.Approval("s1"))
 	}
 
 	if code, body := do(http.MethodPost, "/sessions/s1/messages", `{"text":"hi"}`); code != http.StatusAccepted {
@@ -233,7 +233,7 @@ func TestRespondInteraction(t *testing.T) {
 
 func TestBackendsAndInfo(t *testing.T) {
 	do := serve(t, api.Config{Router: pluginapitest.NewFakeRouter(), Version: "v0.10.0", ReadOnly: true})
-	if _, body := do(http.MethodGet, "/backends", ""); body != `{"backends":[{"name":"claude","models":[]}]}`+"\n" {
+	if _, body := do(http.MethodGet, "/backends", ""); body != `{"backends":[{"name":"claude","models":[],"approvals":["ask","full"]}]}`+"\n" {
 		t.Errorf("backends = %s", body)
 	}
 	if _, body := do(http.MethodGet, "/info", ""); body != `{"version":"v0.10.0","read_only":true}`+"\n" {

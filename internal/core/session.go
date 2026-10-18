@@ -137,10 +137,28 @@ type CreateOptions struct {
 	Effort             string
 	AppendSystemPrompt string
 	ExtraArgs          []string
-	AutoApprove        bool
+	// Approval is one of the Approval* constants; empty takes the default.
+	Approval string
 	// Router designates the new session as usher's router, replacing any
 	// previous one.
 	Router bool
+}
+
+// Approvals name who answers a backend's approval requests. Each
+// backend supports a subset.
+const (
+	ApprovalAsk  = "ask"  // the user
+	ApprovalAuto = "auto" // the backend's own reviewer
+	ApprovalFull = "full" // nobody: usher allows them
+)
+
+// ValidApproval reports whether approval is "" or one of the Approval* constants.
+func ValidApproval(approval string) bool {
+	switch approval {
+	case "", ApprovalAsk, ApprovalAuto, ApprovalFull:
+		return true
+	}
+	return false
 }
 
 // Errors a caller can branch on, whichever layer raised them.

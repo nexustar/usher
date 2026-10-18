@@ -164,15 +164,15 @@ func TestSessionControlRoundTrip(t *testing.T) {
 	if err := c.SetArchived("s1", true); err != nil {
 		t.Fatalf("SetArchived: %v", err)
 	}
-	if err := c.SetAutoApprove("s1", true); err != nil {
-		t.Fatalf("SetAutoApprove: %v", err)
+	if err := c.SetApproval("s1", "full"); err != nil {
+		t.Fatalf("SetApproval: %v", err)
 	}
 	sessions, err = c.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, sess := range sessions {
-		if sess.ID == "s1" && (!sess.Archived || !sess.AutoApprove) {
+		if sess.ID == "s1" && (!sess.Archived || sess.Approval != "full") {
 			t.Fatalf("flags did not round-trip: %+v", sess)
 		}
 	}

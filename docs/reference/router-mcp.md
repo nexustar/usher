@@ -11,7 +11,7 @@
 a backend, model and effort, with the same meaning as on the new-session page:
 the agent's defaults, overridden by what is given alongside.
 
-None of them answers a permission request or changes a session's auto-approve:
+None of them answers a permission request or changes a session's approval:
 those stay with the user, on the session's page or the Router page.
 
 The flag is intentionally absent from the MCP configuration usher injects into

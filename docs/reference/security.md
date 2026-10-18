@@ -38,6 +38,21 @@ agents. The remaining Claude hook channel uses a Unix domain socket with mode
 `0600` and never traverses the web port. Approval persistence is local to the
 usher data directory.
 
+Each session has an approval — who answers its approval requests — kept in
+`sessions.json`; a session without one asks, as both CLIs do by default. Set
+one on the default agent to start new sessions elsewhere:
+
+| Approval | Claude | Codex | pi |
+|---|---|---|---|
+| `ask` | you, in `default` | you | you |
+| `auto` | its classifier, in `auto` | its `auto_review` reviewer | — |
+| `full` | usher allows each one | usher allows each one | usher allows each one |
+
+An approval changes who answers, not what the agent may do: Codex's sandbox stays
+what its config and flags make it. Claude switches at once, Codex from its
+next turn. `bypassPermissions` is never used: Claude cannot enter it after
+spawn.
+
 ## What usher protects against
 
 With a password configured, usher's web authentication protects against:

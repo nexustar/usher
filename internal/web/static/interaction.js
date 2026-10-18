@@ -5,7 +5,7 @@ import {
   esc, currentDetailId, setPendingInteractionCounts, growPrompt,
   routedTargets, getLastSessions,
 } from './state.js';
-import { diffHTML } from './render.js';
+import { diffHTML, renderMarkdown } from './render.js';
 
 // The open session's own interactions, and those of the sessions it routed
 // work to.
@@ -117,7 +117,25 @@ function permissionBody(p) {
       : '');
 }
 
+// renderPlan asks to leave plan mode with the plan shown in full.
+function renderPlan(p, position, total) {
+  return `
+    <div class="interaction plan" data-id="${esc(p.id)}">
+      <div class="meta">
+        <strong>plan</strong>
+        ${sourceHTML(p)}
+        ${total > 1 ? `<span class="muted">${position} of ${total}</span>` : ''}
+      </div>
+      <div class="plan-body">${renderMarkdown((p.preview && p.preview.content) || '')}</div>
+      <div class="actions">
+        <button class="allow primary">approve</button>
+        <button class="deny secondary" data-reason="The user wants to keep planning.">keep planning</button>
+      </div>
+    </div>`;
+}
+
 function renderPermission(p, position, total) {
+  if (p.kind === 'plan') return renderPlan(p, position, total);
   const always = p.allow_always
     ? '<button class="allow secondary" data-scope="always">allow always</button>'
     : '';
@@ -272,7 +290,7 @@ function wirePermission(node) {
     btn.addEventListener('click', () => {
       const behavior = btn.classList.contains('allow') ? 'allow' : 'deny';
       btn.closest('.actions').querySelectorAll('button').forEach(b => { b.disabled = true; });
-      respond(id, behavior, btn.dataset.scope || 'once');
+      respond(id, behavior, btn.dataset.scope || 'once', btn.dataset.reason);
     });
   });
 }

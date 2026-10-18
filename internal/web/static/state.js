@@ -185,7 +185,8 @@ export const cwdArchivedVisible = new Map();
 
 // --- utility functions ---
 
-// fetchBackends returns {backends: [name], models: {name: [model]}}, or {}.
+// fetchBackends returns {backends: [name], models: {name: [model]},
+// approvals: {name: [approval]}}, or {}.
 export async function fetchBackends() {
   const res = await fetch('/api/v1/backends');
   if (!res.ok) return {};
@@ -193,7 +194,73 @@ export async function fetchBackends() {
   return {
     backends: list.map(b => b.name),
     models: Object.fromEntries(list.map(b => [b.name, b.models])),
+    approvals: Object.fromEntries(list.map(b => [b.name, b.approvals || []])),
   };
+}
+
+// Who answers the agent's approval requests under each approval, in menu
+// order.
+export const APPROVALS = {
+  ask: 'you decide each request',
+  auto: 'a reviewer model decides most requests',
+  full: 'every request is allowed',
+};
+
+// approvalToggleHTML is the composer's approval control: a button that opens
+// its menu (see wireApprovalToggle).
+export function approvalToggleHTML(approval, hidden) {
+  return `<div class="approval-wrap"${hidden ? ' hidden' : ''}>
+    <button class="approval-toggle" type="button" aria-haspopup="menu" aria-expanded="false"
+      data-approval="${esc(approval)}" title="who answers the agent’s approval requests">
+      <span class="t-icon">ϟ</span><span class="t-full">approve:</span><span class="toggle-val">${esc(approval)}</span>
+    </button>
+    <div class="composer-config-menu approval-menu" role="menu" hidden></div>
+  </div>`;
+}
+
+export function setApprovalToggle(wrap, approval) {
+  const btn = wrap.querySelector('.approval-toggle');
+  btn.dataset.approval = approval;
+  btn.querySelector('.toggle-val').textContent = approval;
+}
+
+// wireApprovalToggle lists choices() in the menu; pick(approval) resolves true
+// once the approval is taken, which the toggle then shows.
+export function wireApprovalToggle(wrap, choices, pick) {
+  const btn = wrap.querySelector('.approval-toggle');
+  const menu = wrap.querySelector('.approval-menu');
+  const close = () => {
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDoc);
+  };
+  const onDoc = e => { if (!wrap.contains(e.target)) close(); };
+  btn.addEventListener('click', () => {
+    if (!menu.hidden) { close(); return; }
+    const current = btn.dataset.approval;
+    const list = choices();
+    menu.innerHTML = '<div class="config-menu-body">' +
+      Object.keys(APPROVALS).filter(a => list.includes(a) || a === current).map(a =>
+        `<button type="button" class="config-row" data-approval="${a}">` +
+        `<span><span class="approval-name">${a}</span><span class="approval-desc">${esc(APPROVALS[a])}</span></span>` +
+        `<span class="config-check">${a === current ? '✓' : ''}</span></button>`).join('') + '</div>';
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', onDoc);
+  });
+  menu.addEventListener('click', async e => {
+    const row = e.target.closest('button[data-approval]');
+    if (!row) return;
+    close();
+    const approval = row.dataset.approval;
+    if (approval === btn.dataset.approval) return;
+    btn.disabled = true;
+    try {
+      if (await pick(approval)) setApprovalToggle(wrap, approval);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 // patchSession sets the fields of PATCH /api/v1/sessions/{id}.

@@ -265,7 +265,7 @@ func TestCallCreateIgnoresWireOnlyFields(t *testing.T) {
 func TestCallCreateFromAgent(t *testing.T) {
 	f := pluginapitest.NewFakeRouter()
 	agents := agentprofile.New([]agentprofile.Profile{
-		{Name: "opus", Backend: "claude", Model: "opus", Cwd: "/srv/app", AutoApprove: true},
+		{Name: "opus", Backend: "claude", Model: "opus", Cwd: "/srv/app", Approval: "full"},
 	})
 	r := &Router{API: pluginapitest.StartWithAgents(t, f, agents)}
 
@@ -274,7 +274,7 @@ func TestCallCreateFromAgent(t *testing.T) {
 	if len(started) != 1 {
 		t.Fatalf("started = %+v", started)
 	}
-	if got := started[0]; got.Backend != "claude" || got.Model != "opus" || got.Cwd != "/tmp/other" || !got.AutoApprove {
+	if got := started[0]; got.Backend != "claude" || got.Model != "opus" || got.Cwd != "/tmp/other" || got.Approval != "full" {
 		t.Fatalf("options = %+v", got)
 	}
 	_, err := r.Call("create_session", json.RawMessage(`{"agent":"sonnet","initial_message":"build"}`))

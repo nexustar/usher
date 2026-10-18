@@ -75,7 +75,7 @@ func newQuestionTestRouter(t *testing.T, rt *steerRuntime) (*Router, string) {
 		backends:       map[string]backend.Backend{"codex": {Transcript: transcript.Codex{}, Replier: transcript.Codex{}, Runtime: rt}},
 		defaultBackend: "codex",
 		broker:         broker.New(),
-		interactions:   interaction.New(""),
+		interactions:   interaction.New(),
 		activeSend:     map[string]*sendToken{},
 		sendQueue:      map[string][]pendingSend{},
 		creating:       map[string]core.Session{},
@@ -160,7 +160,7 @@ func TestInPlaceQuestionAnswerStartsATurnWhenIdle(t *testing.T) {
 
 	// The manager shares one decision per question id for a minute; a fresh
 	// manager asks again.
-	r.interactions = interaction.New("")
+	r.interactions = interaction.New()
 	publishAsked(r, id)
 	pending = awaitQuestions(t, r, 1)[0]
 	if err := r.interactions.Respond(pending.ID, interaction.Response{Behavior: "allow", Answers: map[string]string{"Deploy?": "No"}}); err != nil {

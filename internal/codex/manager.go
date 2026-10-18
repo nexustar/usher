@@ -51,7 +51,7 @@ type Manager struct {
 	stopOnce sync.Once
 }
 
-type runtimeSwitch struct{ model, effort string }
+type runtimeSwitch struct{ model, effort, approval string }
 
 func NewManager(bin string, interactions *interaction.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
 	if logger == nil {
@@ -258,7 +258,7 @@ func (m *Manager) finishStart() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions string, extraArgs []string, router bool) (string, error) {
+func (m *Manager) StartThread(ctx context.Context, cwd, model, approval, instructions string, extraArgs []string, router bool) (string, error) {
 	victim, err := m.reserve()
 	if err != nil {
 		return "", err
@@ -267,7 +267,7 @@ func (m *Manager) StartThread(ctx context.Context, cwd, model, instructions stri
 		victim.Shutdown()
 	}
 	c := m.newClient("", instructions, extraArgs, router)
-	id, err := c.StartThread(ctx, cwd, model)
+	id, err := c.StartThread(ctx, cwd, model, approval)
 	if err != nil {
 		m.finishStart()
 		c.Shutdown()
@@ -381,7 +381,7 @@ func (m *Manager) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan
 	sw := m.switches[id]
 	m.mu.Unlock()
 	done, deltas, err := m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
-		return c.StartTurn(ctx, id, prompt, cwd, sw.model, sw.effort)
+		return c.StartTurn(ctx, id, prompt, cwd, sw.model, sw.effort, sw.approval)
 	})
 	if err == nil {
 		m.mu.Lock()
@@ -405,6 +405,15 @@ func (m *Manager) SetRuntime(id, model, effort string) {
 	if effort != "" {
 		sw.effort = effort
 	}
+	m.switches[id] = sw
+}
+
+// SetApproval applies approval to the thread from its next turn.
+func (m *Manager) SetApproval(id, approval string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sw := m.switches[id]
+	sw.approval = approval
 	m.switches[id] = sw
 }
 

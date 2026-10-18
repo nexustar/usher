@@ -2,14 +2,15 @@ package interaction
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nexustar/usher/internal/core"
 )
 
 func TestManager_SubmitAndRespond(t *testing.T) {
-	m := New("")
+	m := New()
 
 	var (
 		gotResp Response
@@ -45,7 +46,7 @@ func TestManager_SubmitAndRespond(t *testing.T) {
 }
 
 func TestManagerDeduplicatesToolUseID(t *testing.T) {
-	m := New("")
+	m := New()
 	ev := Request{SessionID: "s", ToolUseID: "tool-1", ToolName: "Bash"}
 	results := make(chan Response, 2)
 	for range 2 {
@@ -70,7 +71,7 @@ func TestManagerDeduplicatesToolUseID(t *testing.T) {
 }
 
 func TestManager_ContextCancelReleases(t *testing.T) {
-	m := New("")
+	m := New()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
@@ -93,14 +94,14 @@ func TestManager_ContextCancelReleases(t *testing.T) {
 }
 
 func TestManager_RespondUnknown(t *testing.T) {
-	m := New("")
+	m := New()
 	if err := m.Respond("nope", Response{Behavior: "allow"}); err == nil {
 		t.Error("expected error")
 	}
 }
 
 func TestManager_RespondTwice(t *testing.T) {
-	m := New("")
+	m := New()
 	go func() { _, _ = m.Submit(context.Background(), Request{SessionID: "s"}) }()
 	id := waitForPending(t, m)
 	if err := m.Respond(id, Response{Behavior: "allow"}); err != nil {
@@ -115,7 +116,7 @@ func TestManager_RespondTwice(t *testing.T) {
 }
 
 func TestManagerSessionScopeRequiresBackendSupport(t *testing.T) {
-	m := New("")
+	m := New()
 	go func() { _, _ = m.Submit(context.Background(), Request{SessionID: "s", ToolName: "Bash"}) }()
 	id := waitForPending(t, m)
 	if err := m.Respond(id, Response{Behavior: "allow", Scope: "always"}); err == nil {
@@ -130,7 +131,7 @@ func TestManagerSessionScopeRequiresBackendSupport(t *testing.T) {
 }
 
 func TestManagerPassesSupportedSessionScopeToBackend(t *testing.T) {
-	m := New("")
+	m := New()
 	result := make(chan Response, 1)
 	go func() {
 		r, _ := m.Submit(context.Background(), Request{SessionID: "s", ToolName: "Bash", AllowAlways: true})
@@ -150,7 +151,7 @@ func TestManagerPassesSupportedSessionScopeToBackend(t *testing.T) {
 }
 
 func TestManager_ConcurrentSubmits(t *testing.T) {
-	m := New("")
+	m := New()
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
@@ -176,28 +177,28 @@ func TestManager_ConcurrentSubmits(t *testing.T) {
 }
 
 func TestQuickDecide(t *testing.T) {
-	m := New("")
+	m := New()
 
 	// Empty manager: no decision yet, caller must block on UI.
 	if resp, ok := m.QuickDecide(Request{SessionID: "s", ToolName: "Read"}); ok {
 		t.Errorf("expected (zero,false) on empty manager; got (%+v,%v)", resp, ok)
 	}
 
-	// Auto-approve settles instantly.
-	m.SetAutoApprove("s", true)
+	// Full settles instantly.
+	m.SetApproval("s", core.ApprovalFull)
 	resp, ok := m.QuickDecide(Request{SessionID: "s", ToolName: "Bash"})
-	if !ok || resp.Behavior != "allow" || resp.Reason != "auto-approve" {
-		t.Errorf("auto-approve QuickDecide = (%+v,%v); want allow/auto-approve/true", resp, ok)
+	if !ok || resp.Behavior != "allow" {
+		t.Errorf("full QuickDecide = (%+v,%v); want allow/true", resp, ok)
 	}
-	m.SetAutoApprove("s", false)
+	m.SetApproval("s", "")
 }
 
 // AskUserQuestion must never be settled by QuickDecide: a bare "allow" from
 // auto-approve would let the tool block on the pane TUI
 // selector instead of being answered through the web UI.
 func TestQuickDecideSkipsAskUserQuestion(t *testing.T) {
-	m := New("")
-	m.SetAutoApprove("s", true)
+	m := New()
+	m.SetApproval("s", core.ApprovalFull)
 	if resp, ok := m.QuickDecide(Request{SessionID: "s", ToolName: "AskUserQuestion"}); ok {
 		t.Errorf("AskUserQuestion under auto-approve = (%+v,%v); want (zero,false)", resp, ok)
 	}
@@ -207,30 +208,25 @@ func TestQuickDecideSkipsAskUserQuestion(t *testing.T) {
 	}
 }
 
-func TestAutoApprovePersistence(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "auto-approve.json")
-
-	// Set two sessions in the first manager.
-	m1 := New(path)
-	m1.SetAutoApprove("session-a", true)
-	m1.SetAutoApprove("session-b", true)
-	m1.SetAutoApprove("session-a", false) // remove a; only b should persist
-
-	// A fresh manager pointed at the same file should rehydrate state.
-	m2 := New(path)
-	if m2.IsAutoApprove("session-a") {
-		t.Errorf("session-a should NOT be auto-approve after rehydrate")
+func TestApprovalAsksUntilSetAndFullReleasesWaiting(t *testing.T) {
+	m := New()
+	if got := m.Approval("s"); got != core.ApprovalAsk {
+		t.Fatalf("unset approval = %q, want ask", got)
 	}
-	if !m2.IsAutoApprove("session-b") {
-		t.Errorf("session-b should remain auto-approve after rehydrate")
-	}
-
-	// Toggling on m2 must round-trip via disk.
-	m2.SetAutoApprove("session-c", true)
-	m3 := New(path)
-	if !m3.IsAutoApprove("session-c") {
-		t.Errorf("session-c should survive a second rehydrate")
+	done := make(chan Response, 1)
+	go func() {
+		r, _ := m.Submit(context.Background(), Request{SessionID: "s", ToolName: "Bash"})
+		done <- r
+	}()
+	waitForPending(t, m)
+	m.SetApproval("s", core.ApprovalFull)
+	select {
+	case r := <-done:
+		if r.Behavior != "allow" {
+			t.Fatalf("waiting permission = %+v, want allow", r)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("entering full left the permission waiting")
 	}
 }
 

@@ -121,7 +121,7 @@ func TestManagerLRUEvictsIdleWorkerAndColdResumes(t *testing.T) {
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, err := m.StartThread(ctx, "/tmp", "", "", nil, false)
+	id, err := m.StartThread(ctx, "/tmp", "", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestStartThreadPassesDeveloperInstructions(t *testing.T) {
 	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := m.StartThread(ctx, "/tmp", "", "Be concise.", nil, false); err != nil {
+	if _, err := m.StartThread(ctx, "/tmp", "", "", "Be concise.", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	m.Shutdown()
@@ -227,11 +227,11 @@ func TestRouterConfigSelection(t *testing.T) {
 		map[string]any{"mcp_servers.usher.args": []string{"mcp-stdio"}}, nil, 1, nil)
 	m.SetRouterConfig(map[string]any{"mcp_servers.usher.args": []string{"mcp-stdio", "--router-tools"}})
 
-	cfg := m.newClient("", "", nil, true).threadParams("/tmp", "")["config"].(map[string]any)
+	cfg := m.newClient("", "", nil, true).threadParams("/tmp", "", "")["config"].(map[string]any)
 	if !reflect.DeepEqual(cfg["mcp_servers.usher.args"], []string{"mcp-stdio", "--router-tools"}) {
 		t.Fatalf("fresh router config = %v", cfg)
 	}
-	cfg = m.newClient("", "", nil, false).threadParams("/tmp", "")["config"].(map[string]any)
+	cfg = m.newClient("", "", nil, false).threadParams("/tmp", "", "")["config"].(map[string]any)
 	if !reflect.DeepEqual(cfg["mcp_servers.usher.args"], []string{"mcp-stdio"}) {
 		t.Fatalf("ordinary config = %v", cfg)
 	}
@@ -250,7 +250,7 @@ func TestStartThreadRouterDesignation(t *testing.T) {
 	m.SetRouterConfig(map[string]any{"router_marker": true})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, err := m.StartThread(ctx, "/tmp", "", "", nil, true)
+	id, err := m.StartThread(ctx, "/tmp", "", "", "", nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestNewClientMergesPerSessionExtraArgs(t *testing.T) {
 		map[string]any{"approval_policy": "never", "model_reasoning_effort": "high"},
 		nil, 1, nil)
 	c := m.newClient("sid", "", []string{"--sandbox", "workspace-write", "--ask-for-approval", "never", "-c", "approval_policy=untrusted"}, false)
-	p := c.threadParams("/tmp", "")
+	p := c.threadParams("/tmp", "", "")
 	if p["sandbox"] != "workspace-write" {
 		t.Fatalf("sandbox = %v, want the per-session override", p["sandbox"])
 	}
@@ -309,7 +309,7 @@ func TestColdResumeAppliesExtraArgsLookup(t *testing.T) {
 	w := m.workers["cold-thread"]
 	m.mu.Unlock()
 	t.Cleanup(m.Shutdown)
-	cfg := w.client.threadParams("/tmp", "")["config"].(map[string]any)
+	cfg := w.client.threadParams("/tmp", "", "")["config"].(map[string]any)
 	if cfg["approval_policy"] != "untrusted" {
 		t.Fatalf("resumed worker config = %v, want the session's extra args applied", cfg)
 	}

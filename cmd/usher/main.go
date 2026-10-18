@@ -130,8 +130,7 @@ func serve(args []string) error {
 	piSessionsDir := fs.String("pi-sessions-dir", defaultPiSessionsDir(),
 		"pi coding-agent sessions directory; the pi backend auto-enables when it exists or pi is installed")
 	piArgs := fs.String("pi-args", "", "extra flags for spawned pi RPC workers (space-separated)")
-	permissionMode := fs.String("permission-mode", "default",
-		"--permission-mode passed to claude (default|acceptEdits|bypassPermissions|plan)")
+	fs.String("permission-mode", "", "ignored: set a session's approval in the web UI, or a default on the default agent")
 	tmuxSocket := fs.String("tmux-socket", "usher",
 		"tmux socket prefix for session terminals")
 	terminalShell := fs.String("terminal-shell", defaultTerminalShell(),
@@ -194,6 +193,9 @@ func serve(args []string) error {
 		if f.Name == "agent-mode" || strings.HasPrefix(f.Name, "llm-") {
 			logger.Warn("flag ignored: the main-chat agent was replaced by the router session", "flag", "--"+f.Name)
 		}
+		if f.Name == "permission-mode" {
+			logger.Warn("flag ignored: approvals are per session, ask unless set", "flag", "--permission-mode")
+		}
 	})
 
 	if *dataDir == "" {
@@ -244,12 +246,12 @@ func serve(args []string) error {
 	// prefers Claude.
 	sources := []discovery.Source{}
 	backends := map[string]backend.Backend{}
-	h := interaction.New(filepath.Join(*dataDir, "auto-approve.json"))
+	h := interaction.New()
 	defaultBackend := ""
 
 	if dir := *projectsDir; sessionsDir(dir, *claudeCmd, logger) {
 		sources = append(sources, discovery.NewClaudeSource(dir))
-		claudeRuntime := sender.New(*claudeCmd, *permissionMode, dir, hookSockPath(*dataDir), *maxLiveSessions, !*disableUsherTools, h, logger)
+		claudeRuntime := sender.New(*claudeCmd, dir, hookSockPath(*dataDir), *maxLiveSessions, !*disableUsherTools, h, logger)
 		claudeRuntime.SetAutoPause(*autoPause)
 		// Claude Code's per-account model catalog sits next to the projects dir.
 		claudeModels := modelcatalog.Claude{Dir: filepath.Join(filepath.Dir(dir), "cache", "model-catalog")}
@@ -323,6 +325,10 @@ func serve(args []string) error {
 		filepath.Join(*dataDir, "sessions.json"),
 		time.Duration(*autoArchiveDays)*24*time.Hour,
 	)
+	if !*readOnly {
+		meta.ImportAutoApprove(filepath.Join(*dataDir, "auto-approve.json"))
+	}
+	h.SetApprovalStore(meta)
 	term := terminal.New("tmux", *tmuxSocket+"-terminal", *terminalShell, logger)
 	agents.SetDefaultBackend(defaultBackend)
 	r := router.New(d, backends, defaultBackend, b, h, meta, term)

@@ -20,6 +20,7 @@ import (
 	"github.com/nexustar/usher/internal/claude/jsonl"
 	"github.com/nexustar/usher/internal/codex"
 	"github.com/nexustar/usher/internal/codex/rollout"
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 )
 
@@ -104,23 +105,15 @@ func claudeMCPConfigArgs(hookSock string, routerTools bool, logger *slog.Logger)
 	return []string{"--mcp-config", path}
 }
 
-// New builds a Sender. claudeCmd is the claude binary; permissionMode (if
-// non-empty) is passed through as --permission-mode; projectsDir is Claude
+// New builds a Sender. claudeCmd is the claude binary; projectsDir is Claude
 // Code's projects root (used to locate session jsonl files by their globally
 // unique id); hookSock routes AskUserQuestion interactions back to this instance;
 // maxLive caps Claude workers.
-func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, injectMCPTools bool, interactions *interaction.Manager, logger *slog.Logger) *Sender {
+func New(claudeCmd, projectsDir, hookSock string, maxLive int, injectMCPTools bool, interactions *interaction.Manager, logger *slog.Logger) *Sender {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	logger = logger.With("backend", "claude")
-	var base []string
-	if permissionMode != "" {
-		base = []string{"--permission-mode", permissionMode}
-	}
-	spawnArgs := func(mcpArgs []string) []string {
-		return append(append([]string(nil), base...), mcpArgs...)
-	}
 	// Register the show_image MCP server (unless --disable-usher-tools). Additive
 	// — no --strict-mcp-config — so the user's own MCP servers are untouched.
 	// The router variant reaches only the session designated as usher's router.
@@ -132,9 +125,9 @@ func New(claudeCmd, permissionMode, projectsDir, hookSock string, maxLive int, i
 	t := timing{poll: 150 * time.Millisecond}
 	// mgr, not claude: the package of the same name is right there.
 	mgr := claude.New(claudeCmd, claudeHookSettings(hookSock, injectMCPTools, logger), hookSock,
-		spawnArgs(mcpArgs), maxLive, interactions, logger)
+		mcpArgs, maxLive, interactions, logger)
 	if len(routerMCPArgs) > 0 {
-		mgr.SetRouterArgs(spawnArgs(routerMCPArgs))
+		mgr.SetRouterArgs(routerMCPArgs)
 	}
 	return &Sender{
 		claude:       mgr,
@@ -382,7 +375,7 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 			// is the first moment the id exists.
 			s.claude.SetRouterSession(id)
 		}
-		s.setAutoApprove(id, req.AutoApprove)
+		s.setApproval(id, req.Approval)
 		if req.Effort != "" {
 			// Recorded for this spawn and every respawn.
 			if err := s.claude.SetRuntime(ctx, id, "", req.Effort); err != nil {
@@ -391,45 +384,58 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 		}
 		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, false)
 		if err != nil {
-			s.clearAutoApprove(id, req.AutoApprove)
+			s.setApproval(id, "")
 		}
 		return id, ch, err
 	}
 	if s.app != nil {
-		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, req.Router)
+		approval := req.Approval
+		if approval == "" && s.interactions != nil {
+			approval = core.ApprovalAsk
+		}
+		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, approval, req.AppendSystemPrompt, req.ExtraArgs, req.Router)
 		if err != nil {
 			return "", nil, err
 		}
-		s.setAutoApprove(id, req.AutoApprove)
+		s.setApproval(id, req.Approval)
 		if req.Effort != "" {
 			// Carried by the first turn/start.
 			s.app.SetRuntime(id, "", req.Effort)
 		}
 		ch, err := s.codexPrompt(ctx, id, req.Prompt, req.Cwd, true)
 		if err != nil {
-			s.clearAutoApprove(id, req.AutoApprove)
+			s.setApproval(id, "")
 		}
 		return id, ch, err
 	}
 	return "", nil, errors.New("sender has no headless backend")
 }
 
-// setAutoApprove records a new session's blanket-allow decision. It must run
-// before the first turn is submitted so that turn's escalations see it.
-func (s *Sender) setAutoApprove(id string, enabled bool) {
-	if !enabled || s.interactions == nil {
-		return
+// setApproval records a new session's approval, before its first turn so
+// that turn's escalations see it; "" forgets a session that failed to start.
+func (s *Sender) setApproval(id, approval string) {
+	if s.interactions != nil {
+		s.interactions.SetApproval(id, approval)
 	}
-	s.interactions.SetAutoApprove(id, true)
 }
 
-// clearAutoApprove drops the decision when the session failed to start, so a
-// half-created id can't leave blanket-allow behind in the persisted file.
-func (s *Sender) clearAutoApprove(id string, enabled bool) {
-	if !enabled || s.interactions == nil {
-		return
+var _ backend.Approver = (*Sender)(nil)
+
+func (s *Sender) Approvals() []string {
+	return []string{core.ApprovalAsk, core.ApprovalAuto, core.ApprovalFull}
+}
+
+// SetApproval applies a recorded approval: Claude now, Codex with its next
+// turn.
+func (s *Sender) SetApproval(ctx context.Context, sessionID, approval string) error {
+	if s.app != nil {
+		s.app.SetApproval(sessionID, approval)
+		return nil
 	}
-	s.interactions.SetAutoApprove(id, false)
+	if s.claude != nil {
+		return s.claude.SetApproval(ctx, sessionID, approval)
+	}
+	return errors.New("sender has no headless backend")
 }
 
 func newSessionID() string {

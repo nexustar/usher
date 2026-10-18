@@ -67,24 +67,43 @@ func TestExtraArgsRequireBackend(t *testing.T) {
 	}
 }
 
-func TestResolveCarriesAutoApprove(t *testing.T) {
-	store := New([]Profile{{Name: "trusted", Cwd: "/work", AutoApprove: true}})
+func TestResolveCarriesApproval(t *testing.T) {
+	store := New([]Profile{{Name: "trusted", Cwd: "/work", Approval: core.ApprovalFull}})
 	got, err := store.Resolve("trusted", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.AutoApprove {
-		t.Fatalf("Resolve = %+v, want AutoApprove", got)
+	if got.Approval != core.ApprovalFull {
+		t.Fatalf("Resolve = %+v, want full", got)
+	}
+}
+
+// A file from before approvals reads auto_approve as auto.
+func TestLoadReadsLegacyAutoApprove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	if err := os.WriteFile(path, []byte(`{"agents":[{"name":"trusted","auto_approve":true}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Resolve("trusted", "/work", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Approval != core.ApprovalAuto {
+		t.Fatalf("legacy profile approval = %q, want auto", got.Approval)
 	}
 }
 
 func TestResolveBackendOverrideDropsModelAndFlags(t *testing.T) {
 	store := New([]Profile{{
 		Name: "opus", Backend: "claude", Model: "opus", ExtraArgs: []string{"--tools", ""},
-		AppendSystemPrompt: "be brief", AutoApprove: true,
+		AppendSystemPrompt: "be brief", Approval: core.ApprovalFull,
 	}})
 	got, err := store.Resolve("opus", "", "codex", "", "")
-	want := core.CreateOptions{Backend: "codex", AppendSystemPrompt: "be brief", AutoApprove: true}
+	want := core.CreateOptions{Backend: "codex", AppendSystemPrompt: "be brief", Approval: core.ApprovalFull}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
 	}

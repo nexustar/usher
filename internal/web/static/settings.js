@@ -15,7 +15,7 @@
 // column is visible is left entirely to CSS — no viewport branching here, so
 // there is nothing to re-run on resize or rotate.
 
-import { esc, getLastSessions, fetchBackends, formatArgs, parseArgs } from './state.js';
+import { esc, getLastSessions, fetchBackends, formatArgs, parseArgs, APPROVALS } from './state.js';
 import { bindPushToggle } from './push.js';
 
 const dialog = document.getElementById('settings-dialog');
@@ -153,6 +153,7 @@ function renderGeneralPane(host) {
 let selectedName = '';
 let agents = [];
 let catalogs = {};
+let approvalCatalogs = {};
 let backends = [];
 
 // One scannable line per agent, so the list is useful without clicking.
@@ -210,11 +211,25 @@ function effortOptions(backend, model, selected) {
   ).join('');
 }
 
+// approvalOptions lists the backend's approvals; with no backend pinned, all
+// of them. An agent that names none asks.
+function approvalOptions(backend, selected) {
+  const approvals = backend ? (approvalCatalogs[backend] || []) : Object.keys(APPROVALS);
+  selected = selected || 'ask';
+  const options = approvals.map(a => ({id: a, label: a + ' — ' + APPROVALS[a]}));
+  if (selected && !options.some(o => o.id === selected)) {
+    options.push({id: selected, label: selected + ' (unavailable)'});
+  }
+  return options.map(o =>
+    `<option value="${esc(o.id)}"${o.id === selected ? ' selected' : ''}>${esc(o.label)}</option>`
+  ).join('');
+}
+
 function modelOptions(backend, selected) {
   const models = catalogs[backend] || [];
   const options = models.length ? [...models] : [{id: 'default', display_name: 'Default'}];
   if (selected === 'default' && !options.some(model => model.id === selected)) {
-    options.unshift({id: 'default', display_name: 'Backend default'});
+    options.unshift({id: 'default', display_name: 'Default'});
   }
   if (selected && !options.some(model => model.id === selected)) {
     options.push({id: selected, display_name: selected + ' (unavailable)'});
@@ -233,7 +248,7 @@ function renderForm(agent, copy = false) {
   const isDefault = !creating && agent.name === 'default';
   const value = agent || {
     name: '', cwd: '', backend: '', model: '', effort: '', append_system_prompt: '',
-    auto_approve: false,
+    approval: '',
   };
   const name = copy ? value.name + '-copy' : value.name;
   const selectedBackend = value.backend || backends[0] || '';
@@ -253,10 +268,7 @@ function renderForm(agent, copy = false) {
         <label><span>Model</span><select name="model">${modelOptions(selectedBackend, value.model || '')}</select></label>
       </div>
       <label><span>Effort</span><select name="effort">${effortOptions(selectedBackend, value.model || '', value.effort || '')}</select></label>
-      <label class="cfg-form-check">
-        <input type="checkbox" name="auto_approve"${value.auto_approve ? ' checked' : ''}>
-        <span>Auto-approve tool calls</span>
-      </label>
+      <label><span>Approval</span><select name="approval">${approvalOptions(selectedBackend, value.approval || '')}</select></label>
       <details class="cfg-form-advanced"${value.append_system_prompt || (value.extra_args || []).length ? ' open' : ''}>
         <summary>Advanced</summary>
         <label><span>Append system prompt</span>
@@ -281,6 +293,7 @@ function renderForm(agent, copy = false) {
   const backendEl = form.elements.backend;
   const modelEl = form.elements.model;
   const effortEl = form.elements.effort;
+  const approvalEl = form.elements.approval;
   const refreshEffort = () => {
     const kept = effortEl.value;
     effortEl.innerHTML = effortOptions(backendEl.value, modelEl.value, '');
@@ -289,6 +302,9 @@ function renderForm(agent, copy = false) {
   backendEl.addEventListener('change', () => {
     modelEl.innerHTML = modelOptions(backendEl.value, '');
     refreshEffort();
+    const kept = approvalEl.value;
+    approvalEl.innerHTML = approvalOptions(backendEl.value, '');
+    if ([...approvalEl.options].some(o => o.value === kept)) approvalEl.value = kept;
   });
   modelEl.addEventListener('change', refreshEffort);
   const showError = message => {
@@ -305,8 +321,6 @@ function renderForm(agent, copy = false) {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const payload = Object.fromEntries(new FormData(form));
-    // FormData reports a checkbox as "on" or omits it; the API wants a bool.
-    payload.auto_approve = form.elements.auto_approve.checked;
     let extraArgs;
     try {
       extraArgs = parseArgs(form.elements.extra_args.value);
@@ -370,6 +384,7 @@ async function loadCatalogs() {
   const data = await fetchBackends().catch(() => ({}));
   backends = data.backends || [];
   catalogs = data.models || {};
+  approvalCatalogs = data.approvals || {};
 }
 
 async function loadAgentList() {

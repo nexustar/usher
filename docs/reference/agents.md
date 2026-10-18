@@ -1,7 +1,7 @@
 # Session agents
 
 An agent is a set of defaults for creating a session — `cwd`, `backend`,
-`model`, `effort`, and an optional `append_system_prompt` — addressed by a `name` you
+`model`, `effort`, `approval`, and an optional `append_system_prompt` — addressed by a `name` you
 choose. That name is the agent's only identifier: it is what the pickers show,
 what `--agent <name>` takes in the chat frontends, and what addresses the agent
 in the API, so one vocabulary covers every surface.
@@ -60,7 +60,7 @@ model is created from it — a session the router starts on its own, a chat
 frontend's plain instruction, an API call with only a message. Until you save
 it, it is usher's first available backend with that backend's default model,
 and it is not written to `settings.json`. Saving it in Settings stores it like
-any other agent, its prompt, flags and auto-approve included; it cannot be
+any other agent, its prompt, flags and approval included; it cannot be
 renamed, and deleting it brings the built-in one back.
 
 A request that names a backend or a model without an agent is not created from
@@ -128,8 +128,8 @@ boundary against the authenticated user:
   taste for an analyst profile.
 - **Codex**: no per-tool switches. `["--sandbox", "read-only", "--ask-for-approval", "never"]`
   is the closest: the sandbox blocks writes and `never` stops the model from
-  requesting escalation past it (under the default on-request policy an
-  auto-approve profile would wave escalations through). The model can still
+  requesting escalation past it (under the default on-request policy a
+  session in full mode would wave escalations through). The model can still
   read files.
 - **pi**: `["--tools", "read,grep,find,ls"]` whitelists built-ins (this set is
   pi's own read-only preset); `["--no-builtin-tools"]` removes them all, which

@@ -801,7 +801,7 @@ func cloneMap(in map[string]any) map[string]any {
 	}
 	return out
 }
-func (c *Client) threadParams(cwd, model string) map[string]any {
+func (c *Client) threadParams(cwd, model, approval string) map[string]any {
 	config := cloneMap(c.config)
 	if model != "" {
 		config["model"] = model
@@ -813,14 +813,33 @@ func (c *Client) threadParams(cwd, model string) map[string]any {
 	for k, v := range c.sandbox {
 		p[k] = v
 	}
+	if approval != "" {
+		p["approvalsReviewer"] = reviewer(approval)
+	}
 	return p
 }
 
-func (c *Client) StartThread(ctx context.Context, cwd, model string) (string, error) {
+// reviewer answers Codex's approval requests under an approval: in full, usher allows
+// each one as the user.
+func reviewer(approval string) string {
+	if approval == core.ApprovalAuto {
+		return "auto_review"
+	}
+	return "user"
+}
+
+func (c *Client) approvalFor(id string) string {
+	if c.interactions == nil {
+		return ""
+	}
+	return c.interactions.Approval(id)
+}
+
+func (c *Client) StartThread(ctx context.Context, cwd, model, approval string) (string, error) {
 	if err := c.ensure(ctx); err != nil {
 		return "", err
 	}
-	params := c.threadParamsFor(ctx, cwd, model)
+	params := c.threadParamsFor(ctx, cwd, model, approval)
 	var out struct {
 		Thread struct {
 			ID string `json:"id"`
@@ -858,9 +877,9 @@ func (c *Client) Skills(ctx context.Context, cwd string) ([]Skill, error) {
 	return skills, nil
 }
 
-// StartTurn starts a turn; a non-empty model or effort switches the thread to
-// it from this turn on.
-func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd, model, effort string) (<-chan TurnResult, <-chan Delta, error) {
+// StartTurn starts a turn; a non-empty model, effort or approval switches the
+// thread to it from this turn on.
+func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd, model, effort, approval string) (<-chan TurnResult, <-chan Delta, error) {
 	if err := c.ensure(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -868,7 +887,7 @@ func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd, model, effort s
 	_, ok := c.threads[id]
 	c.mu.Unlock()
 	if !ok {
-		params := c.threadParamsFor(ctx, cwd, "")
+		params := c.threadParamsFor(ctx, cwd, "", c.approvalFor(id))
 		params["threadId"] = id
 		if err := c.call(ctx, "thread/resume", params, nil); err != nil {
 			return nil, nil, resumeError(err)
@@ -885,6 +904,9 @@ func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd, model, effort s
 	}
 	if effort != "" {
 		params["effort"] = effort
+	}
+	if approval != "" {
+		params["approvalsReviewer"] = reviewer(approval)
 	}
 	return c.startOperation(ctx, id, "turn/start", params)
 }
@@ -936,7 +958,7 @@ func (c *Client) ResumeThread(ctx context.Context, id, cwd string) error {
 	if err := c.ensure(ctx); err != nil {
 		return err
 	}
-	params := c.threadParamsFor(ctx, cwd, "")
+	params := c.threadParamsFor(ctx, cwd, "", c.approvalFor(id))
 	params["threadId"] = id
 	if err := c.call(ctx, "thread/resume", params, nil); err != nil {
 		return resumeError(err)

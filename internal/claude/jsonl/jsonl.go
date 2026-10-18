@@ -298,7 +298,7 @@ func (b body) collectToolUses(dst map[string]toolInfo) {
 			ti := toolInfo{name: blk.Name, target: toolTarget(blk.Input)}
 			switch {
 			case blk.Name == "Bash":
-				ti.input = inputString(blk.Input, "command")
+				ti.input = InputString(blk.Input, "command")
 				ti.target = core.ToolTitle(ti.target, ti.input)
 			case strings.HasPrefix(blk.Name, "mcp__"):
 				ti.input = textutil.IndentJSON(blk.Input)
@@ -729,11 +729,11 @@ func ToolPreview(name string, input json.RawMessage) *core.TurnPart {
 	p := &core.TurnPart{Type: "tool", ToolName: name, ToolTarget: toolTarget(input)}
 	switch name {
 	case "Bash":
-		p.ToolInput = textutil.ClampBody(inputString(input, "command"))
+		p.ToolInput = textutil.ClampBody(InputString(input, "command"))
 	case "Edit":
-		p.Content = lineDiff(inputString(input, "old_string"), inputString(input, "new_string"))
+		p.Content = lineDiff(InputString(input, "old_string"), InputString(input, "new_string"))
 	case "Write":
-		p.Content = lineDiff("", inputString(input, "content"))
+		p.Content = lineDiff("", InputString(input, "content"))
 	default:
 		p.ToolInput = textutil.ClampBody(textutil.IndentJSON(input))
 	}
@@ -767,20 +767,20 @@ func lineDiff(old, new string) string {
 // tool name: a file path, a human description, or a search pattern. A Bash
 // command travels separately as the part's ToolInput.
 func toolTarget(input json.RawMessage) string {
-	if p := inputString(input, "file_path"); p != "" {
+	if p := InputString(input, "file_path"); p != "" {
 		return p
 	}
-	if d := inputString(input, "description"); d != "" {
+	if d := InputString(input, "description"); d != "" {
 		return d
 	}
-	if pat := inputString(input, "pattern"); pat != "" {
+	if pat := InputString(input, "pattern"); pat != "" {
 		return pat
 	}
 	return ""
 }
 
-// inputString reads a string field from a tool_use input object, "" if absent.
-func inputString(input json.RawMessage, key string) string {
+// InputString reads a string field from a tool_use input object, "" if absent.
+func InputString(input json.RawMessage, key string) string {
 	if len(input) == 0 {
 		return ""
 	}

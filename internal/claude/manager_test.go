@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/internal/backend"
+	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
 )
 
@@ -278,7 +279,7 @@ func TestCommandLifecycleCompletesMatchingTurnAndIgnoresResult(t *testing.T) {
 }
 
 func TestCanUseToolControlRequest(t *testing.T) {
-	h := interaction.New("")
+	h := interaction.New()
 	m := New("", "", "", nil, 2, h, nil)
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -345,7 +346,7 @@ func TestCanUseToolControlRequest(t *testing.T) {
 // The classifier's escalation carries its reason in color and may forbid a
 // standing rule.
 func TestCanUseToolCarriesPreviewAndReason(t *testing.T) {
-	h := interaction.New("")
+	h := interaction.New()
 	m := New("", "", "", nil, 2, h, nil)
 	_, w, err := os.Pipe()
 	if err != nil {
@@ -380,7 +381,7 @@ func TestPermissionPromptToolFlagWhenHandlerConfigured(t *testing.T) {
 	bin, log := fakeClaude(t)
 	os.Setenv("FAKE_CLAUDE_LOG", log)
 	defer os.Unsetenv("FAKE_CLAUDE_LOG")
-	m := New(bin, "", "", nil, 4, interaction.New(""), nil)
+	m := New(bin, "", "", nil, 4, interaction.New(), nil)
 	defer m.Shutdown()
 	ch, _, _, _, err := m.Send(context.Background(), "sid", "hello", "/tmp", "", "", nil, false)
 	if err != nil {
@@ -411,7 +412,7 @@ func TestClaudePermissionControlE2E(t *testing.T) {
 	id := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		idBytes[0:4], idBytes[4:6], idBytes[6:8], idBytes[8:10], idBytes[10:16])
 
-	h := interaction.New("")
+	h := interaction.New()
 	m := New("claude", "", "", []string{"--permission-mode", "default"}, 1, h, nil)
 	defer m.Shutdown()
 	result, _, _, _, err := m.Send(context.Background(), id,
@@ -1004,4 +1005,24 @@ func TestReapIdleSparesScheduledAndBackgroundWork(t *testing.T) {
 	live(map[string]bool{"shell": true})
 	m.reapIdle(now.Add(5*time.Minute), time.Minute)
 	live(map[string]bool{"loop": true, "agent": true, "shell": false})
+}
+
+// Claude's own switches are recorded; a report that matches the recorded approval,
+// as default does for full, leaves it alone.
+func TestObserveMode(t *testing.T) {
+	h := interaction.New()
+	m := New("", "", "", nil, 2, h, nil)
+	h.SetApproval("s", core.ApprovalFull)
+	m.observeMode("s", "default")
+	if got := h.Approval("s"); got != core.ApprovalFull {
+		t.Fatalf("default over full = %q, want full kept", got)
+	}
+	m.observeMode("s", "auto")
+	if got := h.Approval("s"); got != core.ApprovalAuto {
+		t.Fatalf("after auto report = %q", got)
+	}
+	m.observeMode("s", "plan")
+	if got := h.Approval("s"); got != core.ApprovalAuto {
+		t.Fatalf("plan report changed the approval to %q", got)
+	}
 }

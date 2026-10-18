@@ -7,6 +7,7 @@ import {
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
   registerRefreshSubtitle, fetchBackends, patchSession, copyText,
+  approvalToggleHTML, setApprovalToggle, wireApprovalToggle,
 } from './state.js';
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
@@ -355,11 +356,7 @@ export async function showNewSession(opts = {}) {
                 <span class="t-icon">+</span><span class="t-full">upload</span>
               </button>
               <input id="upload-input" type="file" hidden multiple>
-              <button id="auto-approve-toggle" class="auto-approve-toggle" type="button"
-                aria-pressed="false"
-                title="ask: confirm each tool call · auto: run them automatically">
-                <span class="t-icon">ϟ</span><span class="t-full">approve:</span><span class="toggle-val">ask</span>
-              </button>
+              ${approvalToggleHTML('ask')}
             </div>
             <div class="composer-send">
               <div class="composer-config-wrap">
@@ -381,7 +378,7 @@ export async function showNewSession(opts = {}) {
   const cwdEl = document.getElementById('new-cwd');
   const configBtn = document.getElementById('new-config');
   const configMenu = document.getElementById('new-config-menu');
-  const autoBtn = document.getElementById('auto-approve-toggle');
+  const approvalWrap = root.querySelector('.approval-wrap');
   const errEl = document.getElementById('new-session-err');
   // Prefilled from a sidebar cwd "+": cwd is known, so drop the cursor in the
   // message box instead of the cwd field.
@@ -405,18 +402,20 @@ export async function showNewSession(opts = {}) {
   let backend = '';
   let model = '';
   let effort = ''; // '' leaves it to the model
-  let autoApprove = false;
+  let approvalCatalogs = {};
+  let approval = ''; // '' asks
+  let defaultAgent = null;
   let expanded = ''; // config-menu section currently unfolded: 'backend' | 'model' | 'effort' | ''
 
   // Same control as the session view's, driven locally — no id to POST to yet.
-  const updateAutoApprove = () => {
-    autoBtn.setAttribute('aria-pressed', autoApprove ? 'true' : 'false');
-    autoBtn.querySelector('.toggle-val').textContent = autoApprove ? 'auto' : 'ask';
+  const backendApprovals = () => approvalCatalogs[backend] || [];
+  const updateApproval = () => {
+    if (approval && backendApprovals().length && !backendApprovals().includes(approval)) approval = '';
+    setApprovalToggle(approvalWrap, approval || 'ask');
   };
-  autoBtn.addEventListener('click', () => {
-    autoApprove = !autoApprove;
-    try { localStorage.setItem('usher.newAutoApprove', autoApprove ? '1' : '0'); } catch {/* private mode */}
-    updateAutoApprove();
+  wireApprovalToggle(approvalWrap, backendApprovals, async picked => {
+    approval = picked;
+    return true;
   });
 
   // Choice lists double as display names; an id outside the catalog (an agent
@@ -429,8 +428,7 @@ export async function showNewSession(opts = {}) {
     return choices;
   };
   const modelChoices = () => {
-    const models = modelCatalogs[backend] || [];
-    const choices = models.length ? [...models] : [{id: 'default', display_name: 'Default'}];
+    const choices = [{id: 'default', display_name: 'Default'}, ...(modelCatalogs[backend] || [])];
     if (model && !choices.some(c => c.id === model)) {
       choices.push({id: model, display_name: model + ' (unavailable)'});
     }
@@ -456,39 +454,21 @@ export async function showNewSession(opts = {}) {
         (effort ? `<span class="picker-effort">${esc(effort)}</span>` : '');
   };
 
-  // Saved per-backend model if the catalog still offers it, else the catalog
-  // head — what the old model <select> landed on.
-  const defaultModelFor = b => {
-    const models = modelCatalogs[b] || [];
-    let m = models.length ? models[0].id : 'default';
-    try {
-      const saved = localStorage.getItem('usher.newModel.' + b);
-      if (saved && models.some(x => x.id === saved)) m = saved;
-    } catch {/* private mode → catalog head */}
-    return m;
-  };
-  const effortKey = () => 'usher.newEffort.' + backend + '/' + model;
-  const defaultEffort = () => {
+  // An effort the newly picked model also has stays.
+  const keptEffort = () => {
     const m = catalogModel(modelCatalogs[backend], model);
-    let saved = '';
-    try { saved = localStorage.getItem(effortKey()) || ''; } catch {/* private mode → default */}
-    return m && (m.thinking_levels || []).includes(saved) ? saved : '';
+    return m && (m.thinking_levels || []).includes(effort) ? effort : '';
   };
-  // Switching back to Custom must not leave the agent's backend/model behind:
-  // the stored preference was never overwritten, it just stopped being shown.
-  const restoreSavedChoice = () => {
-    backend = backends[0] || 'claude';
-    try {
-      const saved = localStorage.getItem('usher.newBackend');
-      if (saved && backends.includes(saved)) backend = saved;
-    } catch {/* private mode → first backend */}
-    model = defaultModelFor(backend);
-    effort = defaultEffort();
-    autoApprove = false;
-    try {
-      autoApprove = localStorage.getItem('usher.newAutoApprove') === '1';
-    } catch {/* private mode → ask */}
-    updateAutoApprove();
+  // Custom starts from the default agent (Settings → Agents).
+  const useDefaults = () => {
+    const d = defaultAgent || {};
+    backend = backends.includes(d.backend) ? d.backend : (backends[0] || 'claude');
+    const own = d.backend === backend;
+    model = own && d.model ? d.model : 'default';
+    effort = own ? (d.effort || '') : '';
+    approval = d.approval || '';
+    if (!cwdEl.value && d.cwd) cwdEl.value = d.cwd;
+    updateApproval();
     updateConfigLabel();
   };
 
@@ -497,10 +477,10 @@ export async function showNewSession(opts = {}) {
   const applyAgent = profile => {
     if (profile.cwd) cwdEl.value = profile.cwd;
     if (profile.backend) backend = profile.backend;
-    model = profile.model || defaultModelFor(backend);
+    model = profile.model || 'default';
     effort = profile.effort || '';
-    autoApprove = !!profile.auto_approve;
-    updateAutoApprove();
+    approval = profile.approval || '';
+    updateApproval();
     updateConfigLabel();
   };
 
@@ -509,7 +489,7 @@ export async function showNewSession(opts = {}) {
   // the view and wipe the typed message.
   const selectAgent = profile => {
     agentName = profile ? profile.name : '';
-    if (profile) applyAgent(profile); else restoreSavedChoice();
+    if (profile) applyAgent(profile); else useDefaults();
     subtitle.textContent = profile ? 'new session · ' + profile.name : 'new session';
     history.replaceState(null, '', profile ? '#/new/agent/' + encodeURIComponent(profile.name) : '#/new');
   };
@@ -576,35 +556,36 @@ export async function showNewSession(opts = {}) {
       renderConfigMenu();
     } else if (row.dataset.backend !== undefined) {
       backend = row.dataset.backend;
-      try { localStorage.setItem('usher.newBackend', backend); } catch {/* private mode */}
-      model = defaultModelFor(backend);
-      effort = defaultEffort();
+      model = 'default';
+      effort = '';
+      updateApproval();
       updateConfigLabel();
       renderConfigMenu(); // refresh the ✓ and the Model row's reset value
     } else if (row.dataset.model !== undefined) {
       model = row.dataset.model;
-      try { localStorage.setItem('usher.newModel.' + backend, model); } catch {/* private mode */}
-      effort = defaultEffort();
+      effort = keptEffort();
       updateConfigLabel();
       closeConfigMenu();
     } else if (row.dataset.effort !== undefined) {
       effort = row.dataset.effort;
-      try { localStorage.setItem(effortKey(), effort); } catch {/* private mode */}
       updateConfigLabel();
       closeConfigMenu();
     }
   });
 
-  // Both catalogs land together so the agent options and the backend/model
-  // options are never half-populated when one of the two requests is slow.
+  // The catalogs land together so the agent options and the backend/model
+  // options are never half-populated when one of the requests is slow.
   const getJSON = url => fetch(url).then(r => r.ok ? r.json() : {}).catch(() => ({}));
   Promise.all([fetchBackends().catch(() => ({})), getJSON('/api/v1/agents')]).then(([models, agents]) => {
     backends = (models && models.backends) || ['claude'];
     modelCatalogs = (models && models.models) || {};
-    restoreSavedChoice();
+    approvalCatalogs = (models && models.approvals) || {};
+    const all = (agents && agents.agents) || [];
+    defaultAgent = all.find(a => a.name === 'default') || null;
+    useDefaults();
 
     // The default agent is offered once it says something "custom" does not.
-    agentProfiles = ((agents && agents.agents) || []).filter(a => !a.builtin);
+    agentProfiles = all.filter(a => !a.builtin);
     if (agentName && !agentProfiles.some(a => a.name === agentName)) {
       // Stale link (agent renamed or deleted): fall back to a custom session
       // rather than letting submit fail on a name the server won't resolve.
@@ -636,7 +617,7 @@ export async function showNewSession(opts = {}) {
       if (!profile || model !== (profile.model || '')) request.model = model;
       // "default" overrides an agent's effort.
       if (profile ? effort !== (profile.effort || '') : effort) request.effort = effort || 'default';
-      if (!profile || autoApprove !== !!profile.auto_approve) request.auto_approve = autoApprove;
+      if (approval && (!profile || approval !== (profile.approval || ''))) request.approval = approval;
       const res = await fetch('/api/v1/sessions', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -755,11 +736,7 @@ export async function showDetail(id) {
                 <span class="t-icon">+</span><span class="t-full">upload</span>
               </button>
               <input id="upload-input" type="file" hidden multiple>
-              <button id="auto-approve-toggle" class="auto-approve-toggle" type="button" ${sess.router ? 'hidden' : ''}
-                aria-pressed="${sess.auto_approve ? 'true' : 'false'}"
-                title="ask: confirm each tool call · auto: run them automatically">
-                <span class="t-icon">ϟ</span><span class="t-full">approve:</span><span class="toggle-val">${sess.auto_approve ? 'auto' : 'ask'}</span>
-              </button>
+              ${approvalToggleHTML(sess.approval || 'ask', sess.router || sess.subagent)}
               <button id="term-toggle" class="term-toggle" type="button" aria-pressed="${sess.terminal_open ? 'mixed' : 'false'}"
                 ${sess.terminal_available ? '' : 'disabled'}
                 title="${sess.terminal_available ? 'show or hide this session’s shell — hiding keeps it running; type exit in the shell to end it' : 'terminal unavailable: tmux is not installed'}">
@@ -841,6 +818,7 @@ export async function showDetail(id) {
   renderSessionRuntime(sess.runtime);
   if (runtimeOwner) {
     fetchBackends().then((c) => {
+      approvalCatalog = c.approvals || {};
       if (epoch !== detailEpoch) return;
       runtimeModels = (c.models || {})[sess.backend] || [];
       renderSessionRuntime(detailRuntime);
@@ -849,25 +827,26 @@ export async function showDetail(id) {
   restoreDraft(promptEl);
   wireCommandPreview(promptEl, id);
 
-  const autoBtn = document.getElementById('auto-approve-toggle');
-  if (autoBtn) {
-    autoBtn.addEventListener('click', async () => {
-      const next = autoBtn.getAttribute('aria-pressed') !== 'true';
-      // On the Router page the toggle is the current session's.
-      const target = sess.router ? routerFocusID : id;
-      if (!target) return;
-      autoBtn.disabled = true;
+  const approvalWrap = root.querySelector('.composer .approval-wrap');
+  if (approvalWrap) {
+    // On the Router page the toggle is the current session's.
+    const target = () => sess.router ? routerFocusID : id;
+    const targetBackend = () => sess.router
+      ? (getLastSessions().find(s => s.id === routerFocusID) || {}).backend
+      : sess.backend;
+    wireApprovalToggle(approvalWrap, () => approvalCatalog[targetBackend()] || [], async approval => {
+      if (!target()) return false;
       try {
-        const res = await patchSession(target, { auto_approve: next });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        autoBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
-        autoBtn.querySelector('.toggle-val').textContent = next ? 'auto' : 'ask';
-        await loadSidebar(); // refresh sidebar marker immediately
+        const res = await patchSession(target(), { approval });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error?.message || ('HTTP ' + res.status));
+        }
+        loadSidebar();
+        return true;
       } catch (e) {
-        appendChatMessage({ role: 'error', content: 'auto-approve toggle failed: ' + String(e), ts: new Date().toISOString() });
-      } finally {
-        autoBtn.disabled = false;
-        if (sess.router) updateRouterFocus();
+        appendChatMessage({ role: 'error', content: 'approval change failed: ' + String(e.message || e), ts: new Date().toISOString() });
+        return false;
       }
     });
   }
@@ -1473,6 +1452,8 @@ function renderSessionSubtitle(sess) {
 // resolved — read off the conversation.
 const FOCUS_TOOL = /(^|__)(send_to_session|create_session|resolve_session)$/;
 let routerFocusID = '';
+// Approvals by backend, as /backends last listed them.
+let approvalCatalog = {};
 
 function updateRouterFocus() {
   const link = document.getElementById('router-focus');
@@ -1491,13 +1472,11 @@ function updateRouterFocus() {
   routerFocusID = id;
   link.hidden = !id;
   const known = getLastSessions().find(s => s.id === id);
-  const approve = document.getElementById('auto-approve-toggle');
-  if (approve) {
-    const auto = !!(known && known.auto_approve);
-    approve.hidden = !id;
-    approve.setAttribute('aria-pressed', auto ? 'true' : 'false');
-    approve.querySelector('.toggle-val').textContent = auto ? 'auto' : 'ask';
-    approve.title = 'tool calls of the current session (' + id.slice(0, 8) + ') — ask: confirm each · auto: run them automatically';
+  const approvalWrap = root.querySelector('.composer .approval-wrap');
+  if (approvalWrap) {
+    approvalWrap.hidden = !id;
+    setApprovalToggle(approvalWrap, (known && known.approval) || 'ask');
+    approvalWrap.querySelector('.approval-toggle').title = 'who answers approval requests of the current session (' + id.slice(0, 8) + ')';
   }
   if (!id) return;
   link.href = '#/s/' + encodeURIComponent(id);
@@ -1518,6 +1497,9 @@ async function refreshSubtitle(id) {
     renderSessionSubtitle(sess);
     noteActivity(sess);
     renderSessionRuntime(sess.runtime);
+    // An approval the agent switched itself.
+    const approvalWrap = root.querySelector('.composer .approval-wrap');
+    if (approvalWrap && !sess.router && sess.approval) setApprovalToggle(approvalWrap, sess.approval);
   } catch {/* ignore */}
 }
 

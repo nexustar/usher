@@ -369,6 +369,9 @@ func (m *Manager) ensureProcess(ctx context.Context, id, cwd, model, appendSyste
 	args = append(args, m.spawnArgs(id)...)
 	// Last, so a repeated flag from the session's agent profile wins.
 	args = append(args, extraArgs...)
+	if m.interactions != nil {
+		args = append(args, "--permission-mode", claudeMode(m.interactions.Approval(id)))
+	}
 	// Except over a switch made since, which is newer than the profile.
 	if rt := m.runtimes[id]; rt.Model != "" || rt.Effort != "" {
 		if rt.Model != "" {
@@ -554,6 +557,49 @@ func (m *Manager) SetRuntime(ctx context.Context, id, model, effort string) erro
 	m.runtimes[id] = rt
 	m.mu.Unlock()
 	return nil
+}
+
+// SetApproval applies approval to a live process; a cold one spawns with it.
+func (m *Manager) SetApproval(ctx context.Context, id, approval string) error {
+	m.mu.Lock()
+	p := m.processes[id]
+	m.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	if err := waitForInitialization(ctx, p); err != nil {
+		return err
+	}
+	_, err := m.controlRequest(ctx, p, map[string]any{"subtype": "set_permission_mode", "mode": claudeMode(approval)})
+	return err
+}
+
+// claudeMode is Claude's permission mode for an approval. Full rides on
+// default: bypassPermissions cannot be entered after spawn.
+func claudeMode(approval string) string {
+	if approval == core.ApprovalAuto {
+		return "auto"
+	}
+	return "default"
+}
+
+// observeMode records the approval of a mode Claude reports switching to,
+// unless the session's approval already means it. A mode with no approval,
+// such as plan, leaves it alone.
+func (m *Manager) observeMode(id, reported string) {
+	if m.interactions == nil || reported == "" || claudeMode(m.interactions.Approval(id)) == reported {
+		return
+	}
+	var approval string
+	switch reported {
+	case "default", "manual":
+		approval = core.ApprovalAsk
+	case "auto":
+		approval = core.ApprovalAuto
+	default:
+		return
+	}
+	m.interactions.SetApproval(id, approval)
 }
 
 func scrubEnv(hookSock string) []string {
@@ -749,6 +795,8 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			MaxRetries  int    `json:"max_retries"`
 			ErrorStatus int    `json:"error_status"`
 			Error       string `json:"error"`
+			// On init and on every status after a switch.
+			PermissionMode string `json:"permissionMode"`
 		}
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
@@ -759,6 +807,7 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		}
 		if e.Type == "system" {
 			trackTask(p, e.Subtype, e.TaskID, e.TaskType, e.Patch.Status)
+			m.observeMode(p.id, e.PermissionMode)
 		}
 		if e.Type == "system" && e.Subtype == "init" {
 			skills := make(map[string]struct{}, len(e.Skills))
@@ -1038,7 +1087,7 @@ func (m *Manager) handleControlRequest(p *process, raw []byte) {
 			case <-ctx.Done():
 			}
 		}()
-		resp, err := m.interactions.Submit(ctx, interaction.Request{
+		req := interaction.Request{
 			SessionID:   p.id,
 			ToolUseID:   msg.Request.ToolUseID,
 			ToolName:    msg.Request.ToolName,
@@ -1047,7 +1096,12 @@ func (m *Manager) handleControlRequest(p *process, raw []byte) {
 			Preview:     jsonl.ToolPreview(msg.Request.ToolName, msg.Request.Input),
 			Reason:      ansiEscape.ReplaceAllString(msg.Request.DecisionReason, ""),
 			AllowAlways: !msg.Request.SuppressAlwaysAllow && hasAllowSuggestion(msg.Request.PermissionSuggestions),
-		})
+		}
+		if msg.Request.ToolName == exitPlanModeTool {
+			req.Kind, req.AllowAlways = interaction.KindPlan, false
+			req.Preview = &core.TurnPart{Type: "tool", ToolName: req.ToolName, Content: jsonl.InputString(msg.Request.Input, "plan")}
+		}
+		resp, err := m.interactions.Submit(ctx, req)
 		if err != nil {
 			m.writeControlError(p, msg.RequestID, err.Error())
 			return
@@ -1097,6 +1151,9 @@ func (m *Manager) writeControlError(p *process, requestID, message string) {
 		},
 	})
 }
+
+// exitPlanModeTool asks to leave plan mode with the plan it carries.
+const exitPlanModeTool = "ExitPlanMode"
 
 // ansiEscape matches the CSI and OSC sequences decision_reason may carry.
 var ansiEscape = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))`)

@@ -1383,9 +1383,9 @@ pre.raw-markdown {
 .archived-row .backend-mark { opacity: 0.5; }
 
 /* Secondary controls — ghost style (no border/fill) so they recede beside the
- * accent send button. State shows via text color: muted off, amber when
- * auto-approve is armed, accent for an open terminal. */
-.auto-approve-toggle,
+ * accent send button. State shows via text color: amber under auto approval,
+ * dark red under full, accent for an open terminal. */
+.approval-toggle,
 .term-toggle,
 .upload-btn {
   display: inline-flex;
@@ -1400,10 +1400,10 @@ pre.raw-markdown {
   color: var(--text-faint);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
-.auto-approve-toggle:hover,
+.approval-toggle:hover,
 .term-toggle:hover,
 .upload-btn:hover { background: var(--bg-hover); }
-.auto-approve-toggle:disabled,
+.approval-toggle:disabled,
 .term-toggle:disabled,
 .upload-btn:disabled { opacity: 0.6; cursor: progress; }
 .upload-btn.uploading { opacity: 1; }
@@ -1421,7 +1421,15 @@ pre.raw-markdown {
 }
 @keyframes upload-spin { to { transform: rotate(1turn); } }
 .upload-btn { color: var(--text); }
-.auto-approve-toggle[aria-pressed="true"] { color: var(--warning-text); }
+.approval-toggle[data-approval="auto"] { color: var(--warning-text); }
+.approval-toggle[data-approval="full"] { color: var(--danger-text); }
+.approval-wrap { position: relative; display: inline-flex; }
+.approval-wrap[hidden] { display: none; }
+/* The toggle sits at the composer's left edge. */
+.composer-config-menu.approval-menu { left: 0; right: auto; }
+.approval-menu .config-row { white-space: normal; }
+.approval-menu .approval-name { display: block; }
+.approval-menu .approval-desc { display: block; color: var(--text-faint); font-size: var(--font-sm); }
 /* Accent while the shell is open, including background state. */
 .term-toggle[aria-pressed="true"],
 .term-toggle[aria-pressed="mixed"] { color: var(--accent); }
@@ -1607,6 +1615,14 @@ pre.raw-markdown {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--font-sm);
   overflow-wrap: anywhere;
+}
+.interaction .plan-body {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-inset);
+  border-radius: var(--radius);
 }
 .interaction .interaction-reason {
   margin-bottom: 0.4rem;

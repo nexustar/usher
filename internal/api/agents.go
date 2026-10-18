@@ -52,8 +52,9 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 
 // Backend is one enabled agent CLI and the models it offers.
 type Backend struct {
-	Name   string          `json:"name"`
-	Models []backend.Model `json:"models"`
+	Name      string          `json:"name"`
+	Models    []backend.Model `json:"models"`
+	Approvals []string        `json:"approvals"`
 }
 
 // BackendList is the body of GET /backends.
@@ -70,7 +71,7 @@ func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
 		if err != nil || models == nil {
 			models = []backend.Model{}
 		}
-		out = append(out, Backend{Name: name, Models: models})
+		out = append(out, Backend{Name: name, Models: models, Approvals: s.Router.Approvals(name)})
 	}
 	WriteJSON(w, http.StatusOK, BackendList{Backends: out})
 }

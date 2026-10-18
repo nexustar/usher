@@ -194,10 +194,10 @@ func (c *Client) SetArchived(id string, archived bool) error {
 	return c.patch(ctx, id, api.PatchRequest{Archived: &archived})
 }
 
-func (c *Client) SetAutoApprove(id string, enabled bool) error {
+func (c *Client) SetApproval(id, approval string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	return c.patch(ctx, id, api.PatchRequest{AutoApprove: &enabled})
+	return c.patch(ctx, id, api.PatchRequest{Approval: approval})
 }
 
 // ListPendingInteractions returns the currently-pending prompts as a snapshot;

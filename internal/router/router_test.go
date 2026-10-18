@@ -237,8 +237,8 @@ func TestForkSessionDoesNotInheritAutoApprove(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.Upsert(srcPath)
-	h := interaction.New("")
-	h.SetAutoApprove("source", true)
+	h := interaction.New()
+	h.SetApproval("source", core.ApprovalFull)
 	meta := sessionmeta.New(filepath.Join(t.TempDir(), "sessions.json"), 0)
 	r := New(d, map[string]backend.Backend{
 		"claude": {Forker: testForker{
@@ -250,11 +250,11 @@ func TestForkSessionDoesNotInheritAutoApprove(t *testing.T) {
 	if _, err := r.ForkSession("source", "turn"); err != nil {
 		t.Fatal(err)
 	}
-	if h.IsAutoApprove("branch") {
-		t.Error("branch inherited auto-approve from its source")
+	if h.Approval("branch") == core.ApprovalFull {
+		t.Error("branch inherited full from its source")
 	}
-	if !h.IsAutoApprove("source") {
-		t.Error("forking cleared the source's auto-approve")
+	if h.Approval("source") != core.ApprovalFull {
+		t.Error("forking cleared the source's mode")
 	}
 }
 
@@ -1443,6 +1443,60 @@ func TestSetRuntime(t *testing.T) {
 	r.releaseSend("sw", &sendToken{cancel: func() {}, started: time.Now()})
 	if sess, _ := r.GetSession("sw"); sess.Runtime.Model != "claude-opus-5-5" {
 		t.Fatalf("runtime after the next turn = %+v, want the transcript's", sess.Runtime)
+	}
+}
+
+type approvalRuntime struct {
+	backend.Runtime
+	fail  bool
+	calls []string
+}
+
+func (*approvalRuntime) Approvals() []string { return []string{core.ApprovalAsk, core.ApprovalFull} }
+
+func (r *approvalRuntime) SetApproval(_ context.Context, id, approval string) error {
+	r.calls = append(r.calls, id+" "+approval)
+	if r.fail {
+		return errors.New("refused")
+	}
+	return nil
+}
+
+func (*approvalRuntime) LiveSessions() []backend.LiveSession { return nil }
+
+// An approval the backend lacks is refused before it sees it, and one the backend
+// fails to take is not recorded.
+func TestSetApproval(t *testing.T) {
+	root := t.TempDir()
+	logPath := filepath.Join(root, "-tmp", "pm.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"type":"user","timestamp":"2026-04-26T10:00:00.000Z","cwd":"/tmp","message":{"role":"user","content":"hi"}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Upsert(logPath)
+	rt := &approvalRuntime{}
+	h := interaction.New()
+	r := New(d, map[string]backend.Backend{
+		"claude": {Runtime: rt, Transcript: transcript.Claude{}},
+	}, "claude", broker.New(), h, sessionmeta.New("", 0), nil)
+	ctx := context.Background()
+
+	if err := r.SetApproval(ctx, "pm", core.ApprovalAuto); err == nil || len(rt.calls) != 0 {
+		t.Fatalf("unsupported approval: err = %v, calls = %q", err, rt.calls)
+	}
+	if err := r.SetApproval(ctx, "pm", core.ApprovalFull); err != nil || h.Approval("pm") != core.ApprovalFull {
+		t.Fatalf("full: err = %v, approval = %q", err, h.Approval("pm"))
+	}
+	rt.fail = true
+	if err := r.SetApproval(ctx, "pm", core.ApprovalAsk); err == nil || h.Approval("pm") != core.ApprovalFull {
+		t.Fatalf("failed switch: err = %v, approval = %q, want full kept", err, h.Approval("pm"))
 	}
 }
 

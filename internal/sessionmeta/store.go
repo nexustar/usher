@@ -10,6 +10,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/nexustar/usher/internal/core"
 )
 
 const DefaultAutoArchiveAfter = 7 * 24 * time.Hour
@@ -27,6 +29,7 @@ type fileFormat struct {
 	Titles             map[string]string          `json:"titles,omitempty"`
 	AppendSystemPrompt map[string]string          `json:"append_system_prompt,omitempty"`
 	ExtraArgs          map[string][]string        `json:"extra_args,omitempty"`
+	Approval           map[string]string          `json:"approval,omitempty"`
 }
 
 type Store struct {
@@ -39,6 +42,7 @@ type Store struct {
 	titles             map[string]string
 	appendSystemPrompt map[string]string
 	extraArgs          map[string][]string
+	permissionMode     map[string]string
 }
 
 func New(path string, autoAfter time.Duration) *Store {
@@ -53,6 +57,7 @@ func New(path string, autoAfter time.Duration) *Store {
 		titles:             map[string]string{},
 		appendSystemPrompt: map[string]string{},
 		extraArgs:          map[string][]string{},
+		permissionMode:     map[string]string{},
 	}
 	s.load()
 	return s
@@ -95,6 +100,9 @@ func (s *Store) load() {
 			s.extraArgs[id] = args
 		}
 	}
+	for id, approval := range f.Approval {
+		s.permissionMode[id] = approval
+	}
 }
 
 func (s *Store) persist() {
@@ -117,9 +125,13 @@ func (s *Store) persist() {
 	if len(s.extraArgs) > 0 {
 		extraArgs = s.extraArgs
 	}
+	var approvals map[string]string
+	if len(s.permissionMode) > 0 {
+		approvals = s.permissionMode
+	}
 	data, err := json.Marshal(fileFormat{
 		Archived: s.archived, Pinned: pinned, Titles: titles,
-		AppendSystemPrompt: prompts, ExtraArgs: extraArgs,
+		AppendSystemPrompt: prompts, ExtraArgs: extraArgs, Approval: approvals,
 	})
 	if err != nil {
 		slog.Warn("sessionmeta: encode", "err", err)
@@ -279,6 +291,54 @@ func (s *Store) ExtraArgs(id string) []string {
 	return append([]string(nil), s.extraArgs[id]...)
 }
 
+func (s *Store) SetApproval(id, approval string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.permissionMode[id] == approval {
+		return
+	}
+	if approval == "" {
+		delete(s.permissionMode, id)
+	} else {
+		s.permissionMode[id] = approval
+	}
+	s.persist()
+}
+
+func (s *Store) Approval(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.permissionMode[id]
+}
+
+// ImportAutoApprove moves the sessions of a legacy auto-approve.json into full
+// approval and removes the file.
+func (s *Store) ImportAutoApprove(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("sessionmeta: read auto-approve", "path", path, "err", err)
+		}
+		return
+	}
+	var legacy map[string]bool
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		slog.Warn("sessionmeta: decode auto-approve", "path", path, "err", err)
+		return
+	}
+	s.mu.Lock()
+	for id, on := range legacy {
+		if _, ok := s.permissionMode[id]; on && !ok {
+			s.permissionMode[id] = core.ApprovalFull
+		}
+	}
+	s.persist()
+	s.mu.Unlock()
+	if err := os.Remove(path); err != nil {
+		slog.Warn("sessionmeta: remove auto-approve", "path", path, "err", err)
+	}
+}
+
 // Forget drops all state for id.
 func (s *Store) Forget(id string) {
 	s.mu.Lock()
@@ -288,7 +348,8 @@ func (s *Store) Forget(id string) {
 	_, hasTitle := s.titles[id]
 	_, hasPrompt := s.appendSystemPrompt[id]
 	_, hasArgs := s.extraArgs[id]
-	if !hasArchive && !hasPin && !hasTitle && !hasPrompt && !hasArgs {
+	_, hasApproval := s.permissionMode[id]
+	if !hasArchive && !hasPin && !hasTitle && !hasPrompt && !hasArgs && !hasApproval {
 		return
 	}
 	delete(s.archived, id)
@@ -296,5 +357,6 @@ func (s *Store) Forget(id string) {
 	delete(s.titles, id)
 	delete(s.appendSystemPrompt, id)
 	delete(s.extraArgs, id)
+	delete(s.permissionMode, id)
 	s.persist()
 }

@@ -33,7 +33,7 @@ func awaitPending(t *testing.T, h *interaction.Manager) interaction.Pending {
 // request_user_input reaches the UI as a choice in AskUserQuestion's shape and
 // is answered by question id; a typed answer goes back as a note.
 func TestRequestUserInputAnswersByQuestionID(t *testing.T) {
-	interactions := interaction.New("")
+	interactions := interaction.New()
 	out := new(testWriteCloser)
 	c := New("unused", interactions, nil, nil, nil, nil, nil)
 	c.in = out
@@ -83,7 +83,7 @@ func TestRequestUserInputAnswersByQuestionID(t *testing.T) {
 
 // An ignored request answers nothing, which Codex reads as skipped.
 func TestRequestUserInputIgnoredAnswersNothing(t *testing.T) {
-	interactions := interaction.New("")
+	interactions := interaction.New()
 	out := new(testWriteCloser)
 	c := New("unused", interactions, nil, nil, nil, nil, nil)
 	c.in = out
