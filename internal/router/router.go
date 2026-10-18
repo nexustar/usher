@@ -2005,7 +2005,18 @@ func (r *Router) prepare(ctx context.Context, o core.CreateOptions) (core.Create
 	}
 	o.Cwd = cwd
 	o.Backend, err = r.resolveCreateBackend(ctx, o.Backend, o.Model)
-	return o, err
+	if err != nil {
+		return o, err
+	}
+	if o.Effort == "default" {
+		o.Effort = ""
+	}
+	if o.Effort != "" {
+		if levels := r.effortLevels(ctx, o.Backend, o.Model); levels != nil && !slices.Contains(levels, o.Effort) {
+			return o, fmt.Errorf("model %s supports effort %s, not %q", o.Model, strings.Join(levels, "/"), o.Effort)
+		}
+	}
+	return o, nil
 }
 
 // StartSession creates a new session and returns once its backend-assigned ID
@@ -2059,8 +2070,8 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 		return "", nil, nil, err
 	}
 	id, ch, err := r.senderForBackend(o.Backend).Start(ctx, backendpkg.StartRequest{
-		Cwd: o.Cwd, Prompt: o.InitialMessage, Model: o.Model, AppendSystemPrompt: o.AppendSystemPrompt,
-		ExtraArgs: o.ExtraArgs, AutoApprove: o.AutoApprove, Router: o.Router,
+		Cwd: o.Cwd, Prompt: o.InitialMessage, Model: o.Model, Effort: o.Effort,
+		AppendSystemPrompt: o.AppendSystemPrompt, ExtraArgs: o.ExtraArgs, AutoApprove: o.AutoApprove, Router: o.Router,
 	})
 	if err != nil {
 		if o.Router {
@@ -2083,7 +2094,7 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 		r.settings.SetRouterSession(id)
 		r.designateRouter(id)
 	}
-	slog.Info("session created", "session", id, "backend", o.Backend, "cwd", o.Cwd)
+	slog.Info("session created", "session", id, "backend", o.Backend, "cwd", o.Cwd, "effort", o.Effort)
 	tok := &sendToken{cancel: cancel, started: time.Now()}
 	now := time.Now()
 	r.sendMu.Lock()
@@ -2092,6 +2103,11 @@ func (r *Router) beginNewSession(ctx context.Context, cancel context.CancelFunc,
 		ID: id, Title: textutil.Truncate(o.InitialMessage, 60), Cwd: o.Cwd,
 		Status: core.StatusRunning, StartedAt: now, LastEventAt: now,
 		LastInputAt: now, Backend: o.Backend,
+		Runtime: core.SessionRuntime{Model: o.Model, Effort: o.Effort},
+	}
+	if o.Effort != "" {
+		// Shown like a switch until the first turn reports what it ran.
+		r.switches[id] = runtimeSwitch{effort: o.Effort, at: tok.started.Add(-time.Nanosecond)}
 	}
 	r.sendMu.Unlock()
 	return id, ch, tok, nil

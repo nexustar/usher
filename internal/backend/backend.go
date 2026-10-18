@@ -138,6 +138,7 @@ type StartRequest struct {
 	Cwd                string
 	Prompt             string
 	Model              string
+	Effort             string
 	AppendSystemPrompt string
 	ExtraArgs          []string
 	AutoApprove        bool

@@ -26,7 +26,7 @@ type ScheduleList struct {
 // agent is re-resolved at fire time, so this is a courtesy, not a guarantee —
 // but it catches typos that would otherwise surface at 3am as a failed run.
 func (s *Server) validateScheduleTarget(task schedule.Task) error {
-	opts, err := s.Agents.Resolve(task.Agent, task.Cwd, task.Backend, task.Model)
+	opts, err := s.Agents.Resolve(task.Agent, task.Cwd, task.Backend, task.Model, "")
 	if err != nil {
 		return err
 	}

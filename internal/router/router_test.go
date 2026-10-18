@@ -1485,3 +1485,43 @@ func TestSetExtraArgs(t *testing.T) {
 		t.Errorf("router session: err = %v", err)
 	}
 }
+
+// TestStartSessionEffort: a create-time effort is checked against the chosen
+// model's levels, reaches the backend, and shows until the first turn reports.
+func TestStartSessionEffort(t *testing.T) {
+	d, err := discovery.NewMulti(nil, discovery.NewClaudeSource(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &routerDesignationRuntime{newID: "s-1"}
+	r := New(d, map[string]backend.Backend{
+		"claude": {Runtime: rt, Transcript: transcript.Claude{}, Models: runtimeSwitchModels{}},
+	}, "claude", broker.New(), nil, sessionmeta.New("", 0), nil)
+	cwd := t.TempDir()
+
+	if _, err := r.StartSession(core.CreateOptions{
+		Cwd: cwd, InitialMessage: "hi", Model: "claude-opus-5-5", Effort: "max",
+	}); err == nil || rt.starts != 0 {
+		t.Fatalf("an unlisted effort: err = %v, starts = %d", err, rt.starts)
+	}
+	id, err := r.StartSession(core.CreateOptions{Cwd: cwd, InitialMessage: "hi", Model: "claude-opus-5-5", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.req.Effort != "high" {
+		t.Fatalf("StartRequest.Effort = %q, want high", rt.req.Effort)
+	}
+	r.sendMu.Lock()
+	sw := r.switches[id]
+	r.sendMu.Unlock()
+	if sw.effort != "high" {
+		t.Fatalf("pending switch = %+v, want effort high", sw)
+	}
+	// "default" and a model with no listed levels leave the pick to the backend.
+	if _, err := r.StartSession(core.CreateOptions{Cwd: cwd, InitialMessage: "hi", Model: "haiku", Effort: "default"}); err != nil || rt.req.Effort != "" {
+		t.Fatalf("default effort: err = %v, StartRequest.Effort = %q", err, rt.req.Effort)
+	}
+	if _, err := r.StartSession(core.CreateOptions{Cwd: cwd, InitialMessage: "hi", Model: "haiku", Effort: "anything"}); err != nil || rt.req.Effort != "anything" {
+		t.Fatalf("unlisted model: err = %v, StartRequest.Effort = %q", err, rt.req.Effort)
+	}
+}

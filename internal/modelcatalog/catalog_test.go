@@ -61,7 +61,8 @@ func TestClaudeValidateModel(t *testing.T) {
 	}
 }
 
-// The aliases lead, then the newest account's cached catalog.
+// The aliases lead, then the newest account's cached catalog; an alias takes
+// its family's newest levels.
 func TestClaudeModelsReadTheCachedCatalog(t *testing.T) {
 	ctx := context.Background()
 	catalog := Claude{Dir: t.TempDir()}
@@ -77,11 +78,19 @@ func TestClaudeModelsReadTheCachedCatalog(t *testing.T) {
 	write("old-acct-1-cc.json", `{"fetchedAt":1,"catalog":{"config":{"models":[{"id":"claude-old","name":"Old"}]}}}`)
 	write("new-acct-2-cc.json", `{"fetchedAt":2,"catalog":{"config":{"models":[
 		{"id":"claude-opus-5-5","name":"Opus 5.5","runtime":{"effort_levels":["low","max"]}},
+		{"id":"claude-opus-4-6","name":"Opus 4.6","runtime":{"effort_levels":["low"]}},
 		{"id":"claude-haiku-4-5-20251001","name":"Haiku 4.5","runtime":{}}]}}}`)
 	write("published-x.json", `{"fetchedAt":3}`)
 	got, err := catalog.Models(ctx)
-	want := append(aliases,
+	want := claudeAliases()
+	for i := range want {
+		if want[i].ID == "opus" || want[i].ID == "opusplan" {
+			want[i].ThinkingLevels = []string{"low", "max"}
+		}
+	}
+	want = append(want,
 		backend.Model{ID: "claude-opus-5-5", DisplayName: "Opus 5.5", ThinkingLevels: []string{"low", "max"}},
+		backend.Model{ID: "claude-opus-4-6", DisplayName: "Opus 4.6", ThinkingLevels: []string{"low"}},
 		backend.Model{ID: "claude-haiku-4-5-20251001", DisplayName: "Haiku 4.5"},
 	)
 	if err != nil || !reflect.DeepEqual(got, want) {

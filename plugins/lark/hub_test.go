@@ -592,51 +592,53 @@ func TestGuestDisabledOrUnauthorizedIgnored(t *testing.T) {
 func TestParseGuestFlags(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	cases := []struct {
-		text                       string
-		agent, cwd, backend, model string
-		instruction                string
-		err                        string
+		text        string
+		flags       guestFlags
+		instruction string
+		err         string
 	}{
-		{"do it", "", "/tmp", "", "", "do it", ""},
-		{"--agent dev do it", "dev", "", "", "", "do it", ""},
-		{"--agent dev --model gpt-5 do it", "dev", "", "", "gpt-5", "do it", ""},
-		{"--cwd /w do it", "", "/w", "", "", "do it", ""},
-		{"--model gpt-5 do it", "", "/tmp", "", "gpt-5", "do it", ""},
-		{"--backend codex --model gpt-5 do it", "", "/tmp", "codex", "gpt-5", "do it", ""},
-		{"--cwd ~/proj --model sonnet do it", "", filepath.Join(home, "proj"), "", "sonnet", "do it", ""},
+		{"do it", guestFlags{cwd: "/tmp"}, "do it", ""},
+		{"--agent dev do it", guestFlags{agent: "dev"}, "do it", ""},
+		{"--agent dev --model gpt-5 do it", guestFlags{agent: "dev", model: "gpt-5"}, "do it", ""},
+		{"--cwd /w do it", guestFlags{cwd: "/w"}, "do it", ""},
+		{"--model gpt-5 do it", guestFlags{cwd: "/tmp", model: "gpt-5"}, "do it", ""},
+		{"--backend codex --model gpt-5 do it", guestFlags{cwd: "/tmp", backend: "codex", model: "gpt-5"}, "do it", ""},
+		{"--cwd ~/proj --model sonnet do it", guestFlags{cwd: filepath.Join(home, "proj"), model: "sonnet"}, "do it", ""},
+		{"--model opus --effort high do it", guestFlags{cwd: "/tmp", model: "opus", effort: "high"}, "do it", ""},
 		// Multi-line instructions keep their formatting (pasted logs, code).
-		{"--cwd /w analyze this\nline2  spaced\n\tindented", "", "/w", "", "", "analyze this\nline2  spaced\n\tindented", ""},
-		{"--bad x", "", "", "", "", "", "unknown flag --bad"},
-		{"--cwd", "", "", "", "", "", "--cwd requires a value"},
-		{"--model m", "", "", "", "", "", "instruction is required"},
+		{"--cwd /w analyze this\nline2  spaced\n\tindented", guestFlags{cwd: "/w"}, "analyze this\nline2  spaced\n\tindented", ""},
+		{"--bad x", guestFlags{}, "", "unknown flag --bad"},
+		{"--cwd", guestFlags{}, "", "--cwd requires a value"},
+		{"--effort --model m do it", guestFlags{}, "", "--effort requires a value"},
+		{"--model m", guestFlags{}, "", "instruction is required"},
 	}
 	for _, c := range cases {
-		agent, cwd, backendName, model, instruction, err := parseGuestFlags(c.text, "/tmp", "")
+		flags, instruction, err := parseGuestFlags(c.text, "/tmp", "")
 		if c.err != "" {
 			if err == nil || err.Error() != c.err {
 				t.Errorf("parseGuestFlags(%q) err = %v, want %q", c.text, err, c.err)
 			}
 			continue
 		}
-		if err != nil || agent != c.agent || cwd != c.cwd || backendName != c.backend || model != c.model || instruction != c.instruction {
-			t.Errorf("parseGuestFlags(%q) = %q %q %q %q %q %v", c.text, agent, cwd, backendName, model, instruction, err)
+		if err != nil || flags != c.flags || instruction != c.instruction {
+			t.Errorf("parseGuestFlags(%q) = %+v %q %v", c.text, flags, instruction, err)
 		}
 	}
 
 	// With a defaultAgent, bare messages use it instead of defaultCwd.
-	agent, cwd, _, _, instruction, err := parseGuestFlags("do it", "/tmp", "team-bot")
-	if err != nil || agent != "team-bot" || cwd != "" || instruction != "do it" {
-		t.Errorf("parseGuestFlags with defaultAgent = %q %q %q %v", agent, cwd, instruction, err)
+	flags, instruction, err := parseGuestFlags("do it", "/tmp", "team-bot")
+	if err != nil || flags != (guestFlags{agent: "team-bot"}) || instruction != "do it" {
+		t.Errorf("parseGuestFlags with defaultAgent = %+v %q %v", flags, instruction, err)
 	}
 	// Explicit --agent overrides defaultAgent.
-	agent, cwd, _, _, _, err = parseGuestFlags("--agent custom do it", "/tmp", "team-bot")
-	if err != nil || agent != "custom" || cwd != "" {
-		t.Errorf("parseGuestFlags explicit --agent with defaultAgent = %q %q %v", agent, cwd, err)
+	flags, _, err = parseGuestFlags("--agent custom do it", "/tmp", "team-bot")
+	if err != nil || flags != (guestFlags{agent: "custom"}) {
+		t.Errorf("parseGuestFlags explicit --agent with defaultAgent = %+v %v", flags, err)
 	}
 	// Explicit --cwd suppresses defaultAgent.
-	agent, cwd, _, _, _, err = parseGuestFlags("--cwd /w do it", "/tmp", "team-bot")
-	if err != nil || agent != "" || cwd != "/w" {
-		t.Errorf("parseGuestFlags explicit --cwd with defaultAgent = %q %q %v", agent, cwd, err)
+	flags, _, err = parseGuestFlags("--cwd /w do it", "/tmp", "team-bot")
+	if err != nil || flags != (guestFlags{cwd: "/w"}) {
+		t.Errorf("parseGuestFlags explicit --cwd with defaultAgent = %+v %v", flags, err)
 	}
 }
 

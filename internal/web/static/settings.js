@@ -199,6 +199,17 @@ function backendOptions(selected) {
 
 // A backend whose catalog usher can't read still needs one choice, and
 // "default" is the sentinel that hands the pick back to the backend.
+function effortOptions(backend, model, selected) {
+  const entry = (catalogs[backend] || []).find(m => m.id === model);
+  const options = [{id: '', label: 'Default'}, ...((entry && entry.thinking_levels) || []).map(l => ({id: l, label: l}))];
+  if (selected && !options.some(o => o.id === selected)) {
+    options.push({id: selected, label: selected + ' (unavailable)'});
+  }
+  return options.map(o =>
+    `<option value="${esc(o.id)}"${o.id === selected ? ' selected' : ''}>${esc(o.label)}</option>`
+  ).join('');
+}
+
 function modelOptions(backend, selected) {
   const models = catalogs[backend] || [];
   const options = models.length ? [...models] : [{id: 'default', display_name: 'Default'}];
@@ -221,7 +232,7 @@ function renderForm(agent, copy = false) {
   // instead of away.
   const isDefault = !creating && agent.name === 'default';
   const value = agent || {
-    name: '', cwd: '', backend: '', model: '', append_system_prompt: '',
+    name: '', cwd: '', backend: '', model: '', effort: '', append_system_prompt: '',
     auto_approve: false,
   };
   const name = copy ? value.name + '-copy' : value.name;
@@ -241,6 +252,7 @@ function renderForm(agent, copy = false) {
         <label><span>Backend</span><select name="backend">${backendOptions(selectedBackend)}</select></label>
         <label><span>Model</span><select name="model">${modelOptions(selectedBackend, value.model || '')}</select></label>
       </div>
+      <label><span>Effort</span><select name="effort">${effortOptions(selectedBackend, value.model || '', value.effort || '')}</select></label>
       <label class="cfg-form-check">
         <input type="checkbox" name="auto_approve"${value.auto_approve ? ' checked' : ''}>
         <span>Auto-approve tool calls</span>
@@ -268,9 +280,17 @@ function renderForm(agent, copy = false) {
   const form = host.querySelector('form');
   const backendEl = form.elements.backend;
   const modelEl = form.elements.model;
+  const effortEl = form.elements.effort;
+  const refreshEffort = () => {
+    const kept = effortEl.value;
+    effortEl.innerHTML = effortOptions(backendEl.value, modelEl.value, '');
+    if ([...effortEl.options].some(o => o.value === kept)) effortEl.value = kept;
+  };
   backendEl.addEventListener('change', () => {
     modelEl.innerHTML = modelOptions(backendEl.value, '');
+    refreshEffort();
   });
+  modelEl.addEventListener('change', refreshEffort);
   const showError = message => {
     const error = form.querySelector('.cfg-form-error');
     error.textContent = message;

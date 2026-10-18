@@ -19,7 +19,7 @@ type Starter interface {
 // Resolver turns a task's target fields into create options.
 // *agentprofile.Store implements it.
 type Resolver interface {
-	Resolve(agent, cwd, backend, model string) (core.CreateOptions, error)
+	Resolve(agent, cwd, backend, model, effort string) (core.CreateOptions, error)
 }
 
 // Cron resolution is one minute; this only bounds how late a match is noticed.
@@ -119,7 +119,7 @@ func (r *Runner) fire(task Task) (string, error) {
 }
 
 func (r *Runner) start(task Task) (string, error) {
-	opts, err := r.resolver.Resolve(task.Agent, task.Cwd, task.Backend, task.Model)
+	opts, err := r.resolver.Resolve(task.Agent, task.Cwd, task.Backend, task.Model, "")
 	if err != nil {
 		return "", err
 	}

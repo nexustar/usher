@@ -18,6 +18,7 @@ func fakeClaude(t *testing.T) string {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "claude")
 	body := `#!/bin/sh
+[ -n "$FAKE_CLAUDE_ARGS" ] && printf '%s\n' "$@" > "$FAKE_CLAUDE_ARGS"
 while IFS= read -r line; do
   case "$line" in
     *'"subtype":"initialize"'*)

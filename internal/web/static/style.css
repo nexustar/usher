@@ -1734,12 +1734,22 @@ pre.raw-markdown {
   padding: 0.3rem 0.55rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  /* The button wears the backend color (like the sidebar backend marks);
+  /* The pickers wear the backend color (like the sidebar backend marks);
    * JS mirrors the choice onto the wrapper's data-backend. */
   color: var(--claude);
 }
-.composer-config-wrap[data-backend="codex"] .composer-picker { color: var(--codex); }
-.composer-config-wrap[data-backend="pi"] .composer-picker { color: var(--pi); }
+.router-pickers[data-backend="codex"] .composer-picker { color: var(--codex); }
+.router-pickers[data-backend="pi"] .composer-picker { color: var(--pi); }
+/* The new-session label reads like the session view's usage button: backend
+ * and model in the backend's color, the effort faint. */
+.composer-picker.config-label {
+  display: inline-flex;
+  gap: 0.4rem;
+  font-size: var(--font-sm);
+}
+.composer-config-wrap[data-backend="codex"] .config-label { color: var(--codex); }
+.composer-config-wrap[data-backend="pi"] .config-label { color: var(--pi); }
+.picker-effort { color: var(--text-disabled); }
 /* Translucent gray tint: reads against the white composer in light mode and
  * still lifts the segment in dark, with no per-scheme override. */
 .composer-picker:hover { background: rgba(110, 118, 129, 0.12); }

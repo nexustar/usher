@@ -134,6 +134,7 @@ type CreateOptions struct {
 	Cwd                string
 	InitialMessage     string
 	Model              string
+	Effort             string
 	AppendSystemPrompt string
 	ExtraArgs          []string
 	AutoApprove        bool

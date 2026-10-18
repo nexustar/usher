@@ -363,7 +363,7 @@ export async function showNewSession(opts = {}) {
             </div>
             <div class="composer-send">
               <div class="composer-config-wrap">
-                <button id="new-config" class="composer-picker" type="button"
+                <button id="new-config" class="composer-picker config-label" type="button"
                         aria-haspopup="menu" aria-expanded="false"></button>
                 <div id="new-config-menu" class="composer-config-menu" role="menu" hidden></div>
               </div>
@@ -404,8 +404,9 @@ export async function showNewSession(opts = {}) {
   let agentProfiles = [];
   let backend = '';
   let model = '';
+  let effort = ''; // '' leaves it to the model
   let autoApprove = false;
-  let expanded = ''; // config-menu section currently unfolded: 'backend' | 'model' | ''
+  let expanded = ''; // config-menu section currently unfolded: 'backend' | 'model' | 'effort' | ''
 
   // Same control as the session view's, driven locally — no id to POST to yet.
   const updateAutoApprove = () => {
@@ -435,16 +436,24 @@ export async function showNewSession(opts = {}) {
     }
     return choices;
   };
+  const effortChoices = () => {
+    const m = catalogModel(modelCatalogs[backend], model);
+    const levels = (m && m.thinking_levels) || [];
+    if (!levels.length) return [];
+    const choices = [{id: '', display_name: 'Default'}, ...levels.map(l => ({id: l, display_name: l}))];
+    if (effort && !levels.includes(effort)) choices.push({id: effort, display_name: effort + ' (unavailable)'});
+    return choices;
+  };
   const displayName = (choices, id) => (choices.find(c => c.id === id) || {display_name: id}).display_name;
 
-  // The whole config collapsed to one word: the agent name, or backend · model
-  // when custom. The backend is a span of its own so CSS can drop it on the
-  // narrowest phones, where the picker's color still says which.
+  // The agent name, or [backend] model effort. The backend is its own span so
+  // CSS can drop it on the narrowest phones.
   const updateConfigLabel = () => {
     configBtn.parentElement.dataset.backend = backend || 'claude';
-    configBtn.innerHTML = agentName ? esc(agentName)
-      : `<span class="picker-backend">${esc(displayName(backendChoices(), backend))} · </span>` +
-        esc(displayName(modelChoices(), model));
+    configBtn.innerHTML = agentName ? `<span class="picker-model">${esc(agentName)}</span>`
+      : `<span class="picker-backend">[${esc(displayName(backendChoices(), backend))}]</span>` +
+        `<span class="picker-model">${esc(displayName(modelChoices(), model))}</span>` +
+        (effort ? `<span class="picker-effort">${esc(effort)}</span>` : '');
   };
 
   // Saved per-backend model if the catalog still offers it, else the catalog
@@ -458,6 +467,13 @@ export async function showNewSession(opts = {}) {
     } catch {/* private mode → catalog head */}
     return m;
   };
+  const effortKey = () => 'usher.newEffort.' + backend + '/' + model;
+  const defaultEffort = () => {
+    const m = catalogModel(modelCatalogs[backend], model);
+    let saved = '';
+    try { saved = localStorage.getItem(effortKey()) || ''; } catch {/* private mode → default */}
+    return m && (m.thinking_levels || []).includes(saved) ? saved : '';
+  };
   // Switching back to Custom must not leave the agent's backend/model behind:
   // the stored preference was never overwritten, it just stopped being shown.
   const restoreSavedChoice = () => {
@@ -467,6 +483,7 @@ export async function showNewSession(opts = {}) {
       if (saved && backends.includes(saved)) backend = saved;
     } catch {/* private mode → first backend */}
     model = defaultModelFor(backend);
+    effort = defaultEffort();
     autoApprove = false;
     try {
       autoApprove = localStorage.getItem('usher.newAutoApprove') === '1';
@@ -481,6 +498,7 @@ export async function showNewSession(opts = {}) {
     if (profile.cwd) cwdEl.value = profile.cwd;
     if (profile.backend) backend = profile.backend;
     model = profile.model || defaultModelFor(backend);
+    effort = profile.effort || '';
     autoApprove = !!profile.auto_approve;
     updateAutoApprove();
     updateConfigLabel();
@@ -516,11 +534,14 @@ export async function showNewSession(opts = {}) {
       `<div class="config-submenu">` + choices.map(c =>
         `<button type="button" class="config-row" data-${name}="${esc(c.id)}">` +
         `<span>${esc(c.display_name)}</span>${check(c.id === selectedID)}</button>`).join('') + `</div>`;
+    const efforts = effortChoices();
     configMenu.innerHTML = `<div class="config-menu-body">` + agentRows +
       fold('backend', backendChoices(), backend) +
-      fold('model', modelChoices(), model) + `</div>` +
+      fold('model', modelChoices(), model) +
+      (efforts.length ? fold('effort', efforts, effort) : '') + `</div>` +
       (expanded === 'backend' ? submenu('backend', backendChoices(), backend) :
-       expanded === 'model' ? submenu('model', modelChoices(), model) : '');
+       expanded === 'model' ? submenu('model', modelChoices(), model) :
+       expanded === 'effort' && efforts.length ? submenu('effort', efforts, effort) : '');
   };
 
   const onDocClick = e => { if (!e.target.closest('.composer-config-wrap')) closeConfigMenu(); };
@@ -557,11 +578,18 @@ export async function showNewSession(opts = {}) {
       backend = row.dataset.backend;
       try { localStorage.setItem('usher.newBackend', backend); } catch {/* private mode */}
       model = defaultModelFor(backend);
+      effort = defaultEffort();
       updateConfigLabel();
       renderConfigMenu(); // refresh the ✓ and the Model row's reset value
     } else if (row.dataset.model !== undefined) {
       model = row.dataset.model;
       try { localStorage.setItem('usher.newModel.' + backend, model); } catch {/* private mode */}
+      effort = defaultEffort();
+      updateConfigLabel();
+      closeConfigMenu();
+    } else if (row.dataset.effort !== undefined) {
+      effort = row.dataset.effort;
+      try { localStorage.setItem(effortKey(), effort); } catch {/* private mode */}
       updateConfigLabel();
       closeConfigMenu();
     }
@@ -606,6 +634,8 @@ export async function showNewSession(opts = {}) {
       if (!profile || cwdEl.value.trim() !== (profile.cwd || '')) request.cwd = cwdEl.value.trim();
       if (!profile || backend !== (profile.backend || '')) request.backend = backend;
       if (!profile || model !== (profile.model || '')) request.model = model;
+      // "default" overrides an agent's effort.
+      if (profile ? effort !== (profile.effort || '') : effort) request.effort = effort || 'default';
       if (!profile || autoApprove !== !!profile.auto_approve) request.auto_approve = autoApprove;
       const res = await fetch('/api/v1/sessions', {
         method: 'POST',

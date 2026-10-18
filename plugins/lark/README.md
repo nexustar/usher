@@ -55,7 +55,7 @@ When `--allowed-user-ids` is non-empty, an allowlisted user can mention the
 bot in any Lark group where the bot is present:
 
 ```text
-@bot [--agent agent-name] [--cwd /path] [--backend backend-name] [--model model-name] instruction
+@bot [--agent agent-name] [--cwd /path] [--backend backend-name] [--model model-name] [--effort level] instruction
 ```
 
 The first mention creates a new usher session rooted at that Lark message.
@@ -76,7 +76,7 @@ Feishu does not allow downloading resources inside cards or merged-forward
 child messages, so those remain textual placeholders.
 
 These flags are accepted only on the creation mention. `--agent` selects a
-configured agent; `--cwd`, `--backend`, and `--model` override its defaults.
+configured agent; `--cwd`, `--backend`, `--model`, and `--effort` override its defaults.
 Without `--agent`, the default cwd is
 `--default-cwd` (default `/tmp`). An empty allowlist disables guest
 sessions entirely; the canonical mirror chat keeps its existing empty

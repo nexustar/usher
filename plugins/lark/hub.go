@@ -869,7 +869,7 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	// while CreateSession sends this initial prompt as part of creating it.
 	// Keep resource placeholders in the prompt; attachment transfer is only a
 	// supported future path for later turns on an already-bound session.
-	agent, cwd, backendName, model, instruction, err := parseGuestFlags(text, h.defaultCwd, h.defaultAgent)
+	flags, instruction, err := parseGuestFlags(text, h.defaultCwd, h.defaultAgent)
 	if err != nil {
 		_, _ = h.lark.ReplyText(ctx, msg.id, "⚠️ "+err.Error())
 		return
@@ -888,8 +888,8 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	initial := buildGuestPrompt(transcript, instruction, truncated)
 	h.createMu.Lock()
 	created, err := h.router.CreateSession(pluginapi.CreateRequest{
-		Agent: agent, Backend: backendName, Cwd: cwd,
-		InitialMessage: initial, Model: model,
+		Agent: flags.agent, Backend: flags.backend, Cwd: flags.cwd,
+		InitialMessage: initial, Model: flags.model, Effort: flags.effort,
 	})
 	sessionID := created.SessionID
 	if err == nil {
@@ -910,14 +910,17 @@ func (h *Hub) guestCreate(ctx context.Context, chat string, msg guestMeta, text 
 	h.recordSent(sessionID, initial)
 	h.ack(ctx, msg.id)
 	status := "▷ session " + textutil.ShortID(sessionID)
-	if agent != "" {
-		status += " · agent " + agent
+	if flags.agent != "" {
+		status += " · agent " + flags.agent
 	} else {
-		modelLabel := model
+		modelLabel := flags.model
 		if modelLabel == "" {
 			modelLabel = "default"
 		}
-		status += " · cwd " + cwd + " · model " + modelLabel
+		status += " · cwd " + flags.cwd + " · model " + modelLabel
+	}
+	if flags.effort != "" {
+		status += " · effort " + flags.effort
 	}
 	thread, err := h.lark.ReplyText(ctx, msg.id, status)
 	if err != nil {
@@ -1591,48 +1594,59 @@ func buildGuestPrompt(transcript []guestLine, instruction string, truncated bool
 	return b.String()
 }
 
+// guestFlags are the creation flags a guest mention may lead with.
+type guestFlags struct {
+	agent, cwd, backend, model, effort string
+}
+
 // parseGuestFlags consumes leading creation flags; the rest is the instruction,
 // kept verbatim (newlines in pasted logs must survive).
-func parseGuestFlags(text, defaultCwd, defaultAgent string) (agent, cwd, backendName, model, instruction string, err error) {
+func parseGuestFlags(text, defaultCwd, defaultAgent string) (guestFlags, string, error) {
+	var f guestFlags
 	rest := strings.TrimSpace(text)
 	for strings.HasPrefix(rest, "--") {
-		var flag string
+		var flag, val string
 		flag, rest = cutToken(rest)
+		var field *string
 		switch flag {
-		case "--agent", "--cwd", "--backend", "--model":
-			var val string
-			val, rest = cutToken(rest)
-			if val == "" || strings.HasPrefix(val, "--") {
-				return "", "", "", "", "", fmt.Errorf("%s requires a value", flag)
-			}
-			if flag == "--agent" {
-				agent = val
-			} else if flag == "--cwd" {
-				cwd, err = expandGuestCwd(val)
-				if err != nil {
-					return "", "", "", "", "", err
-				}
-			} else if flag == "--backend" {
-				backendName = val
-			} else {
-				model = val
-			}
+		case "--agent":
+			field = &f.agent
+		case "--cwd":
+			field = &f.cwd
+		case "--backend":
+			field = &f.backend
+		case "--model":
+			field = &f.model
+		case "--effort":
+			field = &f.effort
 		default:
-			return "", "", "", "", "", fmt.Errorf("unknown flag %s", flag)
+			return guestFlags{}, "", fmt.Errorf("unknown flag %s", flag)
 		}
+		val, rest = cutToken(rest)
+		if val == "" || strings.HasPrefix(val, "--") {
+			return guestFlags{}, "", fmt.Errorf("%s requires a value", flag)
+		}
+		*field = val
 	}
-	if cwd == "" && agent == "" {
+	if f.cwd != "" {
+		cwd, err := expandGuestCwd(f.cwd)
+		if err != nil {
+			return guestFlags{}, "", err
+		}
+		f.cwd = cwd
+	}
+	if f.cwd == "" && f.agent == "" {
 		if defaultAgent != "" {
-			agent = defaultAgent
+			f.agent = defaultAgent
 		} else {
-			cwd = defaultCwd
+			f.cwd = defaultCwd
 		}
 	}
-	instruction = strings.TrimSpace(rest)
+	instruction := strings.TrimSpace(rest)
 	if instruction == "" {
-		return "", "", "", "", "", fmt.Errorf("instruction is required")
+		return guestFlags{}, "", fmt.Errorf("instruction is required")
 	}
-	return agent, cwd, backendName, model, instruction, nil
+	return f, instruction, nil
 }
 
 // cutToken splits the first whitespace-delimited token off s.

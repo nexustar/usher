@@ -23,7 +23,7 @@ func TestLoadAndResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	override := "/work/other"
-	got, err := store.Resolve("dev", override, "", "")
+	got, err := store.Resolve("dev", override, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestExtraArgsRequireBackend(t *testing.T) {
 	if !reflect.DeepEqual(created.ExtraArgs, []string{"--tools", "", "--strict-mcp-config"}) {
 		t.Fatalf("ExtraArgs = %q, want empty entries kept", created.ExtraArgs)
 	}
-	got, err := store.Resolve("bare", "/w", "", "")
+	got, err := store.Resolve("bare", "/w", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestExtraArgsRequireBackend(t *testing.T) {
 
 func TestResolveCarriesAutoApprove(t *testing.T) {
 	store := New([]Profile{{Name: "trusted", Cwd: "/work", AutoApprove: true}})
-	got, err := store.Resolve("trusted", "", "", "")
+	got, err := store.Resolve("trusted", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,25 +83,46 @@ func TestResolveBackendOverrideDropsModelAndFlags(t *testing.T) {
 		Name: "opus", Backend: "claude", Model: "opus", ExtraArgs: []string{"--tools", ""},
 		AppendSystemPrompt: "be brief", AutoApprove: true,
 	}})
-	got, err := store.Resolve("opus", "", "codex", "")
+	got, err := store.Resolve("opus", "", "codex", "", "")
 	want := core.CreateOptions{Backend: "codex", AppendSystemPrompt: "be brief", AutoApprove: true}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
 	}
-	if got, _ := store.Resolve("opus", "", "claude", ""); got.Model != "opus" || len(got.ExtraArgs) != 2 {
+	if got, _ := store.Resolve("opus", "", "claude", "", ""); got.Model != "opus" || len(got.ExtraArgs) != 2 {
 		t.Fatalf("same backend lost the agent's model or flags: %+v", got)
 	}
 }
 
+func TestResolveEffort(t *testing.T) {
+	store := New([]Profile{{Name: "deep", Backend: "claude", Model: "opus", Effort: "high"}})
+	for _, c := range []struct {
+		backend, model, effort, want string
+	}{
+		{"", "", "", "high"},
+		{"", "", "low", "low"},
+		{"", "", "default", ""},
+		{"", "opus", "", "high"}, // the same model keeps it
+		{"", "sonnet", "", ""},   // another model's levels may differ
+		{"codex", "", "", ""},    // so may another backend's
+		{"codex", "", "low", "low"},
+	} {
+		got, err := store.Resolve("deep", "", c.backend, c.model, c.effort)
+		if err != nil || got.Effort != c.want {
+			t.Errorf("Resolve(backend=%q model=%q effort=%q).Effort = %q, %v, want %q",
+				c.backend, c.model, c.effort, got.Effort, err, c.want)
+		}
+	}
+}
+
 func TestResolveUnknown(t *testing.T) {
-	_, err := New(nil).Resolve("missing", "", "", "")
+	_, err := New(nil).Resolve("missing", "", "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
 		t.Fatalf("Resolve error = %v", err)
 	}
 }
 
 func TestResolveWithoutAgentPassesRequestThrough(t *testing.T) {
-	got, err := New(nil).Resolve("", "/w", "codex", "gpt-test")
+	got, err := New(nil).Resolve("", "/w", "codex", "gpt-test", "")
 	want := core.CreateOptions{Backend: "codex", Cwd: "/w", Model: "gpt-test"}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
@@ -112,7 +133,7 @@ func TestResolveWithoutAgentPassesRequestThrough(t *testing.T) {
 // backend's own default rather than reaching a backend as a literal model.
 func TestResolveDefaultModelOverridesProfile(t *testing.T) {
 	store := New([]Profile{{Name: "dev", Model: "specific"}})
-	got, err := store.Resolve("dev", "", "", "default")
+	got, err := store.Resolve("dev", "", "", "default", "")
 	if err != nil || got.Model != "" {
 		t.Fatalf("Resolve default model = %q, %v", got.Model, err)
 	}
@@ -202,7 +223,7 @@ func TestCRUDValidation(t *testing.T) {
 	if _, err := store.Create(Profile{Name: "ok"}); err != nil {
 		t.Fatalf("name differing only by case rejected: %v", err)
 	}
-	if _, err := store.Resolve("Ok", "", "", ""); err == nil {
+	if _, err := store.Resolve("Ok", "", "", "", ""); err == nil {
 		t.Fatal("resolve matched a different case")
 	}
 	if _, err := store.Update("missing", Profile{}); err == nil {
@@ -229,10 +250,10 @@ func TestUpdateRenames(t *testing.T) {
 	if err != nil || renamed.Name != "Typo" {
 		t.Fatalf("rename = %+v, %v", renamed, err)
 	}
-	if _, err := store.Resolve("typoo", "", "", ""); err == nil {
+	if _, err := store.Resolve("typoo", "", "", "", ""); err == nil {
 		t.Fatal("old name still resolves after rename")
 	}
-	if _, err := store.Resolve("Typo", "", "", ""); err != nil {
+	if _, err := store.Resolve("Typo", "", "", "", ""); err != nil {
 		t.Fatalf("new name does not resolve: %v", err)
 	}
 	if _, err := store.Update("Typo", Profile{Name: "taken"}); err == nil {
@@ -260,7 +281,7 @@ func TestDefaultAgent(t *testing.T) {
 	if got := store.List(); len(got) != 1 || got[0].Name != DefaultName || !got[0].Builtin || got[0].Backend != "codex" {
 		t.Fatalf("List = %+v", got)
 	}
-	got, err := store.Resolve("", "/w", "", "")
+	got, err := store.Resolve("", "/w", "", "", "")
 	if want := (core.CreateOptions{Backend: "codex", Cwd: "/w"}); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
 	}
@@ -277,12 +298,12 @@ func TestDefaultAgent(t *testing.T) {
 	if _, err := store.Update(DefaultName, Profile{Name: "other"}); err == nil {
 		t.Fatal("the default agent was renamed")
 	}
-	got, _ = store.Resolve("", "", "", "")
+	got, _ = store.Resolve("", "", "", "", "")
 	if want := (core.CreateOptions{Backend: "pi", Model: "luna", AppendSystemPrompt: "be brief"}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Resolve = %+v, want %+v", got, want)
 	}
 	for _, req := range [][2]string{{"claude", ""}, {"", "opus"}} {
-		got, _ := store.Resolve("", "", req[0], req[1])
+		got, _ := store.Resolve("", "", req[0], req[1], "")
 		if want := (core.CreateOptions{Backend: req[0], Model: req[1]}); !reflect.DeepEqual(got, want) {
 			t.Fatalf("Resolve(%v) = %+v, want %+v", req, got, want)
 		}

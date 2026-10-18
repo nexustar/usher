@@ -188,7 +188,7 @@ func (f *fakeStarter) calls() []core.CreateOptions {
 // see exactly the fields the task carried.
 type passThrough struct{ err error }
 
-func (p passThrough) Resolve(agent, cwd, backend, model string) (core.CreateOptions, error) {
+func (p passThrough) Resolve(agent, cwd, backend, model, _ string) (core.CreateOptions, error) {
 	return core.CreateOptions{Cwd: cwd, Backend: backend, Model: model}, p.err
 }
 

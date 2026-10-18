@@ -752,3 +752,39 @@ done
 		t.Fatalf("requests = %s", got)
 	}
 }
+
+// A create-time thinking level reaches pi before the first prompt.
+func TestStartSetsThinkingLevelBeforePrompt(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "rpc.log")
+	bin := filepath.Join(dir, "fake-pi")
+	body := `#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$FAKE_PI_LOG"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"get_state"'*) printf '{"type":"response","id":"%s","success":true,"data":{"sessionId":"s1","sessionFile":"/tmp/s1.jsonl"}}\n' "$id" ;;
+    *) printf '{"type":"response","id":"%s","success":true,"data":{}}\n' "$id" ;;
+  esac
+done
+`
+	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PI_LOG", logPath)
+	r := NewRuntime(bin, dir, nil, 1, Models{}, nil, nil)
+	t.Cleanup(r.Shutdown)
+	id, _, err := r.Start(context.Background(), backend.StartRequest{Cwd: dir, Prompt: "hi", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "s1" {
+		t.Fatalf("id = %q", id)
+	}
+	logged, _ := os.ReadFile(logPath)
+	got := string(logged)
+	level := strings.Index(got, `"type":"set_thinking_level"`)
+	if level < 0 || !strings.Contains(got, `"level":"high"`) || level > strings.Index(got, `"type":"prompt"`) {
+		t.Fatalf("requests = %s", got)
+	}
+}

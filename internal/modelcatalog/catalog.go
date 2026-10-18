@@ -21,10 +21,10 @@ type Claude struct{ Dir string }
 
 func claudeAliases() []backend.Model {
 	return []backend.Model{
-		{ID: "fable", DisplayName: "Fable (latest)", Alias: true},
-		{ID: "opus", DisplayName: "Opus (latest)", Alias: true},
-		{ID: "sonnet", DisplayName: "Sonnet (latest)", Alias: true},
-		{ID: "haiku", DisplayName: "Haiku (latest)", Alias: true},
+		{ID: "fable", DisplayName: "Fable", Alias: true},
+		{ID: "opus", DisplayName: "Opus", Alias: true},
+		{ID: "sonnet", DisplayName: "Sonnet", Alias: true},
+		{ID: "haiku", DisplayName: "Haiku", Alias: true},
 		{ID: "opusplan", DisplayName: "Opus Plan", Alias: true},
 	}
 }
@@ -73,8 +73,21 @@ func (c Claude) cached() []backend.Model {
 	return out
 }
 
+// Models gives each alias the effort levels of its family's newest model,
+// which the catalog lists first.
 func (c Claude) Models(context.Context) ([]backend.Model, error) {
-	return append(claudeAliases(), c.cached()...), nil
+	cached := c.cached()
+	aliases := claudeAliases()
+	for i, a := range aliases {
+		prefix := "claude-" + strings.TrimSuffix(a.ID, "plan") + "-"
+		for _, m := range cached {
+			if strings.HasPrefix(m.ID, prefix) {
+				aliases[i].ThinkingLevels = m.ThinkingLevels
+				break
+			}
+		}
+	}
+	return append(aliases, cached...), nil
 }
 
 func (Claude) DefaultEffort(context.Context, string) (string, error) { return "", nil }

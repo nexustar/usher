@@ -103,7 +103,7 @@ func (s *Server) WriteCreated(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // CreateRequest spawns a session. When Agent names a configured agent,
-// non-empty Cwd/Backend/Model override that agent's defaults; without it they
+// non-empty Cwd/Backend/Model/Effort override that agent's defaults; without it they
 // are the request in full. AutoApprove is a pointer: omitted keeps the agent's
 // default, an explicit false turns it off for this session only.
 type CreateRequest struct {
@@ -112,12 +112,13 @@ type CreateRequest struct {
 	InitialMessage string `json:"initial_message"`
 	Backend        string `json:"backend,omitempty"`
 	Model          string `json:"model,omitempty"`
+	Effort         string `json:"effort,omitempty"`
 	AutoApprove    *bool  `json:"auto_approve,omitempty"`
 }
 
 // Options resolves the request against the configured agents.
 func (req CreateRequest) Options(agents *agentprofile.Store) (core.CreateOptions, error) {
-	opts, err := agents.Resolve(req.Agent, req.Cwd, req.Backend, req.Model)
+	opts, err := agents.Resolve(req.Agent, req.Cwd, req.Backend, req.Model, req.Effort)
 	if err != nil {
 		return opts, err
 	}

@@ -875,6 +875,12 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 		return "", nil, errors.New("pi get_state returned no session id")
 	}
 	r.refreshModels(ctx, c)
+	if req.Effort != "" {
+		if _, err := c.request(ctx, "set_thinking_level", map[string]any{"level": req.Effort}); err != nil {
+			c.stop()
+			return "", nil, fmt.Errorf("set thinking level: %w", err)
+		}
+	}
 	w := &worker{c: c, cwd: req.Cwd, path: state.SessionFile, last: time.Now()}
 	w.leases = 1
 	if err := r.add(state.SessionID, w); err != nil {

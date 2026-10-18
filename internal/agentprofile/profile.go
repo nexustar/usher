@@ -24,6 +24,7 @@ type Profile struct {
 	Cwd                string   `json:"cwd,omitempty"`
 	Backend            string   `json:"backend,omitempty"`
 	Model              string   `json:"model,omitempty"`
+	Effort             string   `json:"effort,omitempty"`
 	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
 	ExtraArgs          []string `json:"extra_args,omitempty"`
 	AutoApprove        bool     `json:"auto_approve,omitempty"`
@@ -289,10 +290,11 @@ func (s *Store) persistLocked() error {
 // fields override the named agent's defaults. A request that names no agent,
 // backend or model is created from the default agent; one that names a backend
 // or model without an agent passes through unchanged. Overriding the backend
-// drops the agent's model and flags. The "default" model sentinel is
-// normalized last, so it still beats a configured profile model on its way to
-// the backend default. InitialMessage is the caller's to fill in.
-func (s *Store) Resolve(name, cwd, backend, model string) (core.CreateOptions, error) {
+// drops the agent's model, effort and flags; overriding the model drops its
+// effort. The "default" model and effort sentinels are normalized last, so they
+// still beat a configured profile value on its way to the backend default.
+// InitialMessage is the caller's to fill in.
+func (s *Store) Resolve(name, cwd, backend, model, effort string) (core.CreateOptions, error) {
 	var p Profile
 	name = strings.TrimSpace(name)
 	if name == "" && backend == "" && model == "" && s != nil {
@@ -325,18 +327,27 @@ func (s *Store) Resolve(name, cwd, backend, model string) (core.CreateOptions, e
 	if backend != "" {
 		// A model and CLI flags belong to the backend they were written for.
 		if p.Backend != "" && p.Backend != backend {
-			p.Model, p.ExtraArgs = "", nil
+			p.Model, p.Effort, p.ExtraArgs = "", "", nil
 		}
 		p.Backend = backend
 	}
 	if model != "" {
+		if model != p.Model {
+			p.Effort = ""
+		}
 		p.Model = model
+	}
+	if effort != "" {
+		p.Effort = effort
 	}
 	if p.Model == "default" {
 		p.Model = ""
 	}
+	if p.Effort == "default" {
+		p.Effort = ""
+	}
 	return core.CreateOptions{
-		Backend: p.Backend, Cwd: p.Cwd, Model: p.Model,
+		Backend: p.Backend, Cwd: p.Cwd, Model: p.Model, Effort: p.Effort,
 		AppendSystemPrompt: p.AppendSystemPrompt, ExtraArgs: p.ExtraArgs,
 		AutoApprove: p.AutoApprove,
 	}, nil

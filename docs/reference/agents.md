@@ -1,7 +1,7 @@
 # Session agents
 
 An agent is a set of defaults for creating a session — `cwd`, `backend`,
-`model`, and an optional `append_system_prompt` — addressed by a `name` you
+`model`, `effort`, and an optional `append_system_prompt` — addressed by a `name` you
 choose. That name is the agent's only identifier: it is what the pickers show,
 what `--agent <name>` takes in the chat frontends, and what addresses the agent
 in the API, so one vocabulary covers every surface.
@@ -33,7 +33,8 @@ control, or edit by hand:
     {
       "name": "quick-claude",
       "backend": "claude",
-      "model": "haiku"
+      "model": "opus",
+      "effort": "high"
     }
   ]
 }
@@ -41,14 +42,15 @@ control, or edit by hand:
 
 Selecting an agent fills its defaults, and anything set explicitly alongside
 it — in the composer, or as a field in an API request — is an override.
-Overriding the backend leaves the agent's model and extra CLI flags behind:
-they were written for the other one. A
+Overriding the backend leaves the agent's model, effort and extra CLI flags
+behind: they were written for the other one. Overriding the model likewise
+leaves the effort behind, since effort levels differ between models. A
 profile may omit any field: the Settings form always writes a concrete backend
 and model, but the API and a hand-edited file may leave them empty, in which
 case the value comes from the request or from the backend's own default. The
 model sentinel `"default"` beats a configured model and hands the pick back to
 the backend; the pickers offer it only when usher cannot read that backend's
-catalog.
+catalog. `"default"` works the same way for `effort`, leaving it to the model.
 
 ## The default agent
 
@@ -73,8 +75,8 @@ PUT /api/v1/agents/{name}
 DELETE /api/v1/agents/{name}
 ```
 
-To create from an agent, send its name. Explicit `cwd`, `backend`, and
-`model` fields override the configured defaults:
+To create from an agent, send its name. Explicit `cwd`, `backend`, `model`, and
+`effort` fields override the configured defaults:
 
 ```json
 {
@@ -85,8 +87,9 @@ To create from an agent, send its name. Explicit `cwd`, `backend`, and
 ```
 
 GUI and API changes are written atomically and take effect immediately.
-Unknown agent names, unavailable backends, and invalid models cause session
-creation to fail rather than falling back silently.
+Unknown agent names, unavailable backends, invalid models, and effort levels the
+model does not list cause session creation to fail rather than falling back
+silently.
 
 ## The router session
 

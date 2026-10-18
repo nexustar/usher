@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nexustar/usher/internal/agentprofile"
 	"github.com/nexustar/usher/internal/api"
 	"github.com/nexustar/usher/internal/core"
 	"github.com/nexustar/usher/internal/interaction"
@@ -255,5 +256,24 @@ func TestPatchExtraArgs(t *testing.T) {
 	}
 	if code, body := do(http.MethodPatch, "/sessions/r1", `{"extra_args":[]}`); code != http.StatusConflict {
 		t.Errorf("router session = %d %s", code, body)
+	}
+}
+
+func TestCreateSessionEffort(t *testing.T) {
+	f := pluginapitest.NewFakeRouter()
+	agents := agentprofile.New([]agentprofile.Profile{{Name: "deep", Backend: "claude", Model: "opus", Effort: "high"}})
+	do := serve(t, api.Config{Router: f, Agents: agents})
+	for _, c := range []struct{ body, want string }{
+		{`{"initial_message":"hi","backend":"claude","model":"opus","effort":"low"}`, "low"},
+		{`{"agent":"deep","initial_message":"hi"}`, "high"},
+		{`{"agent":"deep","initial_message":"hi","effort":"default"}`, ""},
+	} {
+		if code, body := do(http.MethodPost, "/sessions", c.body); code != http.StatusCreated {
+			t.Fatalf("create %s = %d %s", c.body, code, body)
+		}
+		started := f.Started()
+		if got := started[len(started)-1].Effort; got != c.want {
+			t.Errorf("create %s: Effort = %q, want %q", c.body, got, c.want)
+		}
 	}
 }

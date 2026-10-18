@@ -383,6 +383,12 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 			s.claude.SetRouterSession(id)
 		}
 		s.setAutoApprove(id, req.AutoApprove)
+		if req.Effort != "" {
+			// Recorded for this spawn and every respawn.
+			if err := s.claude.SetRuntime(ctx, id, "", req.Effort); err != nil {
+				return "", nil, err
+			}
+		}
 		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, false)
 		if err != nil {
 			s.clearAutoApprove(id, req.AutoApprove)
@@ -395,6 +401,10 @@ func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <
 			return "", nil, err
 		}
 		s.setAutoApprove(id, req.AutoApprove)
+		if req.Effort != "" {
+			// Carried by the first turn/start.
+			s.app.SetRuntime(id, "", req.Effort)
+		}
 		ch, err := s.codexPrompt(ctx, id, req.Prompt, req.Cwd, true)
 		if err != nil {
 			s.clearAutoApprove(id, req.AutoApprove)

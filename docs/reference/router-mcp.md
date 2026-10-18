@@ -8,8 +8,8 @@
 - `list_pending_interactions`, `set_archived`
 
 `create_session` takes the name of a configured [agent](agents.md) as well as
-a backend and model, with the same meaning as on the new-session page: the
-agent's defaults, overridden by what is given alongside.
+a backend, model and effort, with the same meaning as on the new-session page:
+the agent's defaults, overridden by what is given alongside.
 
 None of them answers a permission request or changes a session's auto-approve:
 those stay with the user, on the session's page or the Router page.
