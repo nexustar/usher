@@ -1,0 +1,282 @@
+// Package backend defines the backend-neutral contracts between the router and
+// concrete coding-agent adapters. It contains no backend implementations.
+package backend
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/nexustar/usher/pkg/core"
+)
+
+// Event is one raw transcript record or synthesized runtime event emitted by a
+// backend. Type identifies the stable usher event vocabulary below.
+type Event struct {
+	Type string
+	Raw  json.RawMessage
+}
+
+// CompletedOperation reports a local command that created no model turn.
+func CompletedOperation(cwd string) <-chan Event {
+	ch := make(chan Event, 2)
+	started, _ := json.Marshal(ProcessStartedPayload{Cwd: cwd})
+	ch <- Event{Type: EventTurnStarted, Raw: started}
+	ch <- Event{Type: EventTurnEnded, Raw: json.RawMessage(`{}`)}
+	close(ch)
+	return ch
+}
+
+const (
+	EventTurnStarted = "turn.started"
+	EventTurnEnded   = "turn.ended"
+	EventTurnFailed  = "turn.failed"
+	EventTurnDelta   = "turn.delta"
+	EventTurnStatus  = "turn.status"
+	EventRuntime     = "session.runtime"
+	EventTurnPrompt  = "turn.prompt"
+	EventTurnPart    = "turn.part"
+)
+
+// AbortedTurnMessage is the live wording for a turn that ended without
+// completing. Only the live path shares it. Persisted markers deliberately keep
+// whatever the backend itself recorded — pi's own errorMessage, codex's abort
+// reason — so one interrupt can read differently before and after a reload.
+// Claude uses neither side: it writes its own user-visible record instead.
+const AbortedTurnMessage = "turn aborted before completion"
+
+// Stable payloads for synthesized events. Persisted backend records remain raw
+// because their schemas belong to the concrete transcript implementation.
+type ProcessStartedPayload struct {
+	Cwd   string `json:"cwd"`
+	Fresh bool   `json:"fresh"`
+}
+
+type ErrorPayload struct {
+	Message string `json:"message"`
+}
+
+type PartDeltaPayload struct {
+	Delta string `json:"delta"`
+}
+
+type TurnStatusPayload struct {
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func RetryDetail(attempt, max int, reason string) string {
+	if max <= 0 {
+		return reason
+	}
+	if reason == "" {
+		return fmt.Sprintf("%d/%d", attempt, max)
+	}
+	return fmt.Sprintf("%d/%d · %s", attempt, max, reason)
+}
+
+// IsControlEvent reports whether an event is an usher runtime signal rather
+// than a persisted backend transcript record suitable for an Assembler.
+func IsControlEvent(t string) bool {
+	switch t {
+	case EventTurnStarted, EventTurnEnded, EventTurnFailed, EventTurnDelta,
+		EventTurnStatus, EventRuntime:
+		return true
+	default:
+		return false
+	}
+}
+
+// Assembler projects one backend's persisted records into display turns.
+type Assembler interface {
+	FeedLine(raw []byte) (completed []core.Turn, part *core.TurnPart)
+	Flush() *core.Turn
+	Model() string
+}
+
+// ColdStartAssembler can be started partway through a log. MissedContext
+// reports, then forgets, whether anything fed since the last call drew on
+// state from lines the Assembler never saw.
+type ColdStartAssembler interface {
+	Assembler
+	MissedContext() bool
+}
+
+// MultiPartAssembler optionally exposes every display part stored in one record.
+type MultiPartAssembler interface {
+	Assembler
+	FeedLineParts(raw []byte) (completed []core.Turn, parts []*core.TurnPart)
+}
+
+// Transcript owns one backend's persisted session format.
+type Transcript interface {
+	// ReadBefore returns the turns just before cursor before ("" for the
+	// newest): at most limit (0: all), possibly fewer. more reports whether
+	// older turns exist.
+	ReadBefore(path, before string, limit int) (turns []core.Turn, more bool, err error)
+	// ReadFrom returns the turn at cursor from and every turn after it, or
+	// nothing when no turn starts there any more.
+	ReadFrom(path, from string) ([]core.Turn, error)
+	NewAssembler() Assembler
+	// TurnEnded reports whether the log ending in tail finished its last turn.
+	TurnEnded(tail []byte) bool
+}
+
+func LastLine(tail []byte) []byte {
+	tail = bytes.TrimRight(tail, "\r\n")
+	if i := bytes.LastIndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	}
+	return tail
+}
+
+// StartRequest describes the first turn of a new backend session. Runtimes
+// must record Approval before submitting the prompt: escalations are
+// answered by session id, so an approval recorded later misses the first turn.
+type StartRequest struct {
+	Cwd                string
+	Prompt             string
+	Model              string
+	Effort             string
+	AppendSystemPrompt string
+	ExtraArgs          []string
+	Approval           string
+	// Router asks for usher's session-routing MCP tools: a new session has no
+	// id to be designated by until its process is already running.
+	Router bool
+}
+
+// LiveSession is one warm worker. Running: a turn is in flight, usher's or
+// the backend's own (a /loop tick). Activity: what else the worker holds.
+// Evictable only when both are clear; send leases pin too but stay internal.
+type LiveSession struct {
+	ID       string
+	Running  bool
+	Activity core.Activity
+}
+
+// Runtime owns live workers for one coding-agent backend.
+type Runtime interface {
+	Start(context.Context, StartRequest) (string, <-chan Event, error)
+	Send(context.Context, string, string, string) (<-chan Event, error)
+	Resume(context.Context, string, string) error
+	Has(string) bool
+	LiveSessions() []LiveSession
+	Interrupt(string) error
+	Kill(string) error
+	Shutdown()
+}
+
+// ComposerItem is one completion advertised by a backend. Name is the bare
+// command or skill identity; the frontend derives its / or $ sigil from the
+// response source and Kind.
+type ComposerItem struct {
+	Name        string `json:"name"`
+	Kind        string `json:"kind,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// ComposerCatalog reports whether a backend could provide its authoritative
+// catalog. Items must only be consumed when Available is true.
+type ComposerCatalog struct {
+	Items     []ComposerItem
+	Available bool
+}
+
+// ComposerProvider is an optional runtime capability for cwd-dependent
+// completions. Available is false when discovery deliberately avoids starting
+// a cold backend.
+type ComposerProvider interface {
+	ComposerItems(context.Context, string, string) (ComposerCatalog, error)
+}
+
+// Forker is an optional capability because backends use materially different
+// branching mechanisms and some may not support it at all.
+type Forker interface {
+	Fork(context.Context, string, string, string) (string, string, error)
+}
+
+// Renamer writes a title to backend-native metadata. path is the transcript.
+type Renamer interface {
+	Rename(context.Context, string, string, string) error
+}
+
+// SystemPrompter is an optional runtime capability: restoring a session's
+// appended system prompt when a cold worker is rebuilt. StartRequest carries
+// the prompt into a brand-new session, but no backend keeps it in the
+// transcript, so a runtime that respawns processes (eviction, restart, resume)
+// must ask for it again by session id. Runtimes that don't implement this lose
+// the prompt on respawn.
+type SystemPrompter interface {
+	SetSystemPromptLookup(lookup func(sessionID string) string)
+}
+
+// ExtraArgser is the same capability for a session's extra spawn arguments
+// (agent-profile flags): StartRequest carries them into a brand-new session,
+// and respawns must ask for them again by session id.
+type ExtraArgser interface {
+	SetExtraArgsLookup(lookup func(sessionID string) []string)
+}
+
+// RouterDesignator is an optional runtime capability: keeping the routing MCP
+// tools attached to usher's router session across cold worker rebuilds.
+type RouterDesignator interface {
+	SetRouterSession(sessionID string)
+}
+
+// RuntimeSetter is an optional runtime capability: switching a session's model
+// and effort, from its next model request on. An empty value keeps the
+// current one; effort "default" drops a switch, where the backend can.
+type RuntimeSetter interface {
+	SetRuntime(ctx context.Context, sessionID, cwd, model, effort string) error
+}
+
+// Approver is an optional runtime capability: the approvals a
+// backend supports, and switching a live session to one. The approval itself is
+// recorded in interaction.Manager, which a runtime reads at spawn.
+type Approver interface {
+	Approvals() []string
+	SetApproval(ctx context.Context, sessionID, approval string) error
+}
+
+// Model is the backend-neutral model-picker projection. An Alias names
+// whichever model the CLI currently picks for it; a running session reports
+// the model instead.
+type Model struct {
+	ID             string   `json:"id"`
+	DisplayName    string   `json:"display_name,omitempty"`
+	Alias          bool     `json:"alias,omitempty"`
+	ThinkingLevels []string `json:"thinking_levels,omitempty"`
+}
+
+// ModelProvider is an optional account-aware model catalog.
+type ModelProvider interface {
+	Models(context.Context) ([]Model, error)
+	ValidateModel(context.Context, string) error
+	DefaultEffort(context.Context, string) (string, error)
+}
+
+// Replier is an optional capability: the prompt that answers questions a text
+// part asked in place (core.TurnPart.Questions). answers is keyed by title;
+// "" when nothing was answered.
+type Replier interface {
+	QuestionReply(questions []core.Question, answers map[string]string) string
+}
+
+// Steerer is an optional runtime capability: text added to a session's
+// running turn, read by the model at its next step. Fails when no turn runs.
+type Steerer interface {
+	Steer(ctx context.Context, sessionID, text string) error
+}
+
+// Backend explicitly composes the capabilities registered for one agent CLI.
+// Main constructs these values; there is deliberately no global init registry.
+type Backend struct {
+	Runtime    Runtime
+	Transcript Transcript
+	Forker     Forker
+	Renamer    Renamer
+	Models     ModelProvider
+	Replier    Replier
+}

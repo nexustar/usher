@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nexustar/usher/internal/mcptools"
-	"github.com/nexustar/usher/internal/router"
+	"github.com/nexustar/usher/pkg/mcptools"
+	"github.com/nexustar/usher/pkg/router"
 )
 
 func writeTestPNG(t *testing.T, path string, w, h int) {

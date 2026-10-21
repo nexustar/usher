@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/nexustar/usher/internal/auth"
+	"github.com/nexustar/usher/pkg/auth"
 )
 
 // runSetPassword is the worker for `usher set-password`. It writes an

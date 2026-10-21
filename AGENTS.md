@@ -39,7 +39,7 @@ serves real sessions on the default port. Never disturb it:
 
 Priority order: maintainability > few dependencies > performance > visual
 polish. The UI is a plain-JS, client-rendered, hash-routed SPA under
-`internal/web/static/` — no build step, no npm. When a library is genuinely
+`pkg/web/static/` — no build step, no npm. When a library is genuinely
 needed, vendor a popular, self-contained, minimal one.
 
 - Polled `innerHTML` rebuilds restart CSS animations. Cache the last rendered

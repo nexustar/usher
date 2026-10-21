@@ -1,0 +1,345 @@
+package agentprofile
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/nexustar/usher/pkg/core"
+)
+
+func TestLoadAndResolve(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	err := os.WriteFile(path, []byte(`{"agents":[
+		{"name":"dev","cwd":"/work/dev","backend":"codex","model":"gpt-test","append_system_prompt":"Be careful."}
+	]}`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := "/work/other"
+	got, err := store.Resolve("dev", override, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := core.CreateOptions{
+		Backend: "codex", Cwd: override, Model: "gpt-test",
+		AppendSystemPrompt: "Be careful.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, want %+v", got, want)
+	}
+}
+
+func TestExtraArgsRequireBackend(t *testing.T) {
+	store, err := Load(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Profile{Name: "loose", ExtraArgs: []string{"--flag"}}); err == nil {
+		t.Fatal("extra_args without a backend accepted")
+	}
+	if _, err := store.Create(Profile{Name: "blank", ExtraArgs: []string{}}); err != nil {
+		t.Fatalf("empty extra_args rejected: %v", err)
+	}
+	// An empty entry is an argument, not a gap to drop.
+	created, err := store.Create(Profile{
+		Name: "bare", Backend: "claude",
+		ExtraArgs: []string{"--tools", "", "--strict-mcp-config"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(created.ExtraArgs, []string{"--tools", "", "--strict-mcp-config"}) {
+		t.Fatalf("ExtraArgs = %q, want empty entries kept", created.ExtraArgs)
+	}
+	got, err := store.Resolve("bare", "/w", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.ExtraArgs, []string{"--tools", "", "--strict-mcp-config"}) {
+		t.Fatalf("Resolve.ExtraArgs = %v", got.ExtraArgs)
+	}
+}
+
+func TestResolveCarriesApproval(t *testing.T) {
+	store := New([]Profile{{Name: "trusted", Cwd: "/work", Approval: core.ApprovalFull}})
+	got, err := store.Resolve("trusted", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Approval != core.ApprovalFull {
+		t.Fatalf("Resolve = %+v, want full", got)
+	}
+}
+
+// A file from before approvals reads auto_approve as auto.
+func TestLoadReadsLegacyAutoApprove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	if err := os.WriteFile(path, []byte(`{"agents":[{"name":"trusted","auto_approve":true}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Resolve("trusted", "/work", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Approval != core.ApprovalAuto {
+		t.Fatalf("legacy profile approval = %q, want auto", got.Approval)
+	}
+}
+
+func TestResolveBackendOverrideDropsModelAndFlags(t *testing.T) {
+	store := New([]Profile{{
+		Name: "opus", Backend: "claude", Model: "opus", ExtraArgs: []string{"--tools", ""},
+		AppendSystemPrompt: "be brief", Approval: core.ApprovalFull,
+	}})
+	got, err := store.Resolve("opus", "", "codex", "", "")
+	want := core.CreateOptions{Backend: "codex", AppendSystemPrompt: "be brief", Approval: core.ApprovalFull}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
+	}
+	if got, _ := store.Resolve("opus", "", "claude", "", ""); got.Model != "opus" || len(got.ExtraArgs) != 2 {
+		t.Fatalf("same backend lost the agent's model or flags: %+v", got)
+	}
+}
+
+func TestResolveEffort(t *testing.T) {
+	store := New([]Profile{{Name: "deep", Backend: "claude", Model: "opus", Effort: "high"}})
+	for _, c := range []struct {
+		backend, model, effort, want string
+	}{
+		{"", "", "", "high"},
+		{"", "", "low", "low"},
+		{"", "", "default", ""},
+		{"", "opus", "", "high"}, // the same model keeps it
+		{"", "sonnet", "", ""},   // another model's levels may differ
+		{"codex", "", "", ""},    // so may another backend's
+		{"codex", "", "low", "low"},
+	} {
+		got, err := store.Resolve("deep", "", c.backend, c.model, c.effort)
+		if err != nil || got.Effort != c.want {
+			t.Errorf("Resolve(backend=%q model=%q effort=%q).Effort = %q, %v, want %q",
+				c.backend, c.model, c.effort, got.Effort, err, c.want)
+		}
+	}
+}
+
+func TestResolveUnknown(t *testing.T) {
+	_, err := New(nil).Resolve("missing", "", "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
+		t.Fatalf("Resolve error = %v", err)
+	}
+}
+
+func TestResolveWithoutAgentPassesRequestThrough(t *testing.T) {
+	got, err := New(nil).Resolve("", "/w", "codex", "gpt-test", "")
+	want := core.CreateOptions{Backend: "codex", Cwd: "/w", Model: "gpt-test"}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
+	}
+}
+
+// "default" must beat a configured profile model, then normalize to the
+// backend's own default rather than reaching a backend as a literal model.
+func TestResolveDefaultModelOverridesProfile(t *testing.T) {
+	store := New([]Profile{{Name: "dev", Model: "specific"}})
+	got, err := store.Resolve("dev", "", "", "default", "")
+	if err != nil || got.Model != "" {
+		t.Fatalf("Resolve default model = %q, %v", got.Model, err)
+	}
+}
+
+func TestLoadRejectsDuplicateName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	err := os.WriteFile(path, []byte(`{"agents":[
+		{"name":"same"},{"name":"same"}
+	]}`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Load(path)
+	if err == nil || !strings.Contains(err.Error(), "duplicate agent name") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestCRUDPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(Profile{Name: "dev", Backend: "codex"})
+	if err != nil || created.Name != "dev" {
+		t.Fatalf("Create = %+v, %v", created, err)
+	}
+	updated, err := store.Update("dev", Profile{
+		Backend: "claude", AppendSystemPrompt: "Be concise.",
+	})
+	if err != nil || updated.Name != "dev" || updated.Backend != "claude" {
+		t.Fatalf("Update = %+v, %v", updated, err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reloaded.List()
+	if len(got) != 2 || !got[0].Builtin || !reflect.DeepEqual(got[1], updated) {
+		t.Fatalf("reloaded = %+v, want %+v", got, updated)
+	}
+	if err := reloaded.Delete("dev"); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := empty.List(); len(got) != 1 || !got[0].Builtin {
+		t.Fatalf("after delete = %+v", got)
+	}
+}
+
+func TestCRUDValidation(t *testing.T) {
+	store, err := Load(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rejected because some surface the name travels through would mangle it.
+	for _, bad := range []string{
+		"",          // nothing to address it by
+		"bad name",  // chat clients cut --agent at the space
+		"tab\tname", // any whitespace, not just the ASCII space
+		"zero​wid",  // invisible: two names that look identical
+		"a/b",       // path segment in /api/v1/agents/{name}
+		"..",        // ditto — proxies rewrite it before usher sees it
+	} {
+		if _, err := store.Create(Profile{Name: bad}); err == nil {
+			t.Fatalf("name %q accepted", bad)
+		}
+	}
+	// Anything else is the user's business: leading punctuation, CJK, accents.
+	for _, ok := range []string{"-lead", "前端", "café"} {
+		if _, err := store.Create(Profile{Name: ok}); err != nil {
+			t.Fatalf("name %q rejected: %v", ok, err)
+		}
+	}
+	if _, err := store.Create(Profile{Name: "OK"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Profile{Name: "OK"}); err == nil {
+		t.Fatal("duplicate name accepted")
+	}
+	// Case is significant: no folding on the way in or on the way out.
+	if _, err := store.Create(Profile{Name: "ok"}); err != nil {
+		t.Fatalf("name differing only by case rejected: %v", err)
+	}
+	if _, err := store.Resolve("Ok", "", "", "", ""); err == nil {
+		t.Fatal("resolve matched a different case")
+	}
+	if _, err := store.Update("missing", Profile{}); err == nil {
+		t.Fatal("missing update accepted")
+	}
+	if err := store.Delete("missing"); err == nil {
+		t.Fatal("missing delete accepted")
+	}
+}
+
+func TestUpdateRenames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Profile{Name: "typoo", Backend: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Profile{Name: "taken"}); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := store.Update("typoo", Profile{Name: "Typo", Backend: "codex"})
+	if err != nil || renamed.Name != "Typo" {
+		t.Fatalf("rename = %+v, %v", renamed, err)
+	}
+	if _, err := store.Resolve("typoo", "", "", "", ""); err == nil {
+		t.Fatal("old name still resolves after rename")
+	}
+	if _, err := store.Resolve("Typo", "", "", "", ""); err != nil {
+		t.Fatalf("new name does not resolve: %v", err)
+	}
+	if _, err := store.Update("Typo", Profile{Name: "taken"}); err == nil {
+		t.Fatal("rename onto an existing name accepted")
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.List(); len(got) != 3 || got[1].Name != "Typo" {
+		t.Fatalf("persisted = %+v", got)
+	}
+}
+
+// The default agent always exists: built in until one is stored, and it is
+// what a request that says nothing about what to run is created from.
+func TestDefaultAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetDefaultBackend("codex")
+
+	if got := store.List(); len(got) != 1 || got[0].Name != DefaultName || !got[0].Builtin || got[0].Backend != "codex" {
+		t.Fatalf("List = %+v", got)
+	}
+	got, err := store.Resolve("", "/w", "", "", "")
+	if want := (core.CreateOptions{Backend: "codex", Cwd: "/w"}); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, %v, want %+v", got, err, want)
+	}
+	if err := store.Delete(DefaultName); err == nil {
+		t.Fatal("the built-in default was deleted")
+	}
+
+	// Saving it stores it; its prompt then reaches every unnamed request, but
+	// not one that names a backend or a model.
+	saved, err := store.Update(DefaultName, Profile{Backend: "pi", Model: "luna", AppendSystemPrompt: "be brief"})
+	if err != nil || saved.Builtin {
+		t.Fatalf("Update = %+v, %v", saved, err)
+	}
+	if _, err := store.Update(DefaultName, Profile{Name: "other"}); err == nil {
+		t.Fatal("the default agent was renamed")
+	}
+	got, _ = store.Resolve("", "", "", "", "")
+	if want := (core.CreateOptions{Backend: "pi", Model: "luna", AppendSystemPrompt: "be brief"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Resolve = %+v, want %+v", got, want)
+	}
+	for _, req := range [][2]string{{"claude", ""}, {"", "opus"}} {
+		got, _ := store.Resolve("", "", req[0], req[1], "")
+		if want := (core.CreateOptions{Backend: req[0], Model: req[1]}); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Resolve(%v) = %+v, want %+v", req, got, want)
+		}
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.List(); len(got) != 1 || got[0].Builtin || got[0].Model != "luna" {
+		t.Fatalf("reloaded = %+v", got)
+	}
+
+	// Deleting the stored one brings the built-in back.
+	if err := store.Delete(DefaultName); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.List(); len(got) != 1 || !got[0].Builtin {
+		t.Fatalf("after reset = %+v", got)
+	}
+}

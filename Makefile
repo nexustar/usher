@@ -44,7 +44,7 @@ test-lark:
 
 # Regenerate icon variants from the source SVG.
 icons:
-	python3 internal/web/icons-src/gen-icons.py
+	python3 pkg/web/icons-src/gen-icons.py
 
 # Remove build artifacts.
 clean:

@@ -1,0 +1,887 @@
+// Package sender drives headless Claude and Codex sessions and reports each
+// turn's output by tailing the backend's session log.
+package sender
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/nexustar/usher/pkg/backend"
+	"github.com/nexustar/usher/pkg/claude"
+	"github.com/nexustar/usher/pkg/claude/jsonl"
+	"github.com/nexustar/usher/pkg/codex"
+	"github.com/nexustar/usher/pkg/codex/rollout"
+	"github.com/nexustar/usher/pkg/core"
+	"github.com/nexustar/usher/pkg/interaction"
+)
+
+// StreamEvent is one event for a turn. Type is the jsonl line's "type"
+// (e.g. "user", "assistant", "system"), or one of the synthesized values
+// "turn.started" / "turn.ended" / "error". The names are kept from
+// the headless era so the broker/web layer needs minimal change; the payloads
+// are now whole jsonl lines (message granularity), not stream-json token
+// deltas.
+type StreamEvent = backend.Event
+
+// timing groups the tunable delays for driving the TUI. Defaults are set in
+// New; tests override them for speed.
+type timing struct{ poll time.Duration }
+
+type Sender struct {
+	app          *codex.Manager // non-nil for the headless Codex backend
+	claude       *claude.Manager
+	interactions *interaction.Manager
+	locateFn     func(string) string
+	indexPath    string
+	logger       *slog.Logger
+	t            timing
+	tail         tailConfig
+	promptMu     sync.Mutex
+	systemPrompt func(string) string
+	extraArgs    func(string) []string
+}
+
+// Rename uses Codex RPC when live. Claude and idle Codex use native metadata;
+// Claude has no rename control RPC, and direct append avoids model context.
+func (s *Sender) Rename(ctx context.Context, id, path, title string) error {
+	if s.app != nil {
+		if live, err := s.app.RenameIfLive(ctx, id, title); live || err != nil {
+			return err
+		}
+		return rollout.RenameSession(s.indexPath, id, title)
+	}
+	if s.claude != nil {
+		return jsonl.RenameSession(path, id, title)
+	}
+	return errors.New("sender has no headless backend")
+}
+
+// claudeMCPConfigArgs writes an MCP config registering `usher mcp-stdio` next to
+// the hook socket and returns the `--mcp-config` flags to load it. Returns nil
+// (disabling the feature, not erroring) if the executable can't be resolved, so
+// a write hiccup never blocks spawns.
+//
+// With routerTools the registration adds usher's session-routing tools and is
+// written to its own file, because only the router session may load it.
+func claudeMCPConfigArgs(hookSock string, routerTools bool, logger *slog.Logger) []string {
+	if hookSock == "" {
+		return nil
+	}
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = filepath.Abs(exe)
+	}
+	if err != nil {
+		logger.Warn("mcp config: cannot resolve usher executable; show_image disabled", "err", err)
+		return nil
+	}
+	args, name := []string{"mcp-stdio"}, "mcp.json"
+	if routerTools {
+		args, name = append(args, "--router-tools"), "mcp-router.json"
+	}
+	// alwaysLoad exempts the server from Claude Code's Tool Search deferral so the
+	// tool is always loaded, not hidden behind a ToolSearch step.
+	cfg := map[string]any{"mcpServers": map[string]any{
+		"usher": map[string]any{"command": exe, "args": args, "alwaysLoad": true},
+	}}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil
+	}
+	path := filepath.Join(filepath.Dir(hookSock), name)
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		logger.Warn("mcp config: write failed; show_image disabled", "path", path, "err", err)
+		return nil
+	}
+	return []string{"--mcp-config", path}
+}
+
+// New builds a Sender. claudeCmd is the claude binary; projectsDir is Claude
+// Code's projects root (used to locate session jsonl files by their globally
+// unique id); hookSock routes AskUserQuestion interactions back to this instance;
+// maxLive caps Claude workers.
+func New(claudeCmd, projectsDir, hookSock string, maxLive int, injectMCPTools bool, interactions *interaction.Manager, logger *slog.Logger) *Sender {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger = logger.With("backend", "claude")
+	// Register the show_image MCP server (unless --disable-usher-tools). Additive
+	// — no --strict-mcp-config — so the user's own MCP servers are untouched.
+	// The router variant reaches only the session designated as usher's router.
+	var mcpArgs, routerMCPArgs []string
+	if injectMCPTools {
+		mcpArgs = claudeMCPConfigArgs(hookSock, false, logger)
+		routerMCPArgs = claudeMCPConfigArgs(hookSock, true, logger)
+	}
+	t := timing{poll: 150 * time.Millisecond}
+	// mgr, not claude: the package of the same name is right there.
+	mgr := claude.New(claudeCmd, claudeHookSettings(hookSock, injectMCPTools, logger), hookSock,
+		mcpArgs, maxLive, interactions, logger)
+	if len(routerMCPArgs) > 0 {
+		mgr.SetRouterArgs(routerMCPArgs)
+	}
+	return &Sender{
+		claude:       mgr,
+		interactions: interactions,
+		locateFn:     func(id string) string { return locateClaude(projectsDir, id) },
+		logger:       logger,
+		t:            t,
+		tail: tailConfig{
+			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
+			contentOnly: true, turnComplete: isTurnComplete, turnAborted: isClaudeTurnAborted,
+		},
+	}
+}
+
+// claudeHookSettings builds the inline --settings JSON. With allowUsherTools
+// it pre-allows the usher MCP server's tools; permission scope is per tool
+// name, so each would otherwise be approved separately.
+func claudeHookSettings(hookSock string, allowUsherTools bool, logger *slog.Logger) string {
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = filepath.Abs(exe)
+	}
+	if err != nil {
+		logger.Warn("hook: cannot resolve usher executable", "err", err)
+		return ""
+	}
+	hookCommand := func(event string) string {
+		cmd := exe + " hook " + event
+		if hookSock != "" {
+			cmd = "USHER_HOOK_SOCK=" + hookSock + " " + cmd
+		}
+		return cmd
+	}
+	handler := func(event string) []any {
+		return []any{map[string]any{
+			"type": "command", "command": hookCommand(event), "timeout": 604800,
+		}}
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			// Permissions use Claude's streaming can_use_tool callback protocol.
+			// AskUserQuestion still needs PreToolUse so the web UI can collect an
+			// answer and return it as updatedInput under -p.
+			"PreToolUse": []any{map[string]any{"matcher": "AskUserQuestion", "hooks": handler("PreToolUse")}},
+		},
+	}
+	if allowUsherTools {
+		settings["permissions"] = map[string]any{"allow": []string{"mcp__usher"}}
+	}
+	b, _ := json.Marshal(settings)
+	return string(b)
+}
+
+// codexMCPConfig is the usher MCP registration as codex config overrides,
+// passed per thread in thread/start and thread/resume params. With
+// routerTools it is the router-session variant with the routing tools on.
+func codexMCPConfig(routerTools bool, logger *slog.Logger) map[string]any {
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = filepath.Abs(exe)
+	}
+	if err != nil {
+		logger.Warn("mcp: cannot resolve usher executable; show_image disabled", "err", err)
+		return nil
+	}
+	args := []string{"mcp-stdio"}
+	if routerTools {
+		args = append(args, "--router-tools")
+	}
+	// Codex's default callable MCP namespace keeps the legacy mcp__ prefix;
+	// the unprefixed form covers installations with that feature enabled.
+	direct := []string{"mcp__usher", "usher"}
+	if routerTools {
+		// The whole table, not keys under it: it replaces the user's own
+		// servers.
+		return map[string]any{
+			"mcp_servers": map[string]any{"usher": map[string]any{
+				"command": exe, "args": args, "env_vars": []string{"USHER_HOOK_SOCK"},
+				"default_tools_approval_mode": "approve",
+			}},
+			"features.code_mode.direct_only_tool_namespaces": direct,
+		}
+	}
+	return map[string]any{
+		"mcp_servers.usher.command":                      exe,
+		"mcp_servers.usher.args":                         args,
+		"mcp_servers.usher.env_vars":                     []string{"USHER_HOOK_SOCK"},
+		"mcp_servers.usher.default_tools_approval_mode":  "approve",
+		"features.code_mode.direct_only_tool_namespaces": direct,
+	}
+}
+
+// SetAutoPause sets how long an idle worker is kept.
+func (s *Sender) SetAutoPause(d time.Duration) {
+	if s.app != nil {
+		s.app.SetAutoPause(d)
+	}
+	if s.claude != nil {
+		s.claude.SetAutoPause(d)
+	}
+}
+
+// NewCodex builds a Sender that drives Codex through per-session app-server
+// workers.
+// codexCmd is the codex binary; sessionsDir is ~/.codex/sessions (the rollout
+// root, used to locate logs); sandboxArgs are extra codex flags (e.g.
+// --sandbox workspace-write); hookSock, if set, routes the codex permission hook
+// back to this instance. maxLive caps Codex workers; idle workers are shut down
+// and cold-resumed on the next send. Codex assigns ids for new threads.
+func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxLive int, injectMCPTools bool, interactions *interaction.Manager, logger *slog.Logger) *Sender {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger = logger.With("backend", "codex")
+	var env []string
+	if hookSock != "" {
+		env = append(env, "USHER_HOOK_SOCK="+hookSock)
+	}
+	t := timing{poll: 150 * time.Millisecond}
+	sandbox, config := codex.ParseHeadlessArgs(sandboxArgs, logger)
+	// The manager applies the router variant to the thread designated as
+	// usher's router.
+	var routerConfig map[string]any
+	if mcp := codexMCPConfig(false, logger); injectMCPTools && mcp != nil {
+		routerConfig = make(map[string]any, len(config)+len(mcp))
+		for k, v := range config {
+			routerConfig[k] = v
+		}
+		for k, v := range codexMCPConfig(true, logger) {
+			routerConfig[k] = v
+		}
+		for k, v := range mcp {
+			config[k] = v
+		}
+	}
+	mgr := codex.NewManager(codexCmd, interactions, sandbox, config, env, maxLive, logger)
+	if routerConfig != nil {
+		mgr.SetRouterConfig(routerConfig)
+	}
+	return &Sender{
+		app:          mgr,
+		interactions: interactions,
+		locateFn:     func(id string) string { return locateCodex(sessionsDir, id) },
+		indexPath:    filepath.Join(filepath.Dir(sessionsDir), "session_index.jsonl"),
+		logger:       logger,
+		t:            t,
+		tail: tailConfig{
+			poll: 150 * time.Millisecond, appearWait: 20 * time.Second,
+			contentOnly: true, turnComplete: rollout.IsTurnComplete, turnAborted: rollout.IsTurnAborted,
+		},
+	}
+}
+
+// Send injects prompt into the session's live interactive claude (resuming /
+// spawning it as needed) and streams the resulting turn's events. The channel
+// closes when the turn ends or ctx is cancelled.
+func (s *Sender) Send(ctx context.Context, sessionID, prompt, cwd string) (<-chan StreamEvent, error) {
+	if s.app != nil {
+		return s.codexPrompt(ctx, sessionID, prompt, cwd, false)
+	}
+	if s.claude != nil {
+		return s.claudeTurn(
+			ctx, sessionID, prompt, cwd, "", s.promptFor(sessionID), s.argsFor(sessionID), true)
+	}
+	return nil, errors.New("sender has no headless backend")
+}
+
+func (s *Sender) codexPrompt(ctx context.Context, sessionID, prompt, cwd string, fresh bool) (<-chan StreamEvent, error) {
+	command, args, isCommand := backend.ParseSlashCommand(prompt)
+	if !isCommand {
+		return s.appTurn(ctx, sessionID, prompt, cwd, fresh)
+	}
+	switch command {
+	case "/compact":
+		if args != "" {
+			return nil, errors.New("usage: /compact")
+		}
+		return s.appOperation(ctx, sessionID, cwd, func() (<-chan codex.TurnResult, <-chan codex.Delta, error) {
+			return s.app.Compact(ctx, sessionID, cwd)
+		})
+	case "/review":
+		return s.appOperation(ctx, sessionID, cwd, func() (<-chan codex.TurnResult, <-chan codex.Delta, error) {
+			return s.app.Review(ctx, sessionID, cwd, args)
+		})
+	case "/rename":
+		if args == "" {
+			return nil, errors.New("usage: /rename <name>")
+		}
+		if err := s.app.Rename(ctx, sessionID, cwd, args); err != nil {
+			return nil, err
+		}
+		return backend.CompletedOperation(cwd), nil
+	case "/goal":
+		// Same spellings Claude's /goal accepts for clearing.
+		switch strings.ToLower(args) {
+		case "":
+			return nil, errors.New("usage: /goal <objective> | /goal clear")
+		case "clear", "stop", "off", "reset", "none", "cancel":
+			args = ""
+		}
+		if err := s.app.SetGoal(ctx, sessionID, cwd, args); err != nil {
+			return nil, err
+		}
+		return backend.CompletedOperation(cwd), nil
+	default:
+		skills, err := s.app.Skills(ctx, sessionID, cwd)
+		if err != nil {
+			return nil, fmt.Errorf("resolve command %s: %w", command, err)
+		}
+		if skillPrompt, ok := codexSlashSkillPrompt(command, args, skills); ok {
+			return s.appTurn(ctx, sessionID, skillPrompt, cwd, fresh)
+		}
+		return nil, fmt.Errorf("unknown command: %s", command)
+	}
+}
+
+// codexSlashSkillPrompt rewrites the /skill compatibility form into Codex's
+// native $skill mention. Names match exactly because Codex resolves them
+// exactly (core-skills injection matches the mention against skill.name as a
+// plain string), and its slash commands are case-sensitive too — accepting
+// /ImageGen here would invent a spelling that works in usher and nowhere else.
+func codexSlashSkillPrompt(command, args string, skills []codex.Skill) (string, bool) {
+	name := strings.TrimPrefix(command, "/")
+	for _, skill := range skills {
+		if !skill.Enabled || skill.Name != name {
+			continue
+		}
+		prompt := "$" + skill.Name
+		if args != "" {
+			prompt += " " + args
+		}
+		return prompt, true
+	}
+	return "", false
+}
+
+// Start creates a new backend session and starts its first turn. The concrete
+// backend owns ID assignment: Claude accepts a caller-generated UUID while
+// Codex returns the thread ID assigned by app-server.
+func (s *Sender) Start(ctx context.Context, req backend.StartRequest) (string, <-chan StreamEvent, error) {
+	if s.claude != nil {
+		id := newSessionID()
+		if req.Router {
+			// Before the turn: the routing tools are spawn arguments, and this
+			// is the first moment the id exists.
+			s.claude.SetRouterSession(id)
+		}
+		s.setApproval(id, req.Approval)
+		if req.Effort != "" {
+			// Recorded for this spawn and every respawn.
+			if err := s.claude.SetRuntime(ctx, id, "", req.Effort); err != nil {
+				return "", nil, err
+			}
+		}
+		ch, err := s.claudeTurn(ctx, id, req.Prompt, req.Cwd, req.Model, req.AppendSystemPrompt, req.ExtraArgs, false)
+		if err != nil {
+			s.setApproval(id, "")
+		}
+		return id, ch, err
+	}
+	if s.app != nil {
+		approval := req.Approval
+		if approval == "" && s.interactions != nil {
+			approval = core.ApprovalAsk
+		}
+		id, err := s.app.StartThread(ctx, req.Cwd, req.Model, approval, req.AppendSystemPrompt, req.ExtraArgs, req.Router)
+		if err != nil {
+			return "", nil, err
+		}
+		s.setApproval(id, req.Approval)
+		if req.Effort != "" {
+			// Carried by the first turn/start.
+			s.app.SetRuntime(id, "", req.Effort)
+		}
+		ch, err := s.codexPrompt(ctx, id, req.Prompt, req.Cwd, true)
+		if err != nil {
+			s.setApproval(id, "")
+		}
+		return id, ch, err
+	}
+	return "", nil, errors.New("sender has no headless backend")
+}
+
+// setApproval records a new session's approval, before its first turn so
+// that turn's escalations see it; "" forgets a session that failed to start.
+func (s *Sender) setApproval(id, approval string) {
+	if s.interactions != nil {
+		s.interactions.SetApproval(id, approval)
+	}
+}
+
+var _ backend.Approver = (*Sender)(nil)
+
+func (s *Sender) Approvals() []string {
+	return []string{core.ApprovalAsk, core.ApprovalAuto, core.ApprovalFull}
+}
+
+// SetApproval applies a recorded approval: Claude now, Codex with its next
+// turn.
+func (s *Sender) SetApproval(ctx context.Context, sessionID, approval string) error {
+	if s.app != nil {
+		s.app.SetApproval(sessionID, approval)
+		return nil
+	}
+	if s.claude != nil {
+		return s.claude.SetApproval(ctx, sessionID, approval)
+	}
+	return errors.New("sender has no headless backend")
+}
+
+func newSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// Has reports whether usher currently holds a live interactive process for
+// sessionID.
+func (s *Sender) Has(sessionID string) bool {
+	if s.app != nil {
+		return s.app.Has(sessionID)
+	}
+	if s.claude != nil {
+		return s.claude.Has(sessionID)
+	}
+	return false
+}
+
+// Resume brings an existing session's backend worker online without sending a
+// prompt. It is the inverse of Kill for UI lifecycle controls.
+func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
+	if s.app != nil {
+		return s.app.Resume(ctx, sessionID, cwd)
+	}
+	if s.claude != nil {
+		return s.claude.Resume(ctx, sessionID, cwd, s.promptFor(sessionID), s.argsFor(sessionID))
+	}
+	return errors.New("sender has no headless backend")
+}
+
+var _ backend.RouterDesignator = (*Sender)(nil)
+
+// SetRouterSession restores the routing tools onto usher's designated router
+// after a restart: its next cold worker spawns with them.
+func (s *Sender) SetRouterSession(sessionID string) {
+	if s.claude != nil {
+		s.claude.SetRouterSession(sessionID)
+	}
+	if s.app != nil {
+		s.app.SetRouterSession(sessionID)
+	}
+}
+
+var _ backend.SystemPrompter = (*Sender)(nil)
+
+func (s *Sender) SetSystemPromptLookup(lookup func(string) string) {
+	s.promptMu.Lock()
+	s.systemPrompt = lookup
+	s.promptMu.Unlock()
+	if s.app != nil {
+		s.app.SetSystemPromptLookup(lookup)
+	}
+}
+
+func (s *Sender) promptFor(id string) string {
+	s.promptMu.Lock()
+	lookup := s.systemPrompt
+	s.promptMu.Unlock()
+	if lookup == nil {
+		return ""
+	}
+	return lookup(id)
+}
+
+var _ backend.ExtraArgser = (*Sender)(nil)
+
+func (s *Sender) SetExtraArgsLookup(lookup func(string) []string) {
+	s.promptMu.Lock()
+	s.extraArgs = lookup
+	s.promptMu.Unlock()
+	if s.app != nil {
+		s.app.SetExtraArgsLookup(lookup)
+	}
+}
+
+func (s *Sender) argsFor(id string) []string {
+	s.promptMu.Lock()
+	lookup := s.extraArgs
+	s.promptMu.Unlock()
+	if lookup == nil {
+		return nil
+	}
+	return lookup(id)
+}
+
+var _ backend.RuntimeSetter = (*Sender)(nil)
+
+// SetRuntime switches a session's model and effort. Codex takes them with its
+// next turn, then keeps them in the thread; Claude takes them now.
+func (s *Sender) SetRuntime(ctx context.Context, sessionID, _, model, effort string) error {
+	if s.app != nil {
+		if effort == "default" {
+			return errors.New("codex has no default effort to return to: pick a level")
+		}
+		s.app.SetRuntime(sessionID, model, effort)
+		return nil
+	}
+	if s.claude != nil {
+		return s.claude.SetRuntime(ctx, sessionID, model, effort)
+	}
+	return errors.New("sender has no headless backend")
+}
+
+// SetScheduled forwards the eviction-time transcript lookup to the Claude pool.
+func (s *Sender) SetScheduled(f func(id string) bool) {
+	if s.claude != nil {
+		s.claude.SetScheduled(f)
+	}
+}
+
+// LiveSessions lists the sessions with a live backend worker.
+func (s *Sender) LiveSessions() []backend.LiveSession {
+	if s.app != nil {
+		return s.app.LiveSessions()
+	}
+	if s.claude != nil {
+		return s.claude.LiveSessions()
+	}
+	return nil
+}
+
+// ComposerItems exposes backend-native composer completions through one web
+// shape. Claude advertises slash commands at init; Codex supplies a small
+// supported command set plus cwd-scoped skills from app-server. Both sides
+// answer only from a live backend, so a cold session lists no skills until it
+// has run a turn — completion is never worth starting a process for.
+func (s *Sender) ComposerItems(ctx context.Context, sessionID, cwd string) (backend.ComposerCatalog, error) {
+	if s.claude != nil {
+		commands, available := s.claude.CommandsIfLive(sessionID)
+		out := make([]backend.ComposerItem, 0, len(commands))
+		for _, command := range commands {
+			out = append(out, backend.ComposerItem{
+				Name: command.Name, Kind: command.Kind,
+			})
+		}
+		return backend.ComposerCatalog{Items: out, Available: available}, nil
+	}
+	if s.app == nil {
+		return backend.ComposerCatalog{}, nil
+	}
+	out := []backend.ComposerItem{
+		{Name: "compact", Kind: "command", Description: "Compact conversation context"},
+		{Name: "goal", Kind: "command", Description: "Set a goal Codex keeps working toward (/goal clear to stop)"},
+		{Name: "rename", Kind: "command", Description: "Rename this session"},
+		{Name: "review", Kind: "command", Description: "Review current changes"},
+	}
+	skills, available, err := s.app.SkillsIfLive(ctx, sessionID, cwd)
+	if err != nil {
+		s.logger.Warn("skill discovery failed", "session", sessionID, "err", err)
+		return backend.ComposerCatalog{}, err
+	}
+	for _, skill := range skills {
+		if !skill.Enabled {
+			continue
+		}
+		out = append(out, backend.ComposerItem{
+			Name:        skill.Name,
+			Kind:        "skill",
+			Description: skill.Description,
+		})
+	}
+	return backend.ComposerCatalog{Items: out, Available: available}, nil
+}
+
+// Steer adds text to the session's running turn; only Codex can.
+func (s *Sender) Steer(ctx context.Context, sessionID, text string) error {
+	if s.app == nil {
+		return errors.New("backend cannot steer a running turn")
+	}
+	return s.app.Steer(ctx, sessionID, text)
+}
+
+// Interrupt stops the in-flight turn for sessionID without killing its worker.
+func (s *Sender) Interrupt(sessionID string) error {
+	if s.app != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.app.Interrupt(ctx, sessionID)
+	}
+	if s.claude != nil {
+		return s.claude.Interrupt(sessionID)
+	}
+	return nil
+}
+
+// Kill tears down usher's live worker for sessionID, if any.
+func (s *Sender) Kill(sessionID string) error {
+	if s.app != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.app.Kill(ctx, sessionID)
+	}
+	if s.claude != nil {
+		return s.claude.Kill(sessionID)
+	}
+	return nil
+}
+
+// Shutdown tears down all backend workers.
+func (s *Sender) Shutdown() {
+	if s.app != nil {
+		s.app.Shutdown()
+		return
+	}
+	if s.claude != nil {
+		s.claude.Shutdown()
+		return
+	}
+}
+
+func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendSystemPrompt string, extraArgs []string, resume bool) (<-chan StreamEvent, error) {
+	path := s.locate(id)
+	var offset int64
+	if path != "" {
+		if fi, e := os.Stat(path); e == nil {
+			offset = fi.Size()
+		}
+	}
+	done, deltas, fresh, queuedAhead, err := s.claude.Send(ctx, id, prompt, cwd, model, appendSystemPrompt, extraArgs, resume)
+	if err != nil {
+		return nil, err
+	}
+	tail := s.tail
+	tail.skipCompletions = queuedAhead
+	return mergeLoggedTurn(ctx, loggedTurnConfig[claude.Result, claude.Delta]{
+		backend: "claude", idKey: "session_id", id: id, cwd: cwd, fresh: fresh,
+		path: path, offset: offset, locate: func() string { return s.locate(id) }, poll: s.t.poll,
+		tail: tail, done: done, deltas: deltas, logger: s.logger,
+		delta: func(d claude.Delta) (string, string, bool) {
+			if d.Retry != "" {
+				return "retrying", d.Retry, true
+			}
+			return "text", d.Text, true
+		},
+		result: func(ctx context.Context, out chan<- StreamEvent, result claude.Result) {
+			if result.Subtype != "cancelled" {
+				if result.Error != "" {
+					emitError(ctx, out, result.Error)
+				} else if result.IsError {
+					emitError(ctx, out, "claude turn failed: "+result.Subtype)
+				}
+			}
+			emitClaudeRuntime(ctx, out, result, s.claudeEffort(ctx, id))
+		},
+	}), nil
+}
+
+// claudeEffort probes the live process, the only place Claude reports effort.
+// A failure leaves the field empty rather than holding up the snapshot.
+func (s *Sender) claudeEffort(ctx context.Context, id string) string {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	settings, err := s.claude.Settings(ctx, id)
+	if err != nil {
+		s.logger.Debug("settings probe", "session", id, "err", err)
+		return ""
+	}
+	return settings.Effort
+}
+
+func emitClaudeRuntime(ctx context.Context, out chan<- StreamEvent, result claude.Result, effort string) bool {
+	if result.ContextWindow <= 0 && effort == "" {
+		return true
+	}
+	fields := map[string]any{"model": result.Model}
+	if result.ContextWindow > 0 {
+		fields["context_window"] = result.ContextWindow
+	}
+	if effort != "" {
+		fields["effort"] = effort
+	}
+	raw, _ := json.Marshal(fields)
+	return sendEvent(ctx, out, StreamEvent{Type: backend.EventRuntime, Raw: raw})
+}
+
+// appTurn keeps rollout jsonl as the content plane while app-server supplies
+// the driving and terminal lifecycle signal.
+func (s *Sender) appTurn(ctx context.Context, id, prompt, cwd string, fresh bool) (<-chan StreamEvent, error) {
+	return s.appLoggedTurn(ctx, id, cwd, fresh, func() (<-chan codex.TurnResult, <-chan codex.Delta, error) {
+		return s.app.StartTurn(ctx, id, prompt, cwd)
+	})
+}
+
+func (s *Sender) appOperation(ctx context.Context, id, cwd string, start func() (<-chan codex.TurnResult, <-chan codex.Delta, error)) (<-chan StreamEvent, error) {
+	return s.appLoggedTurn(ctx, id, cwd, false, start)
+}
+
+func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, start func() (<-chan codex.TurnResult, <-chan codex.Delta, error)) (<-chan StreamEvent, error) {
+	path := s.locate(id)
+	var offset int64
+	if path != "" {
+		if fi, e := os.Stat(path); e == nil {
+			offset = fi.Size()
+		}
+	}
+	done, deltas, err := start()
+	if err != nil {
+		return nil, err
+	}
+	lastKind := ""
+	return mergeLoggedTurn(ctx, loggedTurnConfig[codex.TurnResult, codex.Delta]{
+		backend: "codex", idKey: "thread_id", id: id, cwd: cwd, fresh: fresh,
+		path: path, offset: offset, locate: func() string { return s.locate(id) }, poll: s.t.poll,
+		tail: s.tail, done: done, deltas: deltas, logger: s.logger,
+		delta: func(d codex.Delta) (string, string, bool) {
+			if d.Kind == "reasoning" && lastKind == "reasoning" {
+				return "", "", false
+			}
+			lastKind = d.Kind
+			return d.Kind, d.Text, true
+		},
+		result: func(ctx context.Context, out chan<- StreamEvent, result codex.TurnResult) {
+			if msg := codexTurnError(result); msg != "" {
+				emitError(ctx, out, msg)
+			}
+		},
+	}), nil
+}
+
+// codexTurnError maps a terminal turn result to the message to surface, or ""
+// when the turn ended cleanly. "interrupted" needs one because codex persists
+// the text streamed before an interrupt and no completion marker, leaving the
+// turn otherwise indistinguishable from a finished one.
+func codexTurnError(result codex.TurnResult) string {
+	switch {
+	case result.Error != "":
+		return result.Error
+	case result.Status == "failed":
+		return "codex turn failed"
+	case result.Status == "interrupted":
+		return backend.AbortedTurnMessage
+	}
+	return ""
+}
+
+func emitLiveDelta(ctx context.Context, out chan<- StreamEvent, kind, delta string) bool {
+	if delta == "" && kind != "retrying" {
+		return true
+	}
+	typ, payload := backend.EventTurnDelta, any(backend.PartDeltaPayload{Delta: delta})
+	switch kind {
+	case "reasoning":
+		typ, payload = backend.EventTurnStatus, backend.TurnStatusPayload{Status: "thinking"}
+	case "retrying":
+		typ, payload = backend.EventTurnStatus, backend.TurnStatusPayload{Status: "retrying", Detail: delta}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return true
+	}
+	return sendEvent(ctx, out, StreamEvent{Type: typ, Raw: raw})
+}
+
+// drainTail flushes a finished turn's final records, then stops the tailer.
+// Protocol completion and file visibility are separate clocks, so it waits for
+// the transcript to catch up: until the backend's end-of-turn marker is
+// forwarded (alreadyTerminal if the caller already saw it), else a
+// finalDrainQuiet silence, else the finalDrainCeiling deadline. Records already
+// on disk are never dropped.
+func drainTail(ctx context.Context, out chan<- StreamEvent, events <-chan StreamEvent, cancel context.CancelFunc, isTerminal func([]byte) bool, alreadyTerminal bool) bool {
+	defer cancel()
+	exited := false
+	// forceStop cancels the still-live tailer and forwards its final EOF read.
+	// Only future growth is dropped, never a record already on disk.
+	forceStop := func() bool {
+		cancel()
+		for ev := range events {
+			exited = exited || ev.Type == backend.EventTurnEnded
+			if !sendEvent(ctx, out, ev) {
+				return exited
+			}
+		}
+		return exited
+	}
+	if alreadyTerminal {
+		return forceStop()
+	}
+	quiet := time.NewTimer(finalDrainQuiet)
+	defer quiet.Stop()
+	ceiling := time.NewTimer(finalDrainCeiling)
+	defer ceiling.Stop()
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return exited
+			}
+			exited = exited || ev.Type == backend.EventTurnEnded
+			if !sendEvent(ctx, out, ev) {
+				cancel()
+				return exited
+			}
+			if isTerminal != nil && isTerminal(ev.Raw) {
+				return forceStop()
+			}
+			quiet.Reset(finalDrainQuiet)
+		case <-quiet.C:
+			return forceStop()
+		case <-ceiling.C:
+			slog.Warn("final transcript drain hit hard ceiling; stopping tail")
+			return forceStop()
+		}
+	}
+}
+
+func locateClaude(root, id string) string {
+	matches, _ := filepath.Glob(filepath.Join(root, "*", id+".jsonl"))
+	if len(matches) > 0 {
+		return matches[0]
+	}
+	return ""
+}
+
+func locateCodex(root, id string) string {
+	matches, _ := filepath.Glob(filepath.Join(root, "*", "*", "*", "rollout-*-"+id+".jsonl"))
+	if len(matches) > 0 {
+		return matches[0]
+	}
+	return ""
+}
+
+func (s *Sender) locate(sessionID string) string {
+	if s.locateFn == nil {
+		return ""
+	}
+	return s.locateFn(sessionID)
+}
+
+// sendEvent delivers ev unless ctx is cancelled. Returns true if delivered.
+func sendEvent(ctx context.Context, ch chan<- StreamEvent, ev StreamEvent) bool {
+	select {
+	case ch <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func emitError(ctx context.Context, out chan<- StreamEvent, msg string) {
+	raw, _ := json.Marshal(backend.ErrorPayload{Message: msg})
+	sendEvent(ctx, out, StreamEvent{Type: backend.EventTurnFailed, Raw: raw})
+}

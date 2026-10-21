@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nexustar/usher/internal/mcptools"
-	"github.com/nexustar/usher/internal/pluginapi"
+	"github.com/nexustar/usher/pkg/mcptools"
+	"github.com/nexustar/usher/pkg/pluginapi"
 )
 
 // runMCPStdio is the worker for `usher mcp-stdio`: a minimal, dependency-free

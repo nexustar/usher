@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexustar/usher/internal/broker"
-	"github.com/nexustar/usher/internal/core"
-	"github.com/nexustar/usher/internal/imutil"
-	"github.com/nexustar/usher/internal/interaction"
-	"github.com/nexustar/usher/internal/pluginapi"
+	"github.com/nexustar/usher/pkg/broker"
+	"github.com/nexustar/usher/pkg/core"
+	"github.com/nexustar/usher/pkg/imutil"
+	"github.com/nexustar/usher/pkg/interaction"
+	"github.com/nexustar/usher/pkg/pluginapi"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
