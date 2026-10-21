@@ -20,10 +20,12 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/nexustar/usher/pkg/core"
+
+	"github.com/nexustar/usher/pkg/backend"
 )
 
 type Discovery struct {
-	sources []Source
+	sources []backend.Source
 	logger  *slog.Logger
 	watcher *fsnotify.Watcher
 
@@ -38,7 +40,7 @@ type Discovery struct {
 // is tagged with the Backend of the Source that found it; the Source decides
 // which files are sessions and how to read them, everything else — scanning,
 // watching, caching — is backend-agnostic.
-func NewMulti(logger *slog.Logger, sources ...Source) (*Discovery, error) {
+func NewMulti(logger *slog.Logger, sources ...backend.Source) (*Discovery, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -56,9 +58,9 @@ func NewMulti(logger *slog.Logger, sources ...Source) (*Discovery, error) {
 	}, nil
 }
 
-// sourceFor returns the Source that owns path — the one whose Root contains it
+// sourceFor returns the backend.Source that owns path — the one whose Root contains it
 // and whose IsSessionFile accepts it — or nil if path is not a session log.
-func (d *Discovery) sourceFor(path string) Source {
+func (d *Discovery) sourceFor(path string) backend.Source {
 	for _, s := range d.sources {
 		root := s.Root()
 		if path == root || strings.HasPrefix(path, root+string(os.PathSeparator)) {
@@ -138,7 +140,7 @@ func (d *Discovery) addWatches() error {
 			}
 			return nil
 		})
-		if ms, ok := s.(MetadataSource); ok {
+		if ms, ok := s.(backend.MetadataSource); ok {
 			for _, path := range ms.MetadataFiles() {
 				if err := d.watcher.Add(filepath.Dir(path)); err != nil {
 					d.logger.Warn("watch metadata dir", "path", filepath.Dir(path), "err", err)
@@ -432,7 +434,7 @@ func (d *Discovery) handle(ev fsnotify.Event) {
 
 func (d *Discovery) refreshMetadataFile(path string) bool {
 	for _, src := range d.sources {
-		ms, ok := src.(MetadataSource)
+		ms, ok := src.(backend.MetadataSource)
 		if !ok {
 			continue
 		}

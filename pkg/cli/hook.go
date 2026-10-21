@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -16,10 +16,10 @@ import (
 const hookRetryInterval = time.Second
 
 // hookConnectTimeout caps retrying while the server is unreachable; past it we
-// fail open. (A connected request waits unbounded for a human — see runHook.)
+// fail open. (A connected request waits unbounded for a human — see Hook.)
 const hookConnectTimeout = 60 * time.Second
 
-// runHook is the worker for `usher hook <event>`: it reads the payload from
+// Hook is the worker for `usher hook <event>`: it reads the payload from
 // stdin, POSTs it to the usher server over its Unix socket, and writes the
 // JSON decision to stdout.
 //
@@ -31,7 +31,7 @@ const hookConnectTimeout = 60 * time.Second
 // unreachable server for up to hookConnectTimeout to ride out a restart, then
 // fail open so a dead usher can't freeze the tool. Once connected the wait is
 // unbounded — usher holds the request until a human answers in the UI.
-func runHook(args []string) error {
+func Hook(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: usher hook <event-name>")
 	}

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -19,14 +19,15 @@ import (
 	"github.com/nexustar/usher/pkg/pluginapi"
 )
 
-// runMCPStdio is the worker for `usher mcp-stdio`: a minimal, dependency-free
+// MCPStdio is the worker for `usher mcp-stdio`: a minimal, dependency-free
 // MCP server (newline-delimited JSON-RPC 2.0 over stdin/stdout) launched by the
 // backend as a child of a usher-spawned session, so it inherits USHER_HOOK_SOCK
 // — the managed-session marker. By default it exposes only show_image. The
 // explicit --router-tools flag adds session-management tools backed by usher's
 // Unix control socket; generated backend configs carry it for the router
-// session only. Unmanaged sessions get no tools.
-func runMCPStdio(args []string) error {
+// session only. Unmanaged sessions get no tools. version is what the server
+// reports in its MCP serverInfo.
+func MCPStdio(args []string, version string) error {
 	fs := flag.NewFlagSet("mcp-stdio", flag.ContinueOnError)
 	routerTools := fs.Bool("router-tools", false,
 		"expose usher session-routing tools in addition to show_image")
@@ -52,7 +53,7 @@ func runMCPStdio(args []string) error {
 	for {
 		line, err := in.ReadBytes('\n')
 		if len(line) > 0 {
-			if respErr := handleMCPLine(line, out, router); respErr != nil {
+			if respErr := handleMCPLine(line, out, router, version); respErr != nil {
 				return respErr
 			}
 			out.Flush()
@@ -79,7 +80,7 @@ type rpcRequest struct {
 
 // handleMCPLine parses one JSON-RPC message and writes its reply (if any). A
 // nil router leaves the session-routing tools out entirely.
-func handleMCPLine(line []byte, out *bufio.Writer, router *mcptools.Router) error {
+func handleMCPLine(line []byte, out *bufio.Writer, router *mcptools.Router, version string) error {
 	line = []byte(strings.TrimSpace(string(line)))
 	if len(line) == 0 {
 		return nil
@@ -97,7 +98,7 @@ func handleMCPLine(line []byte, out *bufio.Writer, router *mcptools.Router) erro
 		return writeResult(out, req.ID, map[string]any{
 			"protocolVersion": mcpProtocolVersion(req.Params),
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "usher", "version": Version},
+			"serverInfo":      map[string]any{"name": "usher", "version": version},
 		})
 	case "notifications/initialized", "notifications/cancelled":
 		return nil

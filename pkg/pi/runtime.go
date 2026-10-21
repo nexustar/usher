@@ -913,7 +913,8 @@ func (r *Runtime) Start(ctx context.Context, req backend.StartRequest) (string, 
 	return state.SessionID, ch, err
 }
 
-func (r *Runtime) Send(ctx context.Context, id, prompt, cwd string) (<-chan backend.Event, error) {
+func (r *Runtime) Send(ctx context.Context, req backend.SendRequest) (<-chan backend.Event, error) {
+	id, prompt, cwd := req.SessionID, req.Prompt, req.Cwd
 	w := r.leaseWorkerIfLive(id)
 	if w == nil {
 		path := r.locate(id)
@@ -1015,7 +1016,8 @@ func (r *Runtime) rpcOperation(ctx context.Context, id string, w *worker, typ st
 
 // Resume starts an idle RPC worker for an existing session without prompting
 // it. Send will reuse the worker on the next turn.
-func (r *Runtime) Resume(ctx context.Context, id, cwd string) error {
+func (r *Runtime) Resume(ctx context.Context, req backend.ResumeRequest) error {
+	id, cwd := req.SessionID, req.Cwd
 	r.mu.Lock()
 	w := r.workers[id]
 	r.mu.Unlock()

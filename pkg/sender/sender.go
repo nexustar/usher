@@ -284,7 +284,8 @@ func NewCodex(codexCmd, sessionsDir, hookSock string, sandboxArgs []string, maxL
 // Send injects prompt into the session's live interactive claude (resuming /
 // spawning it as needed) and streams the resulting turn's events. The channel
 // closes when the turn ends or ctx is cancelled.
-func (s *Sender) Send(ctx context.Context, sessionID, prompt, cwd string) (<-chan StreamEvent, error) {
+func (s *Sender) Send(ctx context.Context, req backend.SendRequest) (<-chan StreamEvent, error) {
+	sessionID, prompt, cwd := req.SessionID, req.Prompt, req.Cwd
 	if s.app != nil {
 		return s.codexPrompt(ctx, sessionID, prompt, cwd, false)
 	}
@@ -463,7 +464,8 @@ func (s *Sender) Has(sessionID string) bool {
 
 // Resume brings an existing session's backend worker online without sending a
 // prompt. It is the inverse of Kill for UI lifecycle controls.
-func (s *Sender) Resume(ctx context.Context, sessionID, cwd string) error {
+func (s *Sender) Resume(ctx context.Context, req backend.ResumeRequest) error {
+	sessionID, cwd := req.SessionID, req.Cwd
 	if s.app != nil {
 		return s.app.Resume(ctx, sessionID, cwd)
 	}

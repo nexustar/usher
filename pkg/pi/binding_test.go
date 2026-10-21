@@ -80,7 +80,7 @@ func TestSwitchedWorkerIsDropped(t *testing.T) {
 		`{"sessionId":"other","sessionFile":"/tmp/other.jsonl","thinkingLevel":"high"}`,
 		`(sleep 0.2; printf '{"type":"agent_settled"}\n') &`)
 
-	ch, err := r.Send(context.Background(), "s1", "hello", w.cwd)
+	ch, err := r.Send(context.Background(), backend.SendRequest{SessionID: "s1", Prompt: "hello", Cwd: w.cwd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestMatchingSessionKeepsWorker(t *testing.T) {
 		`{"sessionId":"s1","sessionFile":"/tmp/s1.jsonl","thinkingLevel":"low"}`,
 		`(sleep 0.2; printf '{"type":"agent_settled"}\n') &`)
 
-	ch, err := r.Send(context.Background(), "s1", "hello", w.cwd)
+	ch, err := r.Send(context.Background(), backend.SendRequest{SessionID: "s1", Prompt: "hello", Cwd: w.cwd})
 	if err != nil {
 		t.Fatal(err)
 	}

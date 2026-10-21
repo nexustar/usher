@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"crypto/sha256"
@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nexustar/usher/pkg/pluginapi"
 )
 
-// runSetup wires usher into ~/.claude/settings.json by adding a PreToolUse
+// Setup wires usher into ~/.claude/settings.json by adding a PreToolUse
 // hook that runs `usher hook PreToolUse`. Existing user-defined hooks are
 // preserved; previous usher entries (identified by command suffix) are
 // replaced so re-running is idempotent.
@@ -23,9 +25,9 @@ import (
 // USHER_HOOK_SOCK into the hook command. With the default we bake nothing —
 // usher injects USHER_HOOK_SOCK at spawn for managed sessions, and unmanaged
 // (terminal/IDE) sessions fail open.
-func runSetup(args []string) error {
+func Setup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	dataDir := fs.String("data-dir", defaultDataDir(), "usher data directory (XDG_DATA_HOME/usher); hook socket is <data-dir>/hook.sock")
+	dataDir := fs.String("data-dir", pluginapi.DefaultDataDir(), "usher data directory (XDG_DATA_HOME/usher); hook socket is <data-dir>/hook.sock")
 	remove := fs.Bool("remove", false, "remove the usher hook from settings.json")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -39,8 +41,8 @@ func runSetup(args []string) error {
 		return err
 	}
 	sock := ""
-	if dir != defaultDataDir() {
-		sock = hookSockPath(dir)
+	if dir != pluginapi.DefaultDataDir() {
+		sock = pluginapi.HookSocketPath(dir)
 	}
 
 	home, err := os.UserHomeDir()

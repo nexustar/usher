@@ -8,7 +8,7 @@
 OUTPUT  := usher
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_ENV  := CGO_ENABLED=0
-GO_LD   := -ldflags="-s -w -X main.Version=$(VERSION)"
+GO_LD   := -ldflags="-s -w -X main.Version=$(VERSION) -X github.com/nexustar/usher.Version=$(VERSION)"
 GO_TAGS := -trimpath
 
 # Default target: build a stripped, statically-linked binary in the repo root.

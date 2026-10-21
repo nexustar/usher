@@ -54,7 +54,7 @@ func PartText(raw json.RawMessage) string {
 	return o.Part.Content
 }
 
-// ImageExts mirrors the show_image allowlist (cmd/usher/mcpcmd.go mcpImageExts
+// ImageExts mirrors the show_image allowlist (pkg/cli/mcpstdio.go mcpImageExts
 // and web's imageContentTypes): raster only, SVG excluded.
 var ImageExts = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,

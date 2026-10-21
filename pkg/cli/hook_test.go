@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"io"
@@ -16,7 +16,7 @@ func TestLegacyPermissionRequestContinuesWithoutSocket(t *testing.T) {
 	os.Stdout = w
 	t.Cleanup(func() { os.Stdout = original })
 
-	if err := runHook([]string{"PermissionRequest"}); err != nil {
+	if err := Hook([]string{"PermissionRequest"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

@@ -156,15 +156,34 @@ type LiveSession struct {
 	Activity core.Activity
 }
 
+// SendRequest is one prompt for an existing session. Cwd is where a cold
+// worker is respawned.
+type SendRequest struct {
+	SessionID string
+	Prompt    string
+	Cwd       string
+}
+
+// ResumeRequest brings a session's worker online without a prompt.
+type ResumeRequest struct {
+	SessionID string
+	Cwd       string
+}
+
 // Runtime owns live workers for one coding-agent backend.
 type Runtime interface {
+	// Start creates a session and returns its id with the first turn's events.
 	Start(context.Context, StartRequest) (string, <-chan Event, error)
-	Send(context.Context, string, string, string) (<-chan Event, error)
-	Resume(context.Context, string, string) error
-	Has(string) bool
+	// Send streams one turn; the channel closes when the turn ends or ctx is
+	// cancelled.
+	Send(context.Context, SendRequest) (<-chan Event, error)
+	Resume(context.Context, ResumeRequest) error
+	// Has reports whether the session has a live worker.
+	Has(sessionID string) bool
 	LiveSessions() []LiveSession
-	Interrupt(string) error
-	Kill(string) error
+	// Interrupt stops the session's running turn; Kill stops its worker.
+	Interrupt(sessionID string) error
+	Kill(sessionID string) error
 	Shutdown()
 }
 
@@ -188,18 +207,20 @@ type ComposerCatalog struct {
 // completions. Available is false when discovery deliberately avoids starting
 // a cold backend.
 type ComposerProvider interface {
-	ComposerItems(context.Context, string, string) (ComposerCatalog, error)
+	ComposerItems(ctx context.Context, sessionID, cwd string) (ComposerCatalog, error)
 }
 
 // Forker is an optional capability because backends use materially different
-// branching mechanisms and some may not support it at all.
+// branching mechanisms and some may not support it at all. It copies the
+// session at path up to and including the turn afterID into a new session,
+// returning the new id and its path.
 type Forker interface {
-	Fork(context.Context, string, string, string) (string, string, error)
+	Fork(ctx context.Context, sessionID, path, afterID string) (newID, newPath string, err error)
 }
 
 // Renamer writes a title to backend-native metadata. path is the transcript.
 type Renamer interface {
-	Rename(context.Context, string, string, string) error
+	Rename(ctx context.Context, sessionID, path, title string) error
 }
 
 // SystemPrompter is an optional runtime capability: restoring a session's
@@ -270,11 +291,50 @@ type Steerer interface {
 	Steer(ctx context.Context, sessionID, text string) error
 }
 
+// Source describes where one backend's session logs live on disk and how to
+// read them, so discovery can scan every backend side by side without knowing
+// any layout. Discovery handles the watching and caching; a Source only
+// answers "is this file a session, what's its id, and what's its metadata".
+type Source interface {
+	// Backend names the agent CLI this source's sessions belong to; stamped
+	// onto each discovered core.Session.
+	Backend() string
+	// Root is the directory to scan and recursively watch.
+	Root() string
+	// IsSessionFile reports whether path is a root or subagent session log, as
+	// opposed to a tool-result blob or unrelated nested artifact.
+	IsSessionFile(path string) bool
+	// SessionID extracts the session id from a session file path, or "" if none.
+	SessionID(path string) string
+	// NewMetaScanner starts a read of the log at path.
+	NewMetaScanner(path string) MetaScanner
+	// Sparse reports whether a log's first and last lines hold what a listing
+	// needs, so the ones between can go unread.
+	Sparse() bool
+}
+
+// MetaScanner folds a session log's lines, fed in file order, into the
+// descriptor used for listing. Lines may be skipped, never reordered.
+type MetaScanner interface {
+	Feed(line []byte)
+	Meta() core.SessionMeta
+}
+
+// MetadataSource is an optional Source capability: metadata files that affect
+// cached sessions, and the session-id to title map one of them holds.
+type MetadataSource interface {
+	MetadataFiles() []string
+	RefreshMetadata(path string) (map[string]string, error)
+}
+
 // Backend explicitly composes the capabilities registered for one agent CLI.
-// Main constructs these values; there is deliberately no global init registry.
+// Runtime and Transcript are required; Source enables discovery of the
+// backend's sessions on disk. There is deliberately no global init registry:
+// usher.Run assembles the built-in backends and Extensions add theirs.
 type Backend struct {
 	Runtime    Runtime
 	Transcript Transcript
+	Source     Source
 	Forker     Forker
 	Renamer    Renamer
 	Models     ModelProvider

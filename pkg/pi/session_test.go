@@ -478,7 +478,7 @@ done
 	if err := r.Rename(context.Background(), "sess-1", path, "Live title"); err != nil {
 		t.Fatal(err)
 	}
-	events, err := r.Send(context.Background(), "sess-1", "/name Command title", dir)
+	events, err := r.Send(context.Background(), backend.SendRequest{SessionID: "sess-1", Prompt: "/name Command title", Cwd: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ done
 	if !reflect.DeepEqual(eventTypes, []string{backend.EventTurnStarted, backend.EventTurnEnded}) {
 		t.Fatalf("command events = %v", eventTypes)
 	}
-	events, err = r.Send(context.Background(), "sess-1", "/compact Keep the API details", dir)
+	events, err = r.Send(context.Background(), backend.SendRequest{SessionID: "sess-1", Prompt: "/compact Keep the API details", Cwd: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +576,7 @@ done
 		t.Fatal(err)
 	}
 
-	ch, err := r.Send(context.Background(), "s1", "/compact", dir)
+	ch, err := r.Send(context.Background(), backend.SendRequest{SessionID: "s1", Prompt: "/compact", Cwd: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +737,7 @@ done
 		t.Fatal(err)
 	}
 	for _, name := range []string{"one", "two"} {
-		events, err := r.Send(context.Background(), "s1", "/name "+name, dir)
+		events, err := r.Send(context.Background(), backend.SendRequest{SessionID: "s1", Prompt: "/name " + name, Cwd: dir})
 		if err != nil {
 			t.Fatal(err)
 		}

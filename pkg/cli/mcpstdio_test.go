@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -96,7 +96,7 @@ func TestMCPToolsListDefaultsToImageOnly(t *testing.T) {
 	t.Setenv("USHER_HOOK_SOCK", filepath.Join(t.TempDir(), "hook.sock"))
 	var raw bytes.Buffer
 	out := bufio.NewWriter(&raw)
-	err := handleMCPLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`), out, nil)
+	err := handleMCPLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`), out, nil, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

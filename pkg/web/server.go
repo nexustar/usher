@@ -69,6 +69,20 @@ type Server struct {
 	// readOnly rejects every state-changing web request (see
 	// readOnlyMiddleware); reads, SSE, and static files stay available.
 	readOnly bool
+	// routes are the handlers added with Handle, mounted by Run.
+	routes []route
+}
+
+type route struct {
+	pattern string
+	handler http.Handler
+}
+
+// Handle serves h at pattern, an http.ServeMux pattern, behind the same
+// authentication as the built-in routes. Call it before Run; a pattern that
+// duplicates a built-in route panics there, as ServeMux does.
+func (s *Server) Handle(pattern string, h http.Handler) {
+	s.routes = append(s.routes, route{pattern, h})
 }
 
 func NewServer(
@@ -127,6 +141,9 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("POST /internal/push/subscribe", s.handlePushSubscribe)
 	webMux.HandleFunc("POST /internal/push/unsubscribe", s.handlePushUnsubscribe)
 	webMux.HandleFunc("GET /theme.css", s.handleTheme)
+	for _, rt := range s.routes {
+		webMux.Handle(rt.pattern, rt.handler)
+	}
 
 	var staticRoot fs.FS
 	if s.uiDir != "" {

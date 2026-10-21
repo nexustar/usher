@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"flag"
@@ -11,9 +11,11 @@ import (
 	"golang.org/x/term"
 
 	"github.com/nexustar/usher/pkg/auth"
+
+	"github.com/nexustar/usher/pkg/pluginapi"
 )
 
-// runSetPassword is the worker for `usher set-password`. It writes an
+// SetPassword is the worker for `usher set-password`. It writes an
 // argon2id hash of the supplied password to <data-dir>/auth.json (0600).
 // Once auth.json exists, `usher serve` requires login on every request.
 //
@@ -24,9 +26,9 @@ import (
 //
 // Plaintext is never accepted as a flag or env var — both leak to shell
 // history, /proc/<pid>/environ, and CI logs.
-func runSetPassword(args []string) error {
+func SetPassword(args []string) error {
 	fs := flag.NewFlagSet("set-password", flag.ExitOnError)
-	dataDir := fs.String("data-dir", defaultDataDir(), "usher data directory (XDG_DATA_HOME/usher)")
+	dataDir := fs.String("data-dir", pluginapi.DefaultDataDir(), "usher data directory (XDG_DATA_HOME/usher)")
 	stdinMode := fs.Bool("password-stdin", false, "read password from stdin (single line, no confirmation)")
 	if err := fs.Parse(args); err != nil {
 		return err

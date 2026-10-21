@@ -6,46 +6,14 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nexustar/usher/pkg/backend"
 	"github.com/nexustar/usher/pkg/claude/jsonl"
 	"github.com/nexustar/usher/pkg/codex/rollout"
 	"github.com/nexustar/usher/pkg/core"
 	piagent "github.com/nexustar/usher/pkg/pi"
 )
 
-// Source describes where one backend's session logs live on disk and how to
-// read them, so Discovery can scan Claude Code and Codex side by side without
-// knowing either layout. Discovery handles the watching/caching; a Source only
-// answers "is this file a session, what's its id, and what's its metadata".
-type Source interface {
-	// Backend names the agent CLI this source's sessions belong to
-	// ("claude" or "codex"); stamped onto each discovered core.Session.
-	Backend() string
-	// Root is the directory to scan and recursively watch.
-	Root() string
-	// IsSessionFile reports whether path is a root or subagent session log, as
-	// opposed to a tool-result blob or unrelated nested artifact.
-	IsSessionFile(path string) bool
-	// SessionID extracts the session id from a session file path, or "" if none.
-	SessionID(path string) string
-	// NewMetaScanner starts a read of the log at path.
-	NewMetaScanner(path string) MetaScanner
-	// Sparse reports whether a log's first and last lines hold what a listing
-	// needs, so the ones between can go unread.
-	Sparse() bool
-}
-
-// MetaScanner folds a session log's lines, fed in file order, into the
-// descriptor used for listing. Lines may be skipped, never reordered.
-type MetaScanner interface {
-	Feed(line []byte)
-	Meta() core.SessionMeta
-}
-
-// MetadataSource lists metadata files that affect cached sessions.
-type MetadataSource interface {
-	MetadataFiles() []string
-	RefreshMetadata(string) (map[string]string, error)
-}
+// The built-in backend.Source implementations: one per agent CLI layout.
 
 // ClaudeSource scans Claude Code's projects tree:
 // <root>/<sanitized-cwd>/<id>.jsonl, where the id is the bare filename.
@@ -101,7 +69,7 @@ func (s ClaudeSource) SessionID(path string) string {
 
 func (s ClaudeSource) Sparse() bool { return true }
 
-func (s ClaudeSource) NewMetaScanner(path string) MetaScanner {
+func (s ClaudeSource) NewMetaScanner(path string) backend.MetaScanner {
 	return claudeScanner{jsonl.NewMetaScanner(path), s, path}
 }
 
@@ -163,7 +131,7 @@ func (s *CodexSource) SessionID(path string) string {
 
 func (s *CodexSource) Sparse() bool { return true }
 
-func (s *CodexSource) NewMetaScanner(path string) MetaScanner {
+func (s *CodexSource) NewMetaScanner(path string) backend.MetaScanner {
 	return codexScanner{rollout.NewMetaScanner(path), s}
 }
 
@@ -214,5 +182,5 @@ func (s PiSource) IsSessionFile(path string) bool {
 func (s PiSource) SessionID(path string) string { return piagent.SessionIDFromPath(path) }
 
 // A rename is recorded once, wherever in the log it happened.
-func (s PiSource) Sparse() bool                      { return false }
-func (s PiSource) NewMetaScanner(string) MetaScanner { return piagent.NewMetaScanner() }
+func (s PiSource) Sparse() bool                              { return false }
+func (s PiSource) NewMetaScanner(string) backend.MetaScanner { return piagent.NewMetaScanner() }

@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/nexustar/usher/pkg/core"
+
+	"github.com/nexustar/usher/pkg/backend"
 )
 
 const (
@@ -22,7 +24,7 @@ const (
 // change costs a read of what was appended.
 type reading struct {
 	mu      sync.Mutex
-	scanner MetaScanner
+	scanner backend.MetaScanner
 	off     int64 // every complete line before this was fed or skipped
 	whole   bool  // none was skipped
 }
@@ -30,7 +32,7 @@ type reading struct {
 // read brings r up to date with the log at path and returns its metadata.
 // whole asks for every line to have been read; the result reports whether
 // that is so. Call with r.mu held.
-func (r *reading) read(src Source, path string, whole bool) (core.SessionMeta, bool, error) {
+func (r *reading) read(src backend.Source, path string, whole bool) (core.SessionMeta, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return core.SessionMeta{}, false, err
@@ -59,7 +61,7 @@ func (r *reading) read(src Source, path string, whole bool) (core.SessionMeta, b
 
 // readSparse reads the log's first lines, up to its first prompt, and its
 // last ones, back to its latest prompt.
-func (r *reading) readSparse(src Source, path string, f *os.File, size int64) error {
+func (r *reading) readSparse(src backend.Source, path string, f *os.File, size int64) error {
 	for tail := int64(tailMin); ; tail *= 4 {
 		s := src.NewMetaScanner(path)
 		head, err := feed(f, s, 0, min(size, headMax), func() bool { return s.Meta().Prompt != "" })
@@ -85,7 +87,7 @@ func (r *reading) readSparse(src Source, path string, f *os.File, size int64) er
 
 // feed gives s the complete lines of f in [from, to), stopping early once done
 // reports true, and returns the offset after the last one fed.
-func feed(f *os.File, s MetaScanner, from, to int64, done func() bool) (int64, error) {
+func feed(f *os.File, s backend.MetaScanner, from, to int64, done func() bool) (int64, error) {
 	r := bufio.NewReaderSize(io.NewSectionReader(f, from, to-from), 64<<10)
 	for {
 		line, err := r.ReadBytes('\n')

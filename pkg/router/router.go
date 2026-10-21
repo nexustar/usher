@@ -983,7 +983,7 @@ func (r *Router) ResumeSession(ctx context.Context, id string) error {
 	if sess.IsSubagent {
 		return ErrReadOnlySession
 	}
-	return r.senderFor(id).Resume(ctx, id, sess.Cwd)
+	return r.senderFor(id).Resume(ctx, backendpkg.ResumeRequest{SessionID: id, Cwd: sess.Cwd})
 }
 
 // stopLive drops a session to idle: cancels any in-flight turn, drops queued
@@ -1178,7 +1178,7 @@ func (r *Router) runSend(ctx context.Context, sessionID, prompt, cwd string, tok
 		return
 	}
 	started := time.Now()
-	ch, err := r.senderFor(sessionID).Send(ctx, sessionID, prompt, cwd)
+	ch, err := r.senderFor(sessionID).Send(ctx, backendpkg.SendRequest{SessionID: sessionID, Prompt: prompt, Cwd: cwd})
 	if err != nil {
 		r.failSend(sessionID, tok, err)
 		return

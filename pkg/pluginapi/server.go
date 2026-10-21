@@ -164,6 +164,13 @@ func SocketPath(dataDir string) string {
 	return filepath.Join(dataDir, "plugin.sock")
 }
 
+// HookSocketPath returns the hook socket path inside dataDir: where spawned
+// sessions report tool calls, and the directory `usher mcp-stdio` derives the
+// plugin socket from.
+func HookSocketPath(dataDir string) string {
+	return filepath.Join(dataDir, "hook.sock")
+}
+
 // listenMu serializes the umask window in ListenUnixSocket: umask is
 // process-wide, so two concurrent listeners (hook + plugin socket) must not
 // interleave their set/restore.

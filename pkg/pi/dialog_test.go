@@ -255,7 +255,7 @@ done
 		t.Fatal(err)
 	}
 
-	ch, err := r.Send(context.Background(), "s1", "/demo", dir)
+	ch, err := r.Send(context.Background(), backend.SendRequest{SessionID: "s1", Prompt: "/demo", Cwd: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
