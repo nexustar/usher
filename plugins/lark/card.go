@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nexustar/usher/internal/imutil"
-	"github.com/nexustar/usher/internal/interaction"
+	"github.com/nexustar/usher/pkg/imutil"
+	"github.com/nexustar/usher/pkg/interaction"
 )
 
 // Cards use the JSON 2.0 schema (Feishu client 7.20+; older clients see the

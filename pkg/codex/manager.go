@@ -1,0 +1,623 @@
+package codex
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/nexustar/usher/pkg/backend"
+	"github.com/nexustar/usher/pkg/core"
+	"github.com/nexustar/usher/pkg/interaction"
+)
+
+type worker struct {
+	client *Client
+	ready  chan struct{}
+	err    error
+	busy   bool
+	// leases protect short RPCs without making the session appear mid-turn.
+	leases   int
+	lastUsed time.Time
+	// idleSince is when the reaper first found the worker holding nothing.
+	idleSince time.Time
+}
+
+// Manager owns one app-server worker per live root Codex session.
+type Manager struct {
+	bin          string
+	interactions *interaction.Manager
+	sandbox      map[string]any
+	config       map[string]any
+	routerConfig map[string]any
+	env          []string
+	logger       *slog.Logger
+	maxLive      int
+
+	mu           sync.Mutex
+	workers      map[string]*worker
+	starting     int
+	routerID     string
+	systemPrompt func(string) string
+	extraArgs    func(string) []string
+	autoPause    time.Duration
+	// switches wait for the thread's next turn/start, after which Codex keeps
+	// them in the rollout.
+	switches map[string]runtimeSwitch
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+type runtimeSwitch struct{ model, effort, approval string }
+
+func NewManager(bin string, interactions *interaction.Manager, sandbox, config map[string]any, env []string, maxLive int, logger *slog.Logger) *Manager {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if maxLive <= 0 {
+		maxLive = 8
+	}
+	m := &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}, switches: map[string]runtimeSwitch{}, stop: make(chan struct{})}
+	go m.reapLoop()
+	return m
+}
+
+// SetAutoPause stops a worker once it has held nothing for d. Codex lets one
+// process at a time write a thread, so a worker kept warm locks the session
+// out of every other Codex client. Zero keeps workers until evicted.
+func (m *Manager) SetAutoPause(d time.Duration) {
+	m.mu.Lock()
+	m.autoPause = d
+	m.mu.Unlock()
+}
+
+// holdsWork reports whether stopping the worker would lose something: a turn
+// of usher's or Codex's own, a delegated agent, or a command left running in
+// the background. Caller holds m.mu.
+func (m *Manager) holdsWork(id string, w *worker) bool {
+	return w.ready != nil || w.busy || w.leases > 0 || w.client.Busy(id) || w.client.ChildTurns(id) > 0 || w.client.Commands() > 0
+}
+
+func (m *Manager) reapLoop() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case now := <-t.C:
+			m.mu.Lock()
+			after := m.autoPause
+			m.mu.Unlock()
+			if after > 0 {
+				m.reapIdle(now, after)
+			}
+		}
+	}
+}
+
+// reapIdle stops workers that have held nothing for after. A goal Codex is
+// still pursuing holds the worker until the LRU needs its slot.
+func (m *Manager) reapIdle(now time.Time, after time.Duration) {
+	var victims []*Client
+	m.mu.Lock()
+	for id, w := range m.workers {
+		if g := w.client.Goal(id); m.holdsWork(id, w) || (g != nil && g.Status == "active") {
+			w.idleSince = time.Time{}
+			continue
+		}
+		if w.idleSince.IsZero() {
+			w.idleSince = now
+		}
+		since := w.idleSince
+		if w.lastUsed.After(since) {
+			since = w.lastUsed
+		}
+		if now.Sub(since) < after {
+			continue
+		}
+		delete(m.workers, id)
+		m.logger.Info("worker auto-paused", "session", id)
+		victims = append(victims, w.client)
+	}
+	m.mu.Unlock()
+	for _, c := range victims {
+		c.Shutdown()
+	}
+}
+
+// SetRouterConfig supplies the config that replaces the manager-wide config
+// for usher's router session.
+func (m *Manager) SetRouterConfig(config map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routerConfig = cloneMap(config)
+}
+
+// SetRouterSession designates id as usher's router session: its next cold
+// worker starts with the router config.
+func (m *Manager) SetRouterSession(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routerID = id
+}
+
+func (m *Manager) isRouter(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return id != "" && id == m.routerID
+}
+
+// newClient builds one session's worker. extra follows --codex-args
+// vocabulary (--sandbox / -c key=value) and overrides the manager-wide
+// sandbox and config for this worker only. id is empty for a fresh thread —
+// codex assigns one only after the worker is up — so router selects the
+// routing-tools config for it in place of the id.
+func (m *Manager) newClient(id, instructions string, extra []string, router bool) *Client {
+	var args []string
+	if instructions != "" {
+		quoted, _ := json.Marshal(instructions)
+		args = []string{"-c", "developer_instructions=" + string(quoted)}
+	}
+	logger := m.logger
+	if id != "" {
+		logger = logger.With("session", id)
+	}
+	base := m.config
+	if router {
+		m.mu.Lock()
+		if m.routerConfig != nil {
+			base = m.routerConfig
+		}
+		m.mu.Unlock()
+	}
+	sandbox, config := m.sandbox, base
+	if len(extra) > 0 {
+		extraSandbox, extraConfig := ParseHeadlessArgs(extra, logger)
+		sandbox, config = cloneMap(sandbox), cloneMap(config)
+		for k, v := range extraSandbox {
+			sandbox[k] = v
+		}
+		for k, v := range extraConfig {
+			config[k] = v
+		}
+	}
+	return New(m.bin, m.interactions, sandbox, config, m.env, args, logger)
+}
+
+func (m *Manager) SetSystemPromptLookup(lookup func(string) string) {
+	m.mu.Lock()
+	m.systemPrompt = lookup
+	m.mu.Unlock()
+}
+
+func (m *Manager) promptFor(id string) string {
+	m.mu.Lock()
+	lookup := m.systemPrompt
+	m.mu.Unlock()
+	if lookup == nil {
+		return ""
+	}
+	return lookup(id)
+}
+
+func (m *Manager) SetExtraArgsLookup(lookup func(string) []string) {
+	m.mu.Lock()
+	m.extraArgs = lookup
+	m.mu.Unlock()
+}
+
+func (m *Manager) argsFor(id string) []string {
+	m.mu.Lock()
+	lookup := m.extraArgs
+	m.mu.Unlock()
+	if lookup == nil {
+		return nil
+	}
+	return lookup(id)
+}
+
+// reserve makes room for a new worker. The returned idle victim has already
+// been removed from the live map and can be stopped without holding m.mu.
+func (m *Manager) reserve() (*Client, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.workers)+m.starting < m.maxLive {
+		m.starting++
+		return nil, nil
+	}
+	var victimID string
+	var victim *worker
+	for id, w := range m.workers {
+		if m.holdsWork(id, w) {
+			continue
+		}
+		if victim != nil {
+			wRunning, victimRunning := w.client.Running(), victim.client.Running()
+			if (wRunning && !victimRunning) || (wRunning == victimRunning && !w.lastUsed.Before(victim.lastUsed)) {
+				continue
+			}
+		}
+		victimID, victim = id, w
+	}
+	if victim == nil {
+		return nil, fmt.Errorf("maximum live Codex sessions (%d) are all busy", m.maxLive)
+	}
+	delete(m.workers, victimID)
+	m.starting++
+	m.logger.Info("worker evicted", "session", victimID)
+	return victim.client, nil
+}
+
+func (m *Manager) finishStart() {
+	m.mu.Lock()
+	m.starting--
+	m.mu.Unlock()
+}
+
+func (m *Manager) StartThread(ctx context.Context, cwd, model, approval, instructions string, extraArgs []string, router bool) (string, error) {
+	victim, err := m.reserve()
+	if err != nil {
+		return "", err
+	}
+	if victim != nil {
+		victim.Shutdown()
+	}
+	c := m.newClient("", instructions, extraArgs, router)
+	id, err := c.StartThread(ctx, cwd, model, approval)
+	if err != nil {
+		m.finishStart()
+		c.Shutdown()
+		return "", err
+	}
+	c.bindSession(id)
+	m.mu.Lock()
+	m.starting--
+	m.workers[id] = &worker{client: c, lastUsed: time.Now()}
+	if router {
+		// Record the id the thread was minted under, for future cold resumes.
+		m.routerID = id
+	}
+	m.mu.Unlock()
+	return id, nil
+}
+
+// leaseWorker resumes a session and leases its worker against eviction. The
+// lease is taken under the same lock that confirms the worker is still owned.
+// Unlike pi's leaseWorkerIfLive it will start a cold worker, so it belongs only
+// on paths that are about to drive a turn.
+func (m *Manager) leaseWorker(ctx context.Context, id, cwd string) (*worker, error) {
+	for {
+		w, err := m.getOrResume(ctx, id, cwd)
+		if err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		if m.workers[id] != w {
+			// Evicted in the gap. Its client is already shutting down, so
+			// resume again rather than talking to a dead process.
+			m.mu.Unlock()
+			continue
+		}
+		w.leases++
+		w.lastUsed = time.Now()
+		m.mu.Unlock()
+		return w, nil
+	}
+}
+
+func (m *Manager) releaseWorker(w *worker) {
+	m.mu.Lock()
+	w.leases--
+	w.lastUsed = time.Now()
+	m.mu.Unlock()
+}
+
+func (m *Manager) getOrResume(ctx context.Context, id, cwd string) (*worker, error) {
+	for {
+		m.mu.Lock()
+		if w := m.workers[id]; w != nil {
+			ready := w.ready
+			if ready == nil {
+				w.lastUsed = time.Now()
+				m.mu.Unlock()
+				return w, w.err
+			}
+			m.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-ready:
+			}
+			continue
+		}
+		m.mu.Unlock()
+
+		victim, err := m.reserve()
+		if err != nil {
+			return nil, err
+		}
+		if victim != nil {
+			victim.Shutdown()
+		}
+		ready := make(chan struct{})
+		w := &worker{client: m.newClient(id, m.promptFor(id), m.argsFor(id), m.isRouter(id)), ready: ready, lastUsed: time.Now()}
+		m.mu.Lock()
+		m.starting--
+		if existing := m.workers[id]; existing != nil {
+			m.mu.Unlock()
+			w.client.Shutdown()
+			continue
+		}
+		m.workers[id] = w
+		m.mu.Unlock()
+
+		err = w.client.ResumeThread(ctx, id, cwd)
+		m.mu.Lock()
+		owned := m.workers[id] == w
+		if !owned && err == nil {
+			err = fmt.Errorf("Codex session %s stopped", id)
+		}
+		w.err = err
+		w.ready = nil
+		if err != nil && owned {
+			delete(m.workers, id)
+		}
+		close(ready)
+		m.mu.Unlock()
+		if err != nil {
+			w.client.Shutdown()
+			return nil, err
+		}
+		return w, nil
+	}
+}
+
+func (m *Manager) StartTurn(ctx context.Context, id, prompt, cwd string) (<-chan TurnResult, <-chan Delta, error) {
+	m.mu.Lock()
+	sw := m.switches[id]
+	m.mu.Unlock()
+	done, deltas, err := m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
+		return c.StartTurn(ctx, id, prompt, cwd, sw.model, sw.effort, sw.approval)
+	})
+	if err == nil {
+		m.mu.Lock()
+		if m.switches[id] == sw {
+			delete(m.switches, id)
+		}
+		m.mu.Unlock()
+	}
+	return done, deltas, err
+}
+
+// SetRuntime switches the thread's model and effort from its next turn; empty
+// keeps the current one.
+func (m *Manager) SetRuntime(id, model, effort string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sw := m.switches[id]
+	if model != "" {
+		sw.model = model
+	}
+	if effort != "" {
+		sw.effort = effort
+	}
+	m.switches[id] = sw
+}
+
+// SetApproval applies approval to the thread from its next turn.
+func (m *Manager) SetApproval(id, approval string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sw := m.switches[id]
+	sw.approval = approval
+	m.switches[id] = sw
+}
+
+func (m *Manager) Compact(ctx context.Context, id, cwd string) (<-chan TurnResult, <-chan Delta, error) {
+	return m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
+		return c.Compact(ctx, id)
+	})
+}
+
+func (m *Manager) Review(ctx context.Context, id, cwd, instructions string) (<-chan TurnResult, <-chan Delta, error) {
+	return m.startOperation(ctx, id, cwd, func(c *Client) (<-chan TurnResult, <-chan Delta, error) {
+		return c.Review(ctx, id, instructions)
+	})
+}
+
+// SetGoal sets, or with an empty objective clears, the thread's goal, resuming
+// a cold thread if needed.
+func (m *Manager) SetGoal(ctx context.Context, id, cwd, objective string) error {
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return err
+	}
+	defer m.releaseWorker(w)
+	return w.client.SetGoal(ctx, id, objective)
+}
+
+// Rename runs Codex's /rename RPC, resuming a cold thread if needed.
+func (m *Manager) Rename(ctx context.Context, id, cwd, title string) error {
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return err
+	}
+	defer m.releaseWorker(w)
+	m.mu.Lock()
+	busy := w.busy || w.client.Busy(id)
+	m.mu.Unlock()
+	if busy {
+		return fmt.Errorf("Codex session %s is busy", id)
+	}
+	return w.client.RenameThread(ctx, id, title)
+}
+
+func (m *Manager) startOperation(ctx context.Context, id, cwd string, start func(*Client) (<-chan TurnResult, <-chan Delta, error)) (<-chan TurnResult, <-chan Delta, error) {
+	// Keep the worker leased until start() has registered the operation.
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer m.releaseWorker(w)
+	m.mu.Lock()
+	if w.busy || w.client.Busy(id) {
+		m.mu.Unlock()
+		return nil, nil, fmt.Errorf("Codex session %s is busy", id)
+	}
+	w.busy, w.lastUsed = true, time.Now()
+	m.mu.Unlock()
+	inner, deltas, err := start(w.client)
+	if err != nil {
+		m.mu.Lock()
+		w.busy = false
+		m.mu.Unlock()
+		return nil, nil, err
+	}
+	out := make(chan TurnResult, 1)
+	go func() {
+		result, ok := <-inner
+		m.mu.Lock()
+		if m.workers[id] == w {
+			w.busy, w.lastUsed = false, time.Now()
+		}
+		m.mu.Unlock()
+		if ok {
+			out <- result
+		}
+		close(out)
+	}()
+	return out, deltas, nil
+}
+
+// Resume starts an idle app-server worker and attaches it to an existing
+// thread without starting a turn.
+func (m *Manager) Resume(ctx context.Context, id, cwd string) error {
+	_, err := m.getOrResume(ctx, id, cwd)
+	return err
+}
+
+// Skills resumes the session if needed, so it belongs on paths that are about
+// to drive a turn anyway.
+func (m *Manager) Skills(ctx context.Context, id, cwd string) ([]Skill, error) {
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return nil, err
+	}
+	defer m.releaseWorker(w)
+	return w.client.Skills(ctx, cwd)
+}
+
+// SkillsIfLive answers only from a worker that is already up, reporting no
+// skills otherwise. Composer completion is speculative — the user may never
+// finish the token — so it must not pay for a cold start or evict another
+// session's warm worker to satisfy a popup.
+func (m *Manager) SkillsIfLive(ctx context.Context, id, cwd string) ([]Skill, bool, error) {
+	m.mu.Lock()
+	w := m.workers[id]
+	if w == nil || w.ready != nil {
+		m.mu.Unlock()
+		return nil, false, nil
+	}
+	w.leases++
+	w.lastUsed = time.Now()
+	m.mu.Unlock()
+	defer m.releaseWorker(w)
+	skills, err := w.client.Skills(ctx, cwd)
+	return skills, err == nil, err
+}
+
+// RenameIfLive renames through an existing worker without entering the LRU.
+func (m *Manager) RenameIfLive(ctx context.Context, id, title string) (bool, error) {
+	m.mu.Lock()
+	w := m.workers[id]
+	if w == nil || w.ready != nil || w.err != nil || !w.client.Running() {
+		m.mu.Unlock()
+		return false, nil
+	}
+	w.leases++
+	w.lastUsed = time.Now()
+	m.mu.Unlock()
+	defer m.releaseWorker(w)
+	return true, w.client.RenameThread(ctx, id, title)
+}
+
+func (m *Manager) Interrupt(ctx context.Context, id string) error {
+	m.mu.Lock()
+	w := m.workers[id]
+	m.mu.Unlock()
+	if w == nil || w.ready != nil {
+		return nil
+	}
+	return w.client.Interrupt(ctx, id)
+}
+
+// Steer adds text to the session's running turn (Client.Steer).
+func (m *Manager) Steer(ctx context.Context, id, text string) error {
+	m.mu.Lock()
+	w := m.workers[id]
+	m.mu.Unlock()
+	if w == nil || w.ready != nil {
+		return errors.New("session has no live worker")
+	}
+	return w.client.Steer(ctx, id, text)
+}
+
+func (m *Manager) Has(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	w := m.workers[id]
+	return w != nil && w.ready == nil && w.err == nil && w.client.Running()
+}
+
+func (m *Manager) LiveSessions() []backend.LiveSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]backend.LiveSession, 0, len(m.workers))
+	for id, w := range m.workers {
+		if w.ready == nil && w.err == nil && w.client.Running() {
+			out = append(out, backend.LiveSession{
+				ID:       id,
+				Running:  w.busy || w.client.Busy(id),
+				Activity: core.Activity{Agents: w.client.ChildTurns(id), Goal: w.client.Goal(id)},
+			})
+		}
+	}
+	return out
+}
+
+func (m *Manager) Kill(ctx context.Context, id string) error {
+	m.mu.Lock()
+	w := m.workers[id]
+	delete(m.workers, id)
+	m.mu.Unlock()
+	if w == nil {
+		return nil
+	}
+	if w.ready != nil {
+		<-w.ready
+	}
+	_ = w.client.Kill(ctx, id)
+	w.client.Shutdown()
+	return nil
+}
+
+func (m *Manager) Shutdown() {
+	m.stopOnce.Do(func() { close(m.stop) })
+	m.mu.Lock()
+	workers := make([]*worker, 0, len(m.workers))
+	for _, w := range m.workers {
+		workers = append(workers, w)
+	}
+	m.workers = map[string]*worker{}
+	m.mu.Unlock()
+	for _, w := range workers {
+		if w.ready != nil {
+			<-w.ready
+		}
+		w.client.Shutdown()
+	}
+}

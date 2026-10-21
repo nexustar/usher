@@ -28,7 +28,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nexustar/usher/internal/pluginapi"
+	"github.com/nexustar/usher/pkg/pluginapi"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
