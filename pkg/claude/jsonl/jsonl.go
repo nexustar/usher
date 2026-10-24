@@ -62,6 +62,15 @@ type Event struct {
 	} `json:"origin"`
 	PromptSource string `json:"promptSource,omitempty"`
 
+	// A system line's display text and level.
+	Content string `json:"content,omitempty"`
+	Level   string `json:"level,omitempty"`
+	// Records a refusal fallback took back, in the jsonl and stream-json
+	// spellings. A message's per-block uuids share the first retractPrefix
+	// characters.
+	Retracted     []string `json:"retractedMessageUuids,omitempty"`
+	RetractedWire []string `json:"retracted_message_uuids,omitempty"`
+
 	Raw json.RawMessage `json:"-"`
 }
 
@@ -213,7 +222,7 @@ func updateClaudeRuntime(runtime *core.SessionRuntime, raw json.RawMessage) {
 	if json.Unmarshal(raw, &msg) != nil {
 		return
 	}
-	if msg.Model != "" {
+	if msg.Model != "" && msg.Model != SyntheticModel {
 		runtime.Model = msg.Model
 	}
 	cached := msg.Usage.CacheCreation + msg.Usage.CacheRead
@@ -241,12 +250,18 @@ type bodyBlock struct {
 	Content   json.RawMessage `json:"content"`
 }
 
+// SyntheticModel marks messages Claude writes itself, such as API errors.
+const SyntheticModel = "<synthetic>"
+
 func parseBody(msg json.RawMessage) body {
 	var m struct {
 		Model   string      `json:"model"`
 		Content []bodyBlock `json:"content"`
 	}
 	err := json.Unmarshal(msg, &m)
+	if m.Model == SyntheticModel {
+		m.Model = ""
+	}
 	if err == nil {
 		return body{Model: m.Model, blocks: m.Content}
 	}
@@ -381,6 +396,8 @@ func IsTurnComplete(raw []byte) bool {
 type Assembler struct {
 	toolMap map[string]toolInfo
 	cur     *core.Turn
+	// lastModel is what a turn shows once its first records are retracted.
+	lastModel string
 }
 
 func NewAssembler() *Assembler {
@@ -403,6 +420,16 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 			Content: "Context compacted",
 			Time:    ev.Timestamp,
 		}), nil
+	}
+	if ev.Type == "system" && modelNotices[ev.Subtype] {
+		a.retract(append(ev.Retracted, ev.RetractedWire...))
+		if t := a.Flush(); t != nil {
+			completed = append(completed, *t)
+		}
+		if ev.Content != "" {
+			completed = append(completed, core.Turn{Role: "system", Content: ev.Content, Time: ev.Timestamp, Level: ev.Level})
+		}
+		return completed, nil
 	}
 	if ev.Type != "user" && ev.Type != "assistant" {
 		return nil, nil
@@ -484,6 +511,9 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 	} else if b.Model != "" && a.cur.Model == "" {
 		a.cur.Model = b.Model
 	}
+	if ev.Type == "assistant" && b.Model != "" {
+		a.lastModel = b.Model
+	}
 	// Track the turn's last event — its fork point and end time — even when
 	// the event contributes no visible part.
 	if ev.UUID != "" {
@@ -496,7 +526,7 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 		b.collectToolUses(a.toolMap)
 		// Append a text part (skip tool_use/thinking-only messages).
 		if text := b.joinedText(); text != "" {
-			p := core.TurnPart{Type: "text", Content: text}
+			p := core.TurnPart{Type: "text", Content: text, SourceUUID: ev.UUID}
 			a.cur.Parts = append(a.cur.Parts, p)
 			return nil, &p
 		}
@@ -512,7 +542,7 @@ func (a *Assembler) Feed(ev Event) (completed []core.Turn, part *core.TurnPart) 
 	}
 	p := core.NewToolPart(ti.name, ti.target, ti.input, content)
 	p.ContentKind = kind
-	p.ToolUseID, p.ToolError = tuID, failed
+	p.ToolUseID, p.ToolError, p.SourceUUID = tuID, failed, ev.UUID
 	a.cur.Parts = append(a.cur.Parts, p)
 	return nil, &p
 }
@@ -545,6 +575,37 @@ func (a *Assembler) Flush() *core.Turn {
 		return nil
 	}
 	return t
+}
+
+// modelNotices announce a turn moved to another model. A refusal with no
+// fallback shows as an API error message; its own notice is empty.
+var modelNotices = map[string]bool{
+	"model_refusal_fallback": true,
+	"model_fallback":         true,
+}
+
+const retractPrefix = 24
+
+// retract drops the in-progress turn's parts from the given records, as
+// Claude skips them on resume.
+func (a *Assembler) retract(uuids []string) {
+	if a.cur == nil || len(uuids) == 0 {
+		return
+	}
+	gone := make(map[string]bool, len(uuids))
+	for _, u := range uuids {
+		gone[u[:min(len(u), retractPrefix)]] = true
+	}
+	var kept []core.TurnPart
+	for _, p := range a.cur.Parts {
+		if p.SourceUUID == "" || !gone[p.SourceUUID[:min(len(p.SourceUUID), retractPrefix)]] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) < len(a.cur.Parts) {
+		a.cur.Model = a.lastModel
+	}
+	a.cur.Parts = kept
 }
 
 // compactTaskNotification rewrites Claude Code's self-injected

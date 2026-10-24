@@ -27,6 +27,7 @@ var sessionEvents = map[string]bool{
 	backend.EventTurnDelta:   true,
 	backend.EventTurnStatus:  true,
 	backend.EventTurnPrompt:  true,
+	backend.EventTurnNotice:  true,
 	backend.EventRuntime:     true,
 	core.EventRelayLanded:    true,
 }

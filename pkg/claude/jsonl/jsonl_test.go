@@ -762,6 +762,65 @@ func TestAssemblerProjectsCompactBoundaryAndKeepsSummary(t *testing.T) {
 	}
 }
 
+// The refused partial stays in the log; the notice names it by the shared
+// uuid prefix of its per-block uuids, on stream-json and in the jsonl alike.
+func TestAssemblerRetractsRefusedPartialOnFallbackNotice(t *testing.T) {
+	refused := `{"type":"assistant","uuid":"aaaaaaaa-1111-2222-3333-000000000001","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"refused partial"}]}}`
+	retry := `{"type":"assistant","uuid":"bbbbbbbb-1111-2222-3333-000000000001","message":{"model":"claude-sonnet-5-5","content":[{"type":"text","text":"retried"}]}}`
+	for name, notice := range map[string]string{
+		"jsonl":       `{"type":"system","subtype":"model_refusal_fallback","level":"warning","content":"Switched to Sonnet","originalModel":"claude-opus-5-5","fallbackModel":"claude-sonnet-5-5","retractedMessageUuids":["aaaaaaaa-1111-2222-3333-00000000000f"]}`,
+		"stream-json": `{"type":"system","subtype":"model_refusal_fallback","level":"warning","content":"Switched to Sonnet","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","retracted_message_uuids":["aaaaaaaa-1111-2222-3333-00000000000f"]}`,
+	} {
+		a := NewAssembler()
+		a.FeedLine([]byte(refused))
+		a.FeedLine([]byte(retry))
+		completed, _ := a.FeedLine([]byte(notice))
+		if len(completed) != 2 || completed[0].Role != "assistant" || completed[1].Role != "system" {
+			t.Fatalf("%s: completed = %+v", name, completed)
+		}
+		if parts := completed[0].Parts; len(parts) != 1 || parts[0].Content != "retried" {
+			t.Errorf("%s: parts = %+v", name, parts)
+		}
+		if completed[0].Model != "claude-sonnet-5-5" {
+			t.Errorf("%s: model = %q", name, completed[0].Model)
+		}
+		if completed[1].Content != "Switched to Sonnet" || completed[1].Level != "warning" {
+			t.Errorf("%s: notice = %+v", name, completed[1])
+		}
+	}
+}
+
+// The refusal shows once, as the API error message; the empty notice after
+// it adds nothing.
+func TestAssemblerShowsRefusalWithoutFallbackAsError(t *testing.T) {
+	a := NewAssembler()
+	completed, _ := a.FeedLine([]byte(`{"type":"assistant","isApiErrorMessage":true,"error":"invalid_request","message":{"role":"assistant","stop_reason":"refusal","content":[{"type":"text","text":"Opus 5.5's safeguards flagged this message."}]}}`))
+	notice, _ := a.FeedLine([]byte(`{"type":"system","subtype":"model_refusal_no_fallback","content":"","level":"warning","originalModel":"claude-opus-5-5"}`))
+	if len(completed) != 1 || completed[0].Role != "error" || len(notice) != 0 {
+		t.Fatalf("error = %+v, notice = %+v", completed, notice)
+	}
+}
+
+// Claude's own error messages carry no real model; a turn and the session
+// keep the model that last answered.
+func TestSyntheticModelIsIgnored(t *testing.T) {
+	a := NewAssembler()
+	a.FeedLine([]byte(`{"type":"assistant","uuid":"aaaaaaaa-1111-2222-3333-000000000001","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"partial"}]}}`))
+	a.FeedLine([]byte(`{"type":"user","uuid":"bbbbbbbb-1111-2222-3333-000000000001","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`))
+	a.FeedLine([]byte(`{"type":"assistant","uuid":"cccccccc-1111-2222-3333-000000000001","message":{"model":"<synthetic>","content":[{"type":"text","text":"later"}]}}`))
+	completed, _ := a.FeedLine([]byte(`{"type":"system","subtype":"model_refusal_fallback","content":"Switched","retractedMessageUuids":["aaaaaaaa-1111-2222-3333-000000000001"]}`))
+	if len(completed) == 0 || completed[0].Model != "claude-opus-5-5" {
+		t.Fatalf("turn model = %+v", completed)
+	}
+
+	var runtime core.SessionRuntime
+	updateClaudeRuntime(&runtime, json.RawMessage(`{"model":"claude-opus-5-5"}`))
+	updateClaudeRuntime(&runtime, json.RawMessage(`{"model":"<synthetic>"}`))
+	if runtime.Model != "claude-opus-5-5" {
+		t.Fatalf("session model = %q", runtime.Model)
+	}
+}
+
 func TestReadSessionMetaUsesLatestClaudeContext(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "session.jsonl")
 	data := strings.Join([]string{

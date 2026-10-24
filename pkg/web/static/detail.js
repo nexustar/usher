@@ -1168,6 +1168,9 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
     // Mid-turn the dispatching turn is still a live bubble with no cursor to
     // hang a reply on; its end fetches the transcript, which places it.
     'relay.landed': () => { if (detailStreaming) liveTurnDirty = true; else syncRouted(id); },
+    // A notice can retract parts already streamed (a refused partial), so the
+    // turn finalizes from the transcript.
+    'turn.notice': () => { if (detailStreaming) liveTurnDirty = true; else loadTranscript(id); },
     // Sent by the server on connect when the session is already mid-turn (the
     // started event predates this subscribe). beginTurn is idempotent, so if a
     // real turn.started also lands (connect raced the turn starting) it

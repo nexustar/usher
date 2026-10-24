@@ -1026,3 +1026,20 @@ func TestObserveMode(t *testing.T) {
 		t.Fatalf("plan report changed the approval to %q", got)
 	}
 }
+
+func TestRefusalFallbackReplacesSwitchedModel(t *testing.T) {
+	m := New("missing", "", "", nil, 1, nil, nil)
+	p := &process{id: "s", lastUsed: time.Now(), logger: slog.Default()}
+	m.processes["s"] = p
+	m.runtimes["s"] = Runtime{Model: "claude-opus-5-5", Effort: "high"}
+	writeFrames(t, m, p,
+		`{"type":"system","subtype":"model_refusal_fallback","scope":"local","original_model":"claude-opus-5-5","fallback_model":"claude-haiku-5-5"}`)
+	if got := m.runtimes["s"]; got.Model != "claude-opus-5-5" {
+		t.Fatalf("local fallback changed the session model: %+v", got)
+	}
+	writeFrames(t, m, p,
+		`{"type":"system","subtype":"model_refusal_fallback","scope":"session","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5"}`)
+	if got := m.runtimes["s"]; got != (Runtime{Model: "claude-sonnet-5-5", Effort: "high"}) {
+		t.Fatalf("runtime = %+v", got)
+	}
+}

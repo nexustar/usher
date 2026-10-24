@@ -44,6 +44,8 @@ type TurnPart struct {
 	// ToolUseID is parser bookkeeping used to join metadata follow-ups to the
 	// tool part they enrich. It is never part of the public transcript shape.
 	ToolUseID string `json:"-"`
+	// SourceUUID is the log record the part came from.
+	SourceUUID string `json:"-"`
 	// Questions a text part asks without waiting for the answer; the router
 	// raises them as an interaction. Content already carries them as text.
 	Questions []Question `json:"-"`
@@ -97,6 +99,8 @@ type Turn struct {
 	// Origin names what sent a user turn the user did not type, in the
 	// backend's own words (Claude: "task-notification").
 	Origin string `json:"origin,omitempty"`
+	// Level is "warning" on a system turn the user should not miss.
+	Level string `json:"level,omitempty"`
 	// Cursor names a turn read back from a log; opaque, stable as the log grows.
 	Cursor  string    `json:"cursor,omitempty"`
 	EndTime time.Time `json:"-"`

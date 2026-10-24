@@ -583,6 +583,21 @@ func claudeMode(approval string) string {
 	return "default"
 }
 
+// observeFallback keeps a model switched to earlier from undoing a refusal
+// fallback at the next spawn.
+func (m *Manager) observeFallback(p *process, from, to, category string) {
+	p.logger.Info("model fell back after a refusal", "from", from, "to", to, "category", category)
+	if to == "" {
+		return
+	}
+	m.mu.Lock()
+	if rt := m.runtimes[p.id]; rt.Model != "" {
+		rt.Model = to
+		m.runtimes[p.id] = rt
+	}
+	m.mu.Unlock()
+}
+
 // observeMode records the approval of a mode Claude reports switching to,
 // unless the session's approval already means it. A mode with no approval,
 // such as plan, leaves it alone.
@@ -797,6 +812,10 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			Error       string `json:"error"`
 			// On init and on every status after a switch.
 			PermissionMode string `json:"permissionMode"`
+			Scope          string `json:"scope"`
+			OriginalModel  string `json:"original_model"`
+			FallbackModel  string `json:"fallback_model"`
+			RefusalKind    string `json:"api_refusal_category"`
 		}
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
@@ -808,6 +827,10 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		if e.Type == "system" {
 			trackTask(p, e.Subtype, e.TaskID, e.TaskType, e.Patch.Status)
 			m.observeMode(p.id, e.PermissionMode)
+		}
+		// A "local" fallback served only a subagent or side question.
+		if e.Type == "system" && e.Subtype == "model_refusal_fallback" && e.Scope != "local" {
+			m.observeFallback(p, e.OriginalModel, e.FallbackModel, e.RefusalKind)
 		}
 		if e.Type == "system" && e.Subtype == "init" {
 			skills := make(map[string]struct{}, len(e.Skills))
@@ -891,7 +914,7 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			default:
 			}
 		}
-		if len(p.turns) > 0 && e.Message.Model != "" {
+		if len(p.turns) > 0 && e.Message.Model != "" && e.Message.Model != jsonl.SyntheticModel {
 			p.turns[0].model = e.Message.Model
 		}
 		p.mu.Unlock()

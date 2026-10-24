@@ -396,6 +396,10 @@ export function appendChatMessage(m, beforeNode) {
     div.innerHTML =
       `<div class="content turn-error">${esc(m.content || '')}</div>` +
       `<div class="role">${ts}</div>`;
+  } else if (role === 'system') {
+    div.innerHTML =
+      `<div class="content notice${m.level === 'warning' ? ' warning' : ''}">${esc(m.content || '')}</div>` +
+      `<div class="role">${ts}</div>`;
   } else {
     // User or streaming placeholder (flat content).
     div.innerHTML =

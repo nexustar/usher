@@ -69,7 +69,8 @@
   --danger: #cf222e;
   --danger-fill: #cf222e;       /* filled buttons, under white text */
   --danger-text: #b42318;
-  --warning-text: #8a6700;
+  --caution-text: #8a6700;
+  --warning-text: #a85400;
   --live-dot: #1f9e53; /* green for the session status dot */
   --unread: var(--accent-fill); /* status dot for a session with an unseen response */
 
@@ -1183,6 +1184,13 @@ pre.raw-markdown {
 }
 .chat-message .turn-error::before { content: "■ "; }
 .chat-message.error .role .ts { margin-left: 0; }
+.chat-message .notice {
+  color: var(--text-faint);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-message .notice.warning { color: var(--warning-text); }
+.chat-message.system .role .ts { margin-left: 0; }
 .chat-message.system.compaction {
   display: flex;
   align-items: center;
@@ -1436,7 +1444,7 @@ pre.raw-markdown {
 }
 @keyframes upload-spin { to { transform: rotate(1turn); } }
 .upload-btn { color: var(--text); }
-.approval-toggle[data-approval="auto"] { color: var(--warning-text); }
+.approval-toggle[data-approval="auto"] { color: var(--caution-text); }
 .approval-toggle[data-approval="full"] { color: var(--danger-text); }
 .approval-wrap { position: relative; display: inline-flex; }
 .approval-wrap[hidden] { display: none; }
@@ -2521,7 +2529,8 @@ pre.raw-markdown {
     --danger: #f85149;
     --danger-fill: #da3633;
     --danger-text: #ff7b72;
-    --warning-text: #d29922;
+    --caution-text: #d29922;
+    --warning-text: #e8913a;
     --live-dot: #56d98e; /* green for the session status dot */
 
     --shadow-sidebar: rgba(0, 0, 0, 0.5);

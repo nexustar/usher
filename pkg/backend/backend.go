@@ -37,6 +37,7 @@ const (
 	EventRuntime     = "session.runtime"
 	EventTurnPrompt  = "turn.prompt"
 	EventTurnPart    = "turn.part"
+	EventTurnNotice  = "turn.notice"
 )
 
 // AbortedTurnMessage is the live wording for a turn that ended without

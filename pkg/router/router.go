@@ -1222,6 +1222,8 @@ func (r *Router) failSend(sessionID string, tok *sendToken, err error) {
 //   - "turn.prompt": a canonical user turn hit the jsonl (the prompt usher just
 //     injected, or one queued from another frontend mid-turn). Carries the
 //     persisted timestamp, so clients can stamp their optimistic echo.
+//   - "turn.notice": a system turn, such as a refusal moving the session to
+//     a fallback model. Its transcript may have retracted parts already sent.
 //
 // Returns the appended part (nil otherwise) so callers that accumulate the
 // turn's text (CreateSession) don't re-parse the payload.
@@ -1279,6 +1281,13 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 		}
 	}
 	for _, t := range completed {
+		if t.Role == "system" {
+			raw, mErr := json.Marshal(t)
+			if mErr == nil {
+				r.broker.Publish(broker.Event{SessionID: sessionID, Type: backendpkg.EventTurnNotice, Raw: raw})
+			}
+			continue
+		}
 		if t.Role != "user" {
 			// Assistant turns are finalized client-side by the turn-end
 			// transcript truth-up; no event needed.
