@@ -164,7 +164,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	webSrv := &http.Server{
 		Addr:              s.addr,
-		Handler:           gzipMiddleware(crossOriginGuard(s.authMiddleware(apiHandler))),
+		Handler:           s.hostGuard(gzipMiddleware(crossOriginGuard(s.authMiddleware(apiHandler)))),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -266,6 +266,34 @@ func readOnlyMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostGuard refuses host names other than localhost while no password is set.
+// A page whose DNS name is rebound to a loopback listener is same-origin with
+// it, so neither the cross-origin guard nor a cookie would stop it.
+func (s *Server) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (s.auth == nil || !s.auth.IsConfigured()) && !localHost(r.Host) {
+			api.WriteError(w, http.StatusForbidden, "host "+r.Host+" is refused without a password; open usher by IP or localhost, or set a password")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// localHost reports whether a Host header names an IP address or localhost —
+// names that DNS rebinding cannot take over.
+func localHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if host == "" || net.ParseIP(host) != nil {
+		return true
+	}
+	host = strings.ToLower(host)
+	return host == "localhost" || strings.HasSuffix(host, ".localhost")
 }
 
 // crossOriginGuard rejects state-changing requests a browser sent from

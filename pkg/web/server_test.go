@@ -274,6 +274,41 @@ func TestCrossOriginGuard(t *testing.T) {
 	}
 }
 
+func TestHostGuard(t *testing.T) {
+	store, err := auth.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{auth: store}).hostGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	status := func(host string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	allowed := []string{"127.0.0.1:7777", "localhost:7777", "LOCALHOST", "app.localhost:7777", "[::1]:7777", "::1", "192.168.1.5:7777", "100.64.0.1"}
+	refused := []string{"evil.example:7777", "evil.example", "127.0.0.1.nip.io:7777", "localhost.evil.example"}
+	for _, host := range allowed {
+		if got := status(host); got != http.StatusOK {
+			t.Errorf("no password, %s = %d, want 200", host, got)
+		}
+	}
+	for _, host := range refused {
+		if got := status(host); got != http.StatusForbidden {
+			t.Errorf("no password, %s = %d, want 403", host, got)
+		}
+	}
+	if err := store.SetPassword("pw"); err != nil {
+		t.Fatal(err)
+	}
+	if got := status("usher.example:443"); got != http.StatusOK {
+		t.Errorf("with password, named host = %d, want 200", got)
+	}
+}
+
 func TestAuthMiddlewareAnswersAPICallsWithJSON(t *testing.T) {
 	store, err := auth.Load(t.TempDir())
 	if err != nil {

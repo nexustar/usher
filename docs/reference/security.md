@@ -28,6 +28,9 @@ usher refuses to bind directly to a non-loopback address unless a password is
 configured. A reverse proxy or tunnel connecting to loopback does not trigger
 that check, so remote-access setups must set a password explicitly.
 
+Without a password, usher only answers requests addressed to `localhost` or
+an IP address; reaching it by host name (a tunnel, MagicDNS) needs a password.
+
 ## Agent permissions
 
 The web permission UI supervises agent requests; it does not protect the
