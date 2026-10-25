@@ -223,6 +223,7 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 			Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: claudeModels,
 		})
 		logger.Info("claude backend enabled", "sessions_dir", dir)
+		checkCLI("claude", o.ClaudeCmd, o.ReadOnly, logger)
 	}
 	if dir := o.CodexSessionsDir; sessionsDir(dir, o.CodexCmd, logger) {
 		// codex's per-account model catalog sits next to the sessions dir.
@@ -234,6 +235,7 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 			Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}, Replier: transcript.Codex{},
 		})
 		logger.Info("codex backend enabled", "sessions_dir", dir)
+		checkCLI("codex", o.CodexCmd, o.ReadOnly, logger)
 	}
 	if dir := o.PiSessionsDir; sessionsDir(dir, o.PiCmd, logger) {
 		extra := append([]string(nil), o.PiArgs...)
@@ -263,6 +265,7 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 			Forker: piRuntime, Renamer: piRuntime, Models: piModels,
 		})
 		logger.Info("pi backend enabled", "sessions_dir", dir)
+		checkCLI("pi", o.PiCmd, o.ReadOnly, logger)
 	}
 
 	env := Env{Options: o, HookSocket: hookSock, Interactions: h, Logger: logger}
@@ -468,6 +471,20 @@ func addrIsLoopback(addr string) bool {
 func isDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
+}
+
+// checkCLI warns at startup when an enabled backend's CLI is not on PATH,
+// which would otherwise surface only at the first spawn.
+func checkCLI(name, cmd string, readOnly bool, logger *slog.Logger) {
+	if readOnly {
+		return
+	}
+	path, err := exec.LookPath(cmd)
+	if err != nil {
+		logger.Warn("backend CLI not found; its sessions cannot start", "backend", name, "cmd", cmd, "PATH", os.Getenv("PATH"))
+		return
+	}
+	logger.Debug("backend CLI", "backend", name, "path", path)
 }
 
 // sessionsDir reports whether dir exists, creating it when cmd is installed.

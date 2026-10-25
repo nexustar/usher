@@ -57,6 +57,9 @@ go install github.com/nexustar/usher/cmd/usher@latest
 usher serve
 ```
 
+To upgrade later, re-run the same command. Restarting interrupts any turn in
+progress.
+
 Open <http://127.0.0.1:7777>. Each backend is enabled automatically when its
 session directory exists, and existing sessions appear without an import step.
 Run `usher serve -h` for the complete option list.

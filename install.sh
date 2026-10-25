@@ -5,7 +5,9 @@
 #
 # What it does:
 #   1. Downloads the latest release binary to ~/.local/bin/usher (override with USHER_INSTALL_DIR)
-#   2. Installs a user-level service (launchd on macOS, systemd on Linux)
+#   2. Installs and (re)starts a user-level service (launchd on macOS, systemd on Linux)
+#
+# Re-run to upgrade.
 #
 # To uninstall:
 #   usher setup --remove
@@ -51,15 +53,41 @@ detect_platform() {
 
 # --- download ---------------------------------------------------------------
 
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  else
+    shasum -a 256 "$1"
+  fi | cut -d' ' -f1
+}
+
 download_binary() {
   need curl
 
-  local url="https://github.com/${REPO}/releases/latest/download/usher-${PLATFORM}"
+  local base="https://github.com/${REPO}/releases/latest/download"
+  local name="usher-${PLATFORM}"
+  local bin="${INSTALL_DIR}/usher"
   mkdir -p "$INSTALL_DIR"
 
-  info "Downloading usher-${PLATFORM} → ${INSTALL_DIR}/usher"
-  curl -fSL --progress-bar "$url" -o "${INSTALL_DIR}/usher"
-  chmod +x "${INSTALL_DIR}/usher"
+  # rename over the running binary; writing it in place fails (text file busy)
+  TMP_BIN="$(mktemp "${INSTALL_DIR}/.usher-install.XXXXXX")"
+  trap 'rm -f "$TMP_BIN"' EXIT
+
+  info "Downloading ${name} → ${bin}"
+  curl -fSL --progress-bar "${base}/${name}" -o "$TMP_BIN"
+
+  local want got
+  want="$(curl -fsSL "${base}/checksums.txt" | awk -v n="$name" '$2 == n || $2 == "*" n { print $1 }')"
+  [ -n "$want" ] || die "no checksum for ${name} in the release's checksums.txt"
+  got="$(sha256_of "$TMP_BIN")"
+  [ "$got" = "$want" ] || die "checksum mismatch for ${name} (got ${got}, want ${want})"
+
+  chmod 755 "$TMP_BIN"
+  if [ -f "$bin" ]; then
+    cp -p "$bin" "${bin}.prev"
+    info "Previous binary kept as ${bin}.prev"
+  fi
+  mv -f "$TMP_BIN" "$bin"
 }
 
 # --- ensure PATH ------------------------------------------------------------
@@ -89,6 +117,32 @@ ensure_path() {
   fi
 }
 
+# --- service environment ----------------------------------------------------
+
+# service_path is this terminal's PATH, install dir first, deduplicated.
+service_path() {
+  local out="$INSTALL_DIR" dir dirs
+  IFS=: read -r -a dirs <<< "$PATH"
+  for dir in ${dirs[@]+"${dirs[@]}"}; do
+    [ -n "$dir" ] || continue
+    case ":${out}:" in *":${dir}:"*) continue ;; esac
+    out="${out}:${dir}"
+  done
+  printf '%s' "$out"
+}
+
+# warn_unshared_env names variables the service won't get; names only, as
+# values may be secrets.
+warn_unshared_env() {
+  local names
+  names="$(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' |
+    grep -E '^([A-Za-z]+_(PROXY|proxy)|NODE_EXTRA_CA_CERTS|ANTHROPIC_[A-Z0-9_]+|OPENAI_[A-Z0-9_]+|CLAUDE_CODE_USE_[A-Z0-9_]+|AWS_[A-Z0-9_]+)$' |
+    sort -u | tr '\n' ' ' || true)"
+  [ -n "$names" ] || return 0
+  info "Set in this shell but not passed to the service: ${names}"
+  info "  If the agents need them, add them to $1 (secrets in a file only you can read)"
+}
+
 # --- service install --------------------------------------------------------
 
 install_service_darwin() {
@@ -98,14 +152,8 @@ install_service_darwin() {
 
   mkdir -p "$plist_dir"
 
-  # Collect PATH dirs that contain claude / codex / usher.
-  local svc_path=""
-  for cmd in claude codex; do
-    local p
-    p="$(command -v "$cmd" 2>/dev/null || true)"
-    [ -n "$p" ] && svc_path="${svc_path:+${svc_path}:}$(dirname "$p")"
-  done
-  svc_path="${svc_path:+${svc_path}:}${INSTALL_DIR}:/usr/bin:/bin"
+  local svc_path
+  svc_path="$(service_path | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
 
   cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -140,6 +188,7 @@ EOF
   launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$plist"
   info "LaunchAgent installed and started"
+  warn_unshared_env "$plist"
   info "  Logs: /tmp/usher.log"
   info "  Stop: launchctl bootout gui/$(id -u) ${plist}"
 }
@@ -151,14 +200,8 @@ install_service_linux() {
 
   need systemctl
 
-  # Collect PATH dirs that contain claude / codex / usher.
-  local svc_path=""
-  for cmd in claude codex; do
-    local p
-    p="$(command -v "$cmd" 2>/dev/null || true)"
-    [ -n "$p" ] && svc_path="${svc_path:+${svc_path}:}$(dirname "$p")"
-  done
-  svc_path="${svc_path:+${svc_path}:}${INSTALL_DIR}:/usr/bin:/bin"
+  local svc_path
+  svc_path="$(service_path | sed -e 's/%/%%/g')"
 
   mkdir -p "$unit_dir"
 
@@ -172,18 +215,20 @@ Type=simple
 ExecStart=${bin} serve
 Restart=on-failure
 RestartSec=3
-Environment=PATH=${svc_path}
+Environment="PATH=${svc_path}"
 
 [Install]
 WantedBy=default.target
 EOF
 
   systemctl --user daemon-reload
-  systemctl --user enable --now usher
+  systemctl --user enable usher
+  systemctl --user restart usher  # `enable --now` is a no-op if already running
   if [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" != "Linger=yes" ]; then
     info "To keep usher running after logout: sudo loginctl enable-linger $USER"
   fi
   info "systemd user service installed and started"
+  warn_unshared_env "$unit"
   info "  Logs: journalctl --user -u usher -f"
   info "  Stop: systemctl --user disable --now usher"
 }

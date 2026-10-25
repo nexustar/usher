@@ -5,7 +5,7 @@
   macOS LaunchAgent for usher.
 
   1. Copy to ~/Library/LaunchAgents/ and edit the paths below.
-  2. Ensure PATH includes your CLI (claude / codex).
+  2. Set PATH below to `echo $PATH` from your terminal (redo after nvm etc.).
   3. Load:   launchctl load ~/Library/LaunchAgents/io.github.nexustar.usher.plist
      Unload: launchctl unload ~/Library/LaunchAgents/io.github.nexustar.usher.plist
      Status: launchctl list | grep usher
@@ -20,7 +20,7 @@
     <!-- Change to the actual path of your usher binary. -->
     <string>/Users/YOU/go/bin/usher</string>
     <string>serve</string>
-    <!-- Add flags here, e.g. <string>--agent-mode</string><string>llm</string> -->
+    <!-- Add flags here, e.g. <string>--auto-pause</string><string>10m</string> -->
   </array>
 
   <key>RunAtLoad</key>
@@ -37,14 +37,13 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- Must include dirs for claude/codex CLIs and usher itself. -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>/Users/YOU</string>
-    <!-- Uncomment for LLM agent mode:
-    <key>OPENAI_API_KEY</key>
-    <string>sk-xxx</string>
+    <!-- Other variables the agents need; chmod 600 this file for secrets.
+    <key>NAME</key>
+    <string>value</string>
     -->
   </dict>
 </dict>

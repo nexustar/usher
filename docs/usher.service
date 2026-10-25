@@ -1,7 +1,7 @@
 # systemd user service for usher.
 #
 # 1. Copy to ~/.config/systemd/user/usher.service and edit paths below.
-# 2. Ensure PATH includes your CLI (claude / codex).
+# 2. Set PATH below to `echo $PATH` from your terminal (redo after nvm etc.).
 # 3. Enable:
 #      systemctl --user daemon-reload
 #      systemctl --user enable --now usher
@@ -20,8 +20,9 @@ ExecStart=%h/go/bin/usher serve
 Restart=on-failure
 RestartSec=3
 Environment=PATH=%h/go/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-# Uncomment for LLM agent mode:
-# Environment=OPENAI_API_KEY=sk-xxx
+# Other variables the agents need; secrets go in a chmod 600 file:
+# Environment=NAME=value
+# EnvironmentFile=%h/.config/usher/env
 
 [Install]
 WantedBy=default.target
