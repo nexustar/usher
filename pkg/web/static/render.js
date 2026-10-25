@@ -38,12 +38,14 @@ window.marked.use({
       const href = String(token.href || '');
       const alt = String(token.text || '');
       const title = token.title ? ' title="' + esc(String(token.title)) + '"' : '';
-      // A relative/absolute filesystem path in a session transcript is served
-      // through the same authenticated, contained endpoint as show_image.
-      // URLs and hash references retain normal Markdown behavior.
-      const external = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(href);
-      if (currentDetailId && href && !external) return sessionImageHTML(href, alt, title);
-      return '<img src="' + esc(href) + '" alt="' + esc(alt) + '"' + title + imgFallback + '>';
+      // A filesystem path (or file: URL) in a session transcript is served
+      // through the same endpoint as show_image. A remote image is only a
+      // link: loading it on render would let a prompt-injected agent send
+      // data to any host.
+      const path = /^file:\/\//i.test(href) ? fileURLPath(href) : href;
+      const external = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(path);
+      if (currentDetailId && path && !external) return sessionImageHTML(path, alt, title);
+      return remoteImageHTML(href, alt);
     },
   },
 });
@@ -98,6 +100,23 @@ function hashString(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = Math.imul(h, 31) + s.charCodeAt(i) | 0;
   return (h >>> 0).toString(36);
+}
+
+function fileURLPath(href) {
+  try {
+    return decodeURIComponent(new URL(href).pathname);
+  } catch {
+    return href;
+  }
+}
+
+function remoteImageHTML(href, alt) {
+  let host = '';
+  try {
+    host = new URL(href, location.href).host;
+  } catch { /* shown without a host */ }
+  return '<a class="remote-image" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer">' +
+    'Image' + (alt ? ': ' + esc(alt) : '') + (host ? ' (' + esc(host) + ')' : '') + '</a>';
 }
 
 function sessionImageHTML(path, alt, titleAttr) {

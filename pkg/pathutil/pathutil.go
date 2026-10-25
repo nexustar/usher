@@ -1,7 +1,5 @@
-// Package pathutil holds path-safety helpers shared across usher. Keeping the
-// containment check in one place avoids divergence between the web image
-// endpoint and the Telegram image mirror — both must resolve a user-supplied
-// path strictly inside a session's working directory.
+// Package pathutil resolves the image references a session's transcript
+// makes, shared by the web image endpoint and the chat mirrors.
 package pathutil
 
 import (
@@ -10,46 +8,42 @@ import (
 	"strings"
 )
 
-// ResolveWithinDir resolves rel (absolute, or relative to dir) and returns the
-// real path only if it lies inside dir after symlink evaluation. The lexical
-// check defends against ../ in rel; the EvalSymlinks check defends against a
-// symlink inside dir pointing out. Both the file and dir must exist.
-func ResolveWithinDir(dir, rel string) (string, bool) {
-	if dir == "" || rel == "" {
+// ResolveImagePath finds the file an image reference points at — an absolute
+// path, ~/…, or a path relative to cwd or one of extraDirs, tried in order —
+// and returns its real path. It confines nothing: whoever reaches it can
+// already read the user's files, so callers restrict what they serve (raster
+// types only), not where it lives.
+func ResolveImagePath(cwd, ref string, extraDirs ...string) (string, bool) {
+	if ref == "" {
 		return "", false
 	}
-	full := rel
-	if !filepath.IsAbs(full) {
-		full = filepath.Join(dir, rel)
+	if rest, ok := strings.CutPrefix(ref, "~/"); ok {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", false
+		}
+		ref = filepath.Join(home, rest)
 	}
-	full = filepath.Clean(full)
-	if !withinDir(dir, full) {
-		return "", false
+	if filepath.IsAbs(ref) {
+		return realPath(ref)
 	}
-	realFull, err := filepath.EvalSymlinks(full)
-	if err != nil {
-		return "", false
-	}
-	realDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return "", false
-	}
-	if !withinDir(realDir, realFull) {
-		return "", false
-	}
-	return realFull, true
-}
-
-func ResolveImagePath(cwd, rel string, extraDirs ...string) (string, bool) {
-	if p, ok := ResolveWithinDir(cwd, rel); ok {
-		return p, true
-	}
-	for _, dir := range extraDirs {
-		if p, ok := ResolveWithinDir(dir, rel); ok {
+	for _, dir := range append([]string{cwd}, extraDirs...) {
+		if dir == "" {
+			continue
+		}
+		if p, ok := realPath(filepath.Join(dir, ref)); ok {
 			return p, true
 		}
 	}
-	return ResolveWithinDir("/tmp", rel)
+	return "", false
+}
+
+func realPath(p string) (string, bool) {
+	real, err := filepath.EvalSymlinks(filepath.Clean(p))
+	if err != nil {
+		return "", false
+	}
+	return real, true
 }
 
 // CodexGeneratedImagesDir returns the directory where Codex persists images
@@ -69,12 +63,4 @@ func CodexGeneratedImagesDir(sessionID string) string {
 		root = filepath.Join(home, ".codex")
 	}
 	return filepath.Join(root, "generated_images", sessionID)
-}
-
-func withinDir(dir, path string) bool {
-	rp, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rp != ".." && !strings.HasPrefix(rp, ".."+string(filepath.Separator))
 }

@@ -64,8 +64,9 @@ var imageContentTypes = map[string]string{
 	".webp": "image/webp",
 }
 
-// handleImage serves an image file from a session's working directory or
-// /tmp.
+// handleImage serves an image a session refers to. Any path resolves; only
+// raster types are served, with a forced type and no scripting, so a file
+// never runs as a page in usher's origin.
 func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, ok := s.Router.GetSession(id)
@@ -83,8 +84,8 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusForbidden, "not a supported image type")
 		return
 	}
-	// Beyond the cwd: this session's uploads, the pre-session uploads its
-	// first message points at, Codex's generated images.
+	// Relative paths fall back from the cwd to this session's uploads, the
+	// pre-session uploads its first message points at, Codex's generated images.
 	full, ok := pathutil.ResolveImagePath(sess.Cwd, rel,
 		filepath.Join(s.AttachmentsDir, id),
 		filepath.Join(s.AttachmentsDir, draftsDir),
@@ -106,6 +107,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("Cache-Control", "private, max-age=60")
 	http.ServeContent(w, r, filepath.Base(full), info.ModTime(), f)
 }

@@ -139,7 +139,10 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]U
 
 // SendMessage posts a message, optionally into a forum topic and/or with an
 // inline keyboard. It returns the sent Message so callers can track ids.
+// Link previews are off: Telegram's servers would fetch the first URL in an
+// agent's text, which a prompt-injected agent can point anywhere.
 func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (Message, error) {
+	p.LinkPreviewOptions = &LinkPreviewOptions{IsDisabled: true}
 	var m Message
 	err := c.do(ctx, "sendMessage", p, &m)
 	return m, err

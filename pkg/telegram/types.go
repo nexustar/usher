@@ -105,6 +105,12 @@ type SendMessageParams struct {
 	// recipient's device). usher uses it for the streamed assistant-text mirror,
 	// reserving an audible ping for turn completion and permission prompts.
 	DisableNotification bool `json:"disable_notification,omitempty"`
+	// LinkPreviewOptions is always set by Client.SendMessage.
+	LinkPreviewOptions *LinkPreviewOptions `json:"link_preview_options,omitempty"`
+}
+
+type LinkPreviewOptions struct {
+	IsDisabled bool `json:"is_disabled"`
 }
 
 // SendPhotoParams are the fields usher sets on a multipart sendPhoto. The photo

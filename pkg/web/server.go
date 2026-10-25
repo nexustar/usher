@@ -164,7 +164,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	webSrv := &http.Server{
 		Addr:              s.addr,
-		Handler:           s.hostGuard(gzipMiddleware(crossOriginGuard(s.authMiddleware(apiHandler)))),
+		Handler:           s.hostGuard(contentSecurityPolicy(gzipMiddleware(crossOriginGuard(s.authMiddleware(apiHandler))))),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -294,6 +294,15 @@ func localHost(hostport string) bool {
 	}
 	host = strings.ToLower(host)
 	return host == "localhost" || strings.HasSuffix(host, ".localhost")
+}
+
+// contentSecurityPolicy keeps the page from loading images off-origin, a
+// channel a prompt-injected agent could send data out through.
+func contentSecurityPolicy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "img-src 'self' data: blob:")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // crossOriginGuard rejects state-changing requests a browser sent from

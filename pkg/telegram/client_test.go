@@ -85,3 +85,18 @@ func TestAPIError(t *testing.T) {
 		t.Errorf("Error() should name the method: %s", apiErr.Error())
 	}
 }
+
+func TestSendMessageDisablesLinkPreviews(t *testing.T) {
+	var got map[string]any
+	c := newTestClient(t, func(_ string, body map[string]any) (bool, any, string, int) {
+		got = body
+		return true, Message{MessageID: 1}, "", 0
+	})
+	if _, err := c.SendMessage(context.Background(), SendMessageParams{ChatID: 1, Text: "see https://example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	opts, _ := got["link_preview_options"].(map[string]any)
+	if opts["is_disabled"] != true {
+		t.Fatalf("link_preview_options = %v", got["link_preview_options"])
+	}
+}

@@ -567,7 +567,7 @@ func (h *Hub) mirrorImage(ctx context.Context, sessionID, root, ref string) {
 	}
 	full, ok := pathutil.ResolveImagePath(sess.Cwd, ref, pathutil.CodexGeneratedImagesDir(sessionID))
 	if !ok {
-		h.logger.Warn("lark: image outside allowed dirs", "session", sessionID, "path", ref)
+		h.logger.Warn("lark: image not found", "session", sessionID, "path", ref)
 		return
 	}
 	if !imutil.ImageExts[strings.ToLower(filepath.Ext(full))] {

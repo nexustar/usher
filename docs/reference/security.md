@@ -78,11 +78,12 @@ If you need isolation from local code, use a dedicated user, container, virtual
 machine, or sandbox. An editor exposed through the same host should be treated
 as shell access and protected independently.
 
-usher also is not a filesystem security API. It does not provide arbitrary file
-reading or directory-listing endpoints. Its explicit exceptions — uploaded
-files, transcript image references, editor deep links, and one constrained tmux
-shell per conversation — are convenience features inside the same single-user
-trust boundary.
+usher also is not a filesystem security API. It has no directory-listing
+endpoint; the image endpoint serves any raster image the usher user can read,
+and remote images in a transcript render as links rather than load. Its
+explicit exceptions — uploaded files, transcript image references, editor deep
+links, and one constrained tmux shell per conversation — are convenience
+features inside the same single-user trust boundary.
 
 ## Project trust
 
