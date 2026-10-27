@@ -334,3 +334,118 @@ func TestAuthMiddlewareAnswersAPICallsWithJSON(t *testing.T) {
 		t.Errorf("page load = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+func TestProxyAuth(t *testing.T) {
+	store, err := auth.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPassword("pw"); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	s := &Server{
+		auth:   store,
+		proxy:  ProxyAuth{Header: "X-Forwarded-Email"},
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := s.authMiddleware(ok)
+	status := func(method, path string, hdr map[string]string) int {
+		req := httptest.NewRequest(method, path, nil)
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	user := map[string]string{"X-Forwarded-Email": "alice"}
+	cases := []struct {
+		name, method, path string
+		hdr                map[string]string
+		want               int
+	}{
+		{"signed in", http.MethodGet, "/api/v1/sessions", user, http.StatusOK},
+		{"state change", http.MethodPost, "/api/v1/sessions", user, http.StatusOK},
+		{"no header", http.MethodGet, "/api/v1/sessions", nil, http.StatusUnauthorized},
+		{"page without header", http.MethodGet, "/settings", nil, http.StatusUnauthorized},
+		{"blank header", http.MethodGet, "/api/v1/sessions", map[string]string{"X-Forwarded-Email": " "}, http.StatusUnauthorized},
+		{"healthz exempt", http.MethodGet, "/healthz", nil, http.StatusOK},
+	}
+	for _, c := range cases {
+		if got := status(c.method, c.path, c.hdr); got != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
+		}
+	}
+	if !strings.Contains(logs.String(), "actor=alice") || !strings.Contains(logs.String(), "method=POST") {
+		t.Errorf("state change not logged with actor: %q", logs.String())
+	}
+	if strings.Contains(logs.String(), "method=GET") {
+		t.Errorf("read logged: %q", logs.String())
+	}
+
+	// The password store is not consulted: a login cookie alone is refused.
+	cookie, err := store.IssueCookie()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("cookie without header = %d, want 401", rec.Code)
+	}
+
+	// /login sends the browser back through the proxy to the page it wanted.
+	rec = httptest.NewRecorder()
+	s.handleLogin(rec, httptest.NewRequest(http.MethodGet, "/login?next=/sessions/abc", nil))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/sessions/abc" {
+		t.Errorf("login = %d %q, want 303 /sessions/abc", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = httptest.NewRecorder()
+	s.handleLogout(rec, httptest.NewRequest(http.MethodGet, "/logout", nil))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+		t.Errorf("logout without url = %d %q, want 303 /", rec.Code, rec.Header().Get("Location"))
+	}
+	s.proxy.LogoutURL = "https://sso.example/logout"
+	rec = httptest.NewRecorder()
+	s.handleLogout(rec, httptest.NewRequest(http.MethodGet, "/logout", nil))
+	if rec.Header().Get("Location") != s.proxy.LogoutURL {
+		t.Errorf("logout = %q, want %q", rec.Header().Get("Location"), s.proxy.LogoutURL)
+	}
+
+	// Named hosts are served.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	req.Host = "usher.example"
+	rec = httptest.NewRecorder()
+	s.hostGuard(ok).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("named host = %d, want 200", rec.Code)
+	}
+}
+
+func TestLogoutURL(t *testing.T) {
+	store, err := auth.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Server{auth: store}).logoutURL(); got != "" {
+		t.Errorf("no auth = %q, want hidden", got)
+	}
+	if err := store.SetPassword("pw"); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Server{auth: store}).logoutURL(); got != "/logout" {
+		t.Errorf("password = %q, want /logout", got)
+	}
+	gw := ProxyAuth{Header: "X-Forwarded-Email"}
+	if got := (&Server{auth: store, proxy: gw}).logoutURL(); got != "" {
+		t.Errorf("proxy without logout url = %q, want hidden", got)
+	}
+	gw.LogoutURL = "https://sso.example/logout"
+	if got := (&Server{proxy: gw}).logoutURL(); got != gw.LogoutURL {
+		t.Errorf("proxy = %q, want %q", got, gw.LogoutURL)
+	}
+}

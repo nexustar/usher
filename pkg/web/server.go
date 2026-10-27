@@ -4,7 +4,8 @@
 //
 //   - the **web** listener (TCP at s.addr) serves the SPA, JSON API, SSE
 //     stream, and /login. Every non-exempt request is gated by auth
-//     middleware when a password is configured.
+//     middleware when a password is configured or a proxy header is
+//     trusted.
 //   - the **hook** listener (Unix socket at s.hookSockPath, mode 0600)
 //     serves only /hook/{event}. Hook traffic from the local `usher hook`
 //     subprocess never touches the public TCP port, so it doesn't need
@@ -53,10 +54,22 @@ func init() {
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 }
 
+// ProxyAuth signs a request in by the identity header an authenticating
+// proxy sets, in place of the password. Nothing but the proxy may be able to
+// reach the listener.
+type ProxyAuth struct {
+	// Header carries the signed-in user, e.g. X-Consumer-Username; empty
+	// disables proxy auth.
+	Header string
+	// LogoutURL is where Sign out leads; empty hides the entry.
+	LogoutURL string
+}
+
 type Server struct {
 	addr         string
 	hookSockPath string
 	auth         *auth.Store
+	proxy        ProxyAuth
 	router       *router.Router
 	api          *api.Server
 	push         *push.Manager
@@ -89,6 +102,7 @@ func NewServer(
 	addr string,
 	hookSockPath string,
 	authStore *auth.Store,
+	proxy ProxyAuth,
 	r *router.Router,
 	pushMgr *push.Manager,
 	editorURL string,
@@ -105,6 +119,7 @@ func NewServer(
 		addr:         addr,
 		hookSockPath: hookSockPath,
 		auth:         authStore,
+		proxy:        proxy,
 		router:       r,
 		api:          api.New(c),
 		push:         pushMgr,
@@ -268,12 +283,13 @@ func readOnlyMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// hostGuard refuses host names other than localhost while no password is set.
-// A page whose DNS name is rebound to a loopback listener is same-origin with
-// it, so neither the cross-origin guard nor a cookie would stop it.
+// hostGuard refuses host names other than localhost while nothing signs
+// requests in. A page whose DNS name is rebound to a loopback listener is
+// same-origin with it, so neither the cross-origin guard nor a cookie would
+// stop it.
 func (s *Server) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (s.auth == nil || !s.auth.IsConfigured()) && !localHost(r.Host) {
+		if !s.passwordConfigured() && s.proxy.Header == "" && !localHost(r.Host) {
 			api.WriteError(w, http.StatusForbidden, "host "+r.Host+" is refused without a password; open usher by IP or localhost, or set a password")
 			return
 		}
@@ -317,17 +333,24 @@ func crossOriginGuard(next http.Handler) http.Handler {
 
 // --- auth middleware + handlers -----------------------------------------
 
-// authMiddleware gates every web route on a valid cookie when a password
-// is configured. When auth is not configured (loopback-only test mode) it
-// is a no-op pass-through. /healthz, /login, and /logout are always
-// exempt.
+func (s *Server) passwordConfigured() bool {
+	return s.auth != nil && s.auth.IsConfigured()
+}
+
+// authMiddleware gates every web route on the proxy header, else on a
+// valid cookie when a password is configured; with neither it passes
+// everything through.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.auth == nil || !s.auth.IsConfigured() {
+		if isAuthExempt(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if isAuthExempt(r.URL.Path) {
+		if s.proxy.Header != "" {
+			s.serveProxy(next, w, r)
+			return
+		}
+		if !s.passwordConfigured() {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -348,6 +371,19 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		http.Redirect(w, r, target, http.StatusSeeOther)
 	})
+}
+
+// serveProxy admits a request carrying the proxy header.
+func (s *Server) serveProxy(next http.Handler, w http.ResponseWriter, r *http.Request) {
+	actor := strings.TrimSpace(r.Header.Get(s.proxy.Header))
+	if actor == "" {
+		api.WriteError(w, http.StatusUnauthorized, "no signed-in user from the proxy")
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		s.logger.Info("request", "actor", actor, "method", r.Method, "path", r.URL.Path)
+	}
+	next.ServeHTTP(w, r)
 }
 
 func isAuthExempt(p string) bool {
@@ -387,7 +423,13 @@ func validateNext(next string) string {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if s.auth == nil || !s.auth.IsConfigured() {
+	if s.proxy.Header != "" {
+		// The SPA lands here on a 401; going back through the proxy signs
+		// the browser in again.
+		http.Redirect(w, r, validateNext(r.URL.Query().Get("next")), http.StatusSeeOther)
+		return
+	}
+	if !s.passwordConfigured() {
 		http.NotFound(w, r)
 		return
 	}
@@ -441,6 +483,14 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, errMsg stri
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if s.proxy.Header != "" {
+		target := s.proxy.LogoutURL
+		if target == "" {
+			target = "/"
+		}
+		http.Redirect(w, r, target, http.StatusSeeOther)
+		return
+	}
 	if s.auth != nil {
 		http.SetCookie(w, s.auth.ClearCookie())
 	}
@@ -454,9 +504,21 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, struct {
 		EditorURL string       `json:"editor_url"`
+		LogoutURL string       `json:"logout_url"`
 		ReadOnly  bool         `json:"read_only"`
 		Router    routerConfig `json:"router"`
-	}{s.editorURL, s.readOnly, s.routerConfig()})
+	}{s.editorURL, s.logoutURL(), s.readOnly, s.routerConfig()})
+}
+
+// logoutURL is where Sign out leads; "" hides the entry.
+func (s *Server) logoutURL() string {
+	switch {
+	case s.proxy.Header != "":
+		return s.proxy.LogoutURL
+	case s.passwordConfigured():
+		return "/logout"
+	}
+	return ""
 }
 
 // routerConfig is the current router session — session_id is empty until a

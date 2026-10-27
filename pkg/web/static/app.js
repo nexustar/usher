@@ -83,6 +83,9 @@ fetch('/internal/config')
   .then(c => {
     if (!c) return;
     setEditorUrl(c.editor_url || '');
+    const signOut = document.getElementById('sign-out');
+    signOut.hidden = !c.logout_url;
+    if (c.logout_url) signOut.href = c.logout_url;
     setRouterDir((c.router || {}).dir);
     loadSidebar();
   })

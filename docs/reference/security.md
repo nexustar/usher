@@ -31,6 +31,26 @@ that check, so remote-access setups must set a password explicitly.
 Without a password, usher only answers requests addressed to `localhost` or
 an IP address; reaching it by host name (a tunnel, MagicDNS) needs a password.
 
+### Behind an authenticating proxy
+
+`--auth-header NAME` replaces the password with the identity a reverse proxy
+(oauth2-proxy, Cloudflare Access, Tailscale Serve) attaches to each request it
+has authenticated. A request carrying that header is signed in as its value;
+one without it gets 401. Every state-changing request is logged with that value
+as `actor`. `--logout-url` points Sign out at the proxy's logout address;
+without it the entry is hidden.
+
+Two conditions make this safe, and usher can check neither:
+
+- The proxy sets or removes that header on every request it forwards, OPTIONS
+  included, so a client cannot supply its own value.
+- The proxy is the only way to reach usher's port: a loopback bind beside the
+  proxy, or a network policy.
+
+Everyone the proxy admits shares one usher: the same sessions, approval prompts
+and OS user. See
+[Run usher behind an authenticating proxy](../solutions/auth-proxy.md).
+
 ## Agent permissions
 
 The web permission UI supervises agent requests; it does not protect the

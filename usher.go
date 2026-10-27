@@ -73,7 +73,8 @@ type App struct {
 }
 
 // Handle serves h at pattern, an http.ServeMux pattern, behind the web
-// server's authentication. Only valid during Start.
+// server's authentication. Only valid during Start. Name a method in the
+// pattern: not every authenticating proxy covers OPTIONS.
 func (a *App) Handle(pattern string, h http.Handler) { a.web.Handle(pattern, h) }
 
 // Options configures Run. DefaultOptions fills in what `usher serve` uses
@@ -131,6 +132,13 @@ type Options struct {
 
 	// Insecure allows binding a non-loopback address without a password.
 	Insecure bool
+	// AuthHeader names the header an authenticating proxy sets with the
+	// signed-in user. It replaces the password, so nothing but the proxy
+	// may be able to reach Addr.
+	AuthHeader string
+	// LogoutURL is where Sign out leads with AuthHeader; empty hides the
+	// entry.
+	LogoutURL string
 	// ReadOnly rejects state-changing web requests and runs nothing that
 	// drives sessions or writes shared state.
 	ReadOnly bool
@@ -216,6 +224,11 @@ func (o *Options) Flags(fs *flag.FlagSet) {
 			return err
 		})
 	fs.BoolVar(&o.Insecure, "insecure", o.Insecure, "allow binding a non-loopback address without a password")
+	fs.StringVar(&o.AuthHeader, "auth-header", o.AuthHeader,
+		"trust this header from an authenticating proxy (e.g. X-Forwarded-Email from oauth2-proxy) as the "+
+			"signed-in user instead of a password; the proxy must set it on every request and be the only way to reach --addr")
+	fs.StringVar(&o.LogoutURL, "logout-url", o.LogoutURL,
+		"where Sign out leads with --auth-header, e.g. the proxy's logout address; empty hides the entry")
 	fs.BoolVar(&o.ReadOnly, "read-only", o.ReadOnly,
 		"serve this instance read-only: state-changing web requests are rejected, and nothing "+
 			"that drives sessions or writes shared state runs (schedule runner, Telegram mirror, "+

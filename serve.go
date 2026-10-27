@@ -181,12 +181,19 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 	if err != nil {
 		return err
 	}
-	if !authStore.IsConfigured() && !addrIsLoopback(o.Addr) {
+	switch {
+	case o.AuthHeader != "":
+		logger.Info("trusting proxy header as the signed-in user", "header", o.AuthHeader)
+		if authStore.IsConfigured() {
+			logger.Warn("the web password is not checked while --auth-header is set")
+		}
+	case !authStore.IsConfigured() && !addrIsLoopback(o.Addr):
 		if !o.Insecure {
 			return fmt.Errorf(
 				"refusing to bind non-loopback %q without a password.\n"+
 					"  run `usher set-password` to set one,\n"+
 					"  or bind to 127.0.0.1 / localhost for local-only access,\n"+
+					"  or pass --auth-header when an authenticating proxy is the only way in,\n"+
 					"  or pass --insecure to skip this check (not recommended unless access is enforced elsewhere).",
 				o.Addr,
 			)
@@ -403,7 +410,8 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 	}
 
 	themePath := filepath.Join(o.DataDir, "theme.css")
-	srv := web.NewServer(o.Addr, hookSock, authStore, r, pushMgr, o.EditorURL, o.UIDir, themePath, apiConfig, logger)
+	proxy := web.ProxyAuth{Header: o.AuthHeader, LogoutURL: o.LogoutURL}
+	srv := web.NewServer(o.Addr, hookSock, authStore, proxy, r, pushMgr, o.EditorURL, o.UIDir, themePath, apiConfig, logger)
 
 	app := &App{Options: o, Router: r, Broker: b, Interactions: h, Agents: agents, Logger: logger, web: srv}
 	for _, ext := range exts {

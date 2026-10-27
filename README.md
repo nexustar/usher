@@ -126,6 +126,7 @@ setup:
 
 - [Access usher remotely](docs/solutions/remote-access.md)
 - [Use usher with code-server or another editor](docs/solutions/code-server.md)
+- [Run usher behind an authenticating proxy](docs/solutions/auth-proxy.md)
 - [Connect Telegram, Lark, or Feishu](docs/solutions/im.md)
 
 Reference material explains stable behavior that is not useful to repeat in

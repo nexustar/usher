@@ -33,6 +33,9 @@ usher refuses a direct non-loopback bind without a password. A tunnel reaches
 the loopback address, however, so that safety check cannot tell whether the
 tunnel is private. Set the password yourself.
 
+A proxy that signs people in can replace the password; see
+[Run usher behind an authenticating proxy](auth-proxy.md).
+
 ## Tailscale
 
 Tailscale is the simplest choice when every client device belongs to your
