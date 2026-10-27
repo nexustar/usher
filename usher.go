@@ -114,6 +114,8 @@ type Options struct {
 	// sidebar's default view; 0 disables auto-archive.
 	AutoArchiveDays int
 
+	// AppName names the web UI and the installed PWA; empty means "usher".
+	AppName string
 	// UIDir serves the web UI from disk instead of the embedded copy.
 	UIDir string
 	// EditorURL is the "Open in editor" template; {cwd} is replaced with the
@@ -164,6 +166,7 @@ func DefaultOptions() Options {
 		PiSessionsDir:     defaultPiSessionsDir(),
 		TmuxSocket:        "usher",
 		TerminalShell:     defaultTerminalShell(),
+		AppName:           "usher",
 		MaxLiveSessions:   8,
 		AutoArchiveDays:   7,
 		LogLevel:          "info",
@@ -201,6 +204,7 @@ func (o *Options) Flags(fs *flag.FlagSet) {
 		"max concurrent live Claude stream-json processes; least-recently-used sessions are evicted beyond this")
 	fs.IntVar(&o.AutoArchiveDays, "auto-archive-days", o.AutoArchiveDays,
 		"sessions whose jsonl mtime is older than this fall out of the sidebar's default view; 0 disables auto-archive (manual archive still works)")
+	fs.StringVar(&o.AppName, "app-name", o.AppName, "name shown in the web UI, browser tab and installed PWA")
 	fs.StringVar(&o.UIDir, "ui-dir", o.UIDir, "serve the web UI from this directory instead of the embedded copy")
 	fs.StringVar(&o.EditorURL, "editor-url", o.EditorURL,
 		"URL template for an \"Open in editor\" entry in the session actions menu; {cwd} is replaced "+

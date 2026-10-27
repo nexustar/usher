@@ -22,7 +22,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -46,13 +45,6 @@ var staticFS embed.FS
 var loginTemplateRaw string
 
 var loginTmpl = template.Must(template.New("login").Parse(loginTemplateRaw))
-
-func init() {
-	// Go's default MIME table has no .webmanifest entry; without this the
-	// FileServer would serve the PWA manifest as application/octet-stream and
-	// browsers would reject it.
-	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
-}
 
 // ProxyAuth signs a request in by the identity header an authenticating
 // proxy sets, in place of the password. Nothing but the proxy may be able to
@@ -79,6 +71,7 @@ type Server struct {
 	editorURL string
 	uiDir     string
 	themePath string
+	appName   string
 	// readOnly rejects every state-changing web request (see
 	// readOnlyMiddleware); reads, SSE, and static files stay available.
 	readOnly bool
@@ -108,11 +101,15 @@ func NewServer(
 	editorURL string,
 	uiDir string,
 	themePath string,
+	appName string,
 	c api.Config,
 	logger *slog.Logger,
 ) *Server {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if appName == "" {
+		appName = "usher"
 	}
 	c.Router = r
 	return &Server{
@@ -127,6 +124,7 @@ func NewServer(
 		editorURL:    editorURL,
 		uiDir:        uiDir,
 		themePath:    themePath,
+		appName:      appName,
 		readOnly:     c.ReadOnly,
 	}
 }
@@ -171,6 +169,8 @@ func (s *Server) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	webMux.HandleFunc("GET /{$}", s.serveTemplated(staticRoot, "index.html", "text/html; charset=utf-8"))
+	webMux.HandleFunc("GET /manifest.webmanifest", s.serveTemplated(staticRoot, "manifest.webmanifest", "application/manifest+json"))
 	webMux.Handle("GET /", http.FileServer(http.FS(staticRoot)))
 
 	var apiHandler http.Handler = webMux
@@ -474,11 +474,13 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, errMsg stri
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = loginTmpl.Execute(w, struct {
-		Error string
-		Next  string
+		AppName string
+		Error   string
+		Next    string
 	}{
-		Error: errMsg,
-		Next:  validateNext(next),
+		AppName: s.appName,
+		Error:   errMsg,
+		Next:    validateNext(next),
 	})
 }
 

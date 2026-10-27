@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>usher — sign in</title>
+<title>{{.AppName}} — sign in</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
@@ -70,7 +70,7 @@
 </head>
 <body>
 <form method="post" action="/login" autocomplete="off">
-  <h1>usher</h1>
+  <h1>{{.AppName}}</h1>
   <label for="password">password</label>
   <input id="password" type="password" name="password" autofocus required>
   <input type="hidden" name="next" value="{{.Next}}">

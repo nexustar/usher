@@ -1,6 +1,6 @@
 {
-  "name": "usher",
-  "short_name": "usher",
+  "name": "{{js .AppName}}",
+  "short_name": "{{js .AppName}}",
   "description": "Router for managing multiple Claude Code sessions.",
   "id": "/",
   "start_url": "/",

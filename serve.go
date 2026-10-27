@@ -411,7 +411,7 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 
 	themePath := filepath.Join(o.DataDir, "theme.css")
 	proxy := web.ProxyAuth{Header: o.AuthHeader, LogoutURL: o.LogoutURL}
-	srv := web.NewServer(o.Addr, hookSock, authStore, proxy, r, pushMgr, o.EditorURL, o.UIDir, themePath, apiConfig, logger)
+	srv := web.NewServer(o.Addr, hookSock, authStore, proxy, r, pushMgr, o.EditorURL, o.UIDir, themePath, o.AppName, apiConfig, logger)
 
 	app := &App{Options: o, Router: r, Broker: b, Interactions: h, Agents: agents, Logger: logger, web: srv}
 	for _, ext := range exts {

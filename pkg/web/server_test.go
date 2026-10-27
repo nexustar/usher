@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,75 @@ func TestHandleTheme(t *testing.T) {
 		}
 		if got := rec.Header().Get("Content-Type"); got != "text/css; charset=utf-8" {
 			t.Errorf("Content-Type = %q", got)
+		}
+	})
+}
+
+func TestAppName(t *testing.T) {
+	root, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = `Box <A> & "B"`
+	const escaped = `Box &lt;A&gt; &amp; &#34;B&#34;`
+	s := &Server{appName: name, logger: slog.Default()}
+
+	t.Run("index.html", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		s.serveTemplated(root, "index.html", "text/html; charset=utf-8")(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		body := rec.Body.String()
+		for _, want := range []string{
+			"<title>" + escaped + "</title>",
+			`<meta name="application-name" content="` + escaped + `">`,
+			`<a href="#/">` + escaped + `</a>`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("body lacks %q", want)
+			}
+		}
+		if strings.Contains(body, "{{") {
+			t.Error("body still has a placeholder")
+		}
+	})
+
+	t.Run("manifest", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		s.serveTemplated(root, "manifest.webmanifest", "application/manifest+json")(rec, httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/manifest+json" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		var m struct {
+			Name      string `json:"name"`
+			ShortName string `json:"short_name"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+			t.Fatalf("manifest is not JSON: %v\n%s", err, rec.Body.String())
+		}
+		if m.Name != name || m.ShortName != name {
+			t.Errorf("name = %q, short_name = %q, want %q", m.Name, m.ShortName, name)
+		}
+	})
+
+	t.Run("login", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		s.renderLogin(rec, httptest.NewRequest(http.MethodGet, "/login", nil), "", http.StatusOK, "")
+		if body := rec.Body.String(); !strings.Contains(body, "<h1>"+escaped+"</h1>") {
+			t.Errorf("login page lacks the name:\n%s", body)
+		}
+	})
+
+	t.Run("default", func(t *testing.T) {
+		if got := NewServer("", "", nil, ProxyAuth{}, nil, nil, "", "", "", "", api.Config{}, nil).appName; got != "usher" {
+			t.Errorf("appName = %q, want usher", got)
 		}
 	})
 }

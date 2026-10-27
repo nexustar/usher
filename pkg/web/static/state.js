@@ -125,12 +125,15 @@ export function clearViewing() {
   updateTabBadge();
 }
 
+const appNameMeta = document.querySelector('meta[name="application-name"]');
+const appName = appNameMeta ? appNameMeta.content : 'usher';
+
 // Count unique sessions that are unread or awaiting a permission/question.
 export function updateTabBadge() {
   const attention = new Set(lastSessions.filter(isUnread).map(s => s.id));
   for (const id of pendingInteractionCounts.keys()) attention.add(id);
   const n = attention.size;
-  document.title = n > 0 ? `(${n}) usher` : 'usher';
+  document.title = n > 0 ? `(${n}) ${appName}` : appName;
   if ('setAppBadge' in navigator) {
     if (n > 0) navigator.setAppBadge(n).catch(() => {});
     else if ('clearAppBadge' in navigator) navigator.clearAppBadge().catch(() => {});

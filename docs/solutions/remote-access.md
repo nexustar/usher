@@ -56,7 +56,9 @@ tailnet.
    ```
 
 3. Run `tailscale serve status`, open the HTTPS URL it reports, and optionally
-   install usher to the home screen as a PWA.
+   install usher to the home screen as a PWA. With usher on more than one
+   machine, start each with `--app-name` so the installed apps are told apart
+   by name.
 
 `tailscale serve reset` removes the Serve configuration. Tailscale's flag
 spelling has changed between releases, so check `tailscale serve --help` if the
