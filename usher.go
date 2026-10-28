@@ -93,9 +93,15 @@ type Options struct {
 	CodexSessionsDir  string
 	// CodexArgs are extra flags for spawned codex. Empty uses codex's own
 	// approval policy.
-	CodexArgs     []string
-	PiCmd         string
-	PiSessionsDir string
+	CodexArgs []string
+	// CodexAttach connects to a running `codex app-server --listen` instead
+	// of spawning one per session: `unix://` for the control socket under
+	// CODEX_HOME, `unix://PATH`, or `ws://host:port`. CodexAttachTokenFile
+	// holds the bearer token of a websocket listener started with --ws-auth.
+	CodexAttach          string
+	CodexAttachTokenFile string
+	PiCmd                string
+	PiSessionsDir        string
 	// PiArgs are extra flags for spawned pi RPC workers.
 	PiArgs []string
 
@@ -190,6 +196,14 @@ func (o *Options) Flags(fs *flag.FlagSet) {
 			"policy (usher gates whatever codex natively escalates); e.g. \"-c approval_policy=untrusted\" "+
 			"to route most commands through usher like Claude.",
 		func(s string) error { o.CodexArgs = strings.Fields(s); return nil })
+	fs.StringVar(&o.CodexAttach, "codex-attach", o.CodexAttach,
+		"connect to a running 'codex app-server --listen' instead of spawning one per session: "+
+			"\"unix://\" for the control socket under --codex-sessions-dir's CODEX_HOME, \"unix://PATH\", "+
+			"or \"ws://host:port\". Its threads show up live and can be driven from here; the rollouts "+
+			"under --codex-sessions-dir remain the transcript, so both must see the same CODEX_HOME. "+
+			"usher's MCP tools are not registered on an attached server.")
+	fs.StringVar(&o.CodexAttachTokenFile, "codex-attach-token-file", o.CodexAttachTokenFile,
+		"file holding the bearer token of a --codex-attach websocket listener started with --ws-auth")
 	fs.StringVar(&o.PiCmd, "pi", o.PiCmd, "path to the pi binary (pi backend)")
 	fs.StringVar(&o.PiSessionsDir, "pi-sessions-dir", o.PiSessionsDir,
 		"pi coding-agent sessions directory; the pi backend auto-enables when it exists or pi is installed")

@@ -220,6 +220,14 @@ func codexMCPConfig(routerTools bool, logger *slog.Logger) map[string]any {
 	}
 }
 
+// AttachCodex connects Codex workers to a running app-server instead of
+// spawning one each (codex.Manager.SetAttach).
+func (s *Sender) AttachCodex(a codex.Attach) {
+	if s.app != nil {
+		s.app.SetAttach(a)
+	}
+}
+
 // SetAutoPause sets how long an idle worker is kept.
 func (s *Sender) SetAutoPause(d time.Duration) {
 	if s.app != nil {

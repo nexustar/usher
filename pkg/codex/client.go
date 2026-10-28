@@ -2,15 +2,12 @@
 package codex
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,7 +17,6 @@ import (
 	"github.com/nexustar/usher/pkg/backend"
 	"github.com/nexustar/usher/pkg/core"
 	"github.com/nexustar/usher/pkg/interaction"
-	"github.com/nexustar/usher/pkg/procutil"
 	"github.com/nexustar/usher/pkg/textutil"
 )
 
@@ -82,17 +78,19 @@ type initState struct {
 	finished bool
 }
 
-// Client owns one lazily-started app-server process. Manager assigns one
-// Client to each live root session; derived Codex threads remain internal to
-// that worker.
+// Client owns one lazily-opened app-server connection: a process it spawns,
+// or with attach set, a connection to an app-server something else runs.
+// Manager assigns one Client to each live root session; derived Codex threads
+// remain internal to that worker.
 type Client struct {
 	bin          string
+	attach       *Attach
 	logger       *slog.Logger
 	interactions *interaction.Manager
 	mu           sync.Mutex
-	cmd          *exec.Cmd
-	in           io.WriteCloser
+	in           link
 	pending      map[string]chan response
+	requests     map[string]context.CancelFunc // server requests the user is being asked about
 	turns        map[string]*turnStream
 	active       map[string]string // thread id -> id of the turn app-server is running
 	threads      map[string]string // thread id -> cwd
@@ -101,7 +99,6 @@ type Client struct {
 	patches      map[string]*core.TurnPart // file-change item id -> its diff, until it completes
 	next         atomic.Uint64
 	init         *initState
-	waitDone     chan struct{}
 	sandbox      map[string]any
 	config       map[string]any
 	env          []string
@@ -157,9 +154,12 @@ func scrubEnv() []string {
 	return out
 }
 
+// attached reports whether the app-server is shared with other clients.
+func (c *Client) attached() bool { return c.attach != nil }
+
 func (c *Client) ensure(ctx context.Context) error {
 	c.mu.Lock()
-	if c.cmd != nil {
+	if c.in != nil {
 		state := c.init
 		c.mu.Unlock()
 		select {
@@ -170,60 +170,55 @@ func (c *Client) ensure(ctx context.Context) error {
 		}
 	}
 	state := &initState{done: make(chan struct{})}
-	args := append(append([]string(nil), c.args...), "app-server")
-	cmd := exec.CommandContext(context.Background(), c.bin, args...)
-	procutil.ConfigureGroup(cmd)
-	cmd.Env = append(scrubEnv(), c.env...)
-	in, err := cmd.StdinPipe()
+	var l link
+	var err error
+	if c.attached() {
+		l, err = dialLink(ctx, *c.attach)
+	} else {
+		args := append(append([]string(nil), c.args...), "app-server")
+		l, err = spawnLink(c.bin, args, append(scrubEnv(), c.env...))
+	}
 	if err != nil {
 		c.mu.Unlock()
 		return err
 	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		c.mu.Unlock()
-		return err
-	}
-	cmd.Stderr = os.Stderr
-	if err = cmd.Start(); err != nil {
-		c.mu.Unlock()
-		return err
-	}
-	waitDone := make(chan struct{})
-	c.cmd, c.in, c.init, c.waitDone = cmd, in, state, waitDone
+	c.in, c.init = l, state
 	c.mu.Unlock()
 	// sandbox and config never reach the argv — they ride thread/start and
 	// thread/resume params — so log them alongside for the full picture.
-	c.log().Info("spawn", "args", backend.RedactSpawnArgs(cmd.Args), "sandbox", c.sandbox, "config", redactConfig(c.config))
-	go c.readLoop(cmd, out)
+	if sl, ok := l.(*stdioLink); ok {
+		c.log().Info("spawn", "args", backend.RedactSpawnArgs(sl.cmd.Args), "sandbox", c.sandbox, "config", redactConfig(c.config))
+	} else {
+		c.log().Info("attach", "url", c.attach.URL, "sandbox", c.sandbox, "config", redactConfig(c.config))
+	}
+	go c.readLoop(l)
 	go func() {
-		err := cmd.Wait()
-		close(waitDone)
-		c.died(cmd, err)
+		<-l.Done()
+		c.failLink(l, l.Err())
 	}()
 	var init struct {
 		UserAgent string `json:"userAgent"`
 	}
 	if err := c.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "usher", "version": "1"}}, &init); err != nil {
 		err = fmt.Errorf("initialize app-server: %w", err)
-		c.finishInit(cmd, err)
-		c.stopProcess(cmd, err)
+		c.finishInit(l, err)
+		c.stopLink(l, err)
 		return err
 	}
 	if err := c.write(map[string]any{"jsonrpc": "2.0", "method": "initialized"}); err != nil {
-		c.finishInit(cmd, err)
-		c.stopProcess(cmd, err)
+		c.finishInit(l, err)
+		c.stopLink(l, err)
 		return err
 	}
-	c.finishInit(cmd, nil)
+	c.finishInit(l, nil)
 	c.log().Info("app-server initialized", "server", init.UserAgent)
 	return nil
 }
 
-func (c *Client) finishInit(cmd *exec.Cmd, err error) {
+func (c *Client) finishInit(l link, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cmd != cmd || c.init == nil || c.init.finished {
+	if c.in != l || c.init == nil || c.init.finished {
 		return
 	}
 	c.init.err, c.init.finished = err, true
@@ -268,21 +263,19 @@ func (c *Client) call(ctx context.Context, method string, params any, dst any) e
 	}
 }
 
-func (c *Client) readLoop(cmd *exec.Cmd, r io.Reader) {
-	s := bufio.NewScanner(r)
-	s.Buffer(make([]byte, 64<<10), 64<<20)
-	for s.Scan() {
+func (c *Client) readLoop(l link) {
+	for {
+		b, err := l.Read()
+		if err != nil {
+			c.stopLink(l, err)
+			return
+		}
 		var m rpcMessage
-		if json.Unmarshal(s.Bytes(), &m) != nil {
+		if json.Unmarshal(b, &m) != nil {
 			continue
 		}
 		c.dispatch(m)
 	}
-	err := s.Err()
-	if err == nil {
-		err = io.EOF
-	}
-	c.stopProcess(cmd, fmt.Errorf("app-server stdout closed: %w", err))
 }
 func idString(raw json.RawMessage) string {
 	var n json.Number
@@ -310,6 +303,20 @@ func (c *Client) dispatch(m rpcMessage) {
 	}
 	if len(m.ID) > 0 && m.Method != "" {
 		go c.handleServerRequest(m)
+		return
+	}
+	// Another client answered first, or the turn ended: withdraw the question.
+	if m.Method == "serverRequest/resolved" {
+		var p struct {
+			RequestID json.RawMessage `json:"requestId"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		c.mu.Lock()
+		cancel := c.requests[idString(p.RequestID)]
+		c.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		return
 	}
 	if m.Method == "turn/started" {
@@ -481,18 +488,52 @@ func (c *Client) handleServerRequest(m rpcMessage) {
 		c.mcpElicitation(m)
 	case "item/tool/requestUserInput":
 		c.requestUserInput(m)
-	case "item/tool/call":
-		c.replyError(m.ID, -32000, "dynamic client tools are not supported by this usher client")
 	case "currentTime/read":
 		c.replyResult(m.ID, map[string]any{"currentTimeAt": time.Now().Unix()})
-	case "account/chatgptAuthTokens/refresh":
-		c.replyError(m.ID, -32000, "ChatGPT token refresh is not supported by this usher client")
-	case "attestation/generate":
-		c.replyError(m.ID, -32000, "client attestation is not supported by this usher client")
 	default:
-		c.log().Warn("rejecting unknown app-server request", "method", m.Method)
-		c.replyError(m.ID, -32601, "unsupported app-server request: "+m.Method)
+		// On a shared server the client that owns the tool or account answers;
+		// an error from usher would win the race.
+		if c.attached() {
+			c.log().Debug("leaving app-server request to its other clients", "method", m.Method)
+			return
+		}
+		switch m.Method {
+		case "item/tool/call":
+			c.replyError(m.ID, -32000, "dynamic client tools are not supported by this usher client")
+		case "account/chatgptAuthTokens/refresh":
+			c.replyError(m.ID, -32000, "ChatGPT token refresh is not supported by this usher client")
+		case "attestation/generate":
+			c.replyError(m.ID, -32000, "client attestation is not supported by this usher client")
+		default:
+			c.log().Warn("rejecting unknown app-server request", "method", m.Method)
+			c.replyError(m.ID, -32601, "unsupported app-server request: "+m.Method)
+		}
 	}
+}
+
+// ask registers a server request put to the user; ctx ends when another
+// client answers first. ok is false when attached with no one to ask: a
+// spawned client must decline instead, or its server waits forever.
+func (c *Client) ask(id json.RawMessage) (ctx context.Context, release func(), h *interaction.Manager, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	h = c.interactions
+	if h == nil && c.attached() {
+		return nil, nil, nil, false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	key := idString(id)
+	if c.requests == nil {
+		c.requests = map[string]context.CancelFunc{}
+	}
+	c.requests[key] = cancel
+	release = func() {
+		cancel()
+		c.mu.Lock()
+		delete(c.requests, key)
+		c.mu.Unlock()
+	}
+	return ctx, release, h, true
 }
 
 // mcpElicitation handles confirmation forms; forms requiring input are declined.
@@ -510,8 +551,12 @@ func (c *Client) mcpElicitation(m rpcMessage) {
 		return
 	}
 
+	ctx, release, h, ok := c.ask(m.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	c.mu.Lock()
-	h := c.interactions
 	cwd := c.threads[p.ThreadID]
 	c.mu.Unlock()
 
@@ -523,12 +568,15 @@ func (c *Client) mcpElicitation(m rpcMessage) {
 		if p.ServerName != "" {
 			tool += ": " + p.ServerName
 		}
-		r, err := h.Submit(context.Background(), interaction.Request{
+		r, err := h.Submit(ctx, interaction.Request{
 			SessionID: p.ThreadID,
 			ToolName:  tool,
 			ToolInput: json.RawMessage(m.Params),
 			Cwd:       cwd,
 		})
+		if ctx.Err() != nil {
+			return
+		}
 		if err == nil && r.Behavior == "allow" {
 			action = "accept"
 			content = map[string]any{}
@@ -560,8 +608,12 @@ func (c *Client) requestUserInput(m rpcMessage) {
 		return
 	}
 
+	ctx, release, h, ok := c.ask(m.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	c.mu.Lock()
-	h := c.interactions
 	cwd := c.threads[p.ThreadID]
 	c.mu.Unlock()
 
@@ -572,7 +624,7 @@ func (c *Client) requestUserInput(m rpcMessage) {
 			questions = append(questions, map[string]any{"header": q.Header, "question": q.Question, "options": q.Options})
 		}
 		input, _ := json.Marshal(map[string]any{"questions": questions})
-		r, err := h.Submit(context.Background(), interaction.Request{
+		r, err := h.Submit(ctx, interaction.Request{
 			SessionID: p.ThreadID,
 			ToolUseID: p.ItemID,
 			Kind:      interaction.KindChoice,
@@ -580,6 +632,9 @@ func (c *Client) requestUserInput(m rpcMessage) {
 			ToolInput: input,
 			Cwd:       cwd,
 		})
+		if ctx.Err() != nil {
+			return
+		}
 		if err == nil && r.Behavior == "allow" {
 			for _, q := range p.Questions {
 				a := r.Answers[q.Question]
@@ -621,8 +676,12 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 		return
 	}
 
+	ctx, release, h, ok := c.ask(m.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	c.mu.Lock()
-	h := c.interactions
 	if p.Cwd == "" {
 		p.Cwd = c.threads[p.ThreadID]
 	}
@@ -630,7 +689,7 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 
 	result := map[string]any{"permissions": map[string]any{}}
 	if h != nil {
-		r, err := h.Submit(context.Background(), interaction.Request{
+		r, err := h.Submit(ctx, interaction.Request{
 			SessionID:   p.ThreadID,
 			ToolName:    "Permissions",
 			ToolInput:   json.RawMessage(m.Params),
@@ -638,6 +697,9 @@ func (c *Client) permissionsApproval(m rpcMessage) {
 			Reason:      p.Reason,
 			AllowAlways: true,
 		})
+		if ctx.Err() != nil {
+			return
+		}
 		if err == nil && r.Behavior == "allow" {
 			var granted map[string]any
 			if json.Unmarshal(p.Permissions, &granted) == nil && granted != nil {
@@ -666,8 +728,12 @@ func (c *Client) approval(m rpcMessage) {
 	if strings.Contains(strings.ToLower(m.Method), "filechange") || strings.Contains(strings.ToLower(m.Method), "applypatch") {
 		tool = "Edit"
 	}
+	ctx, release, h, ok := c.ask(m.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	c.mu.Lock()
-	h := c.interactions
 	if cwd == "" {
 		cwd = c.threads[sid]
 	}
@@ -681,7 +747,11 @@ func (c *Client) approval(m rpcMessage) {
 	decision := "decline"
 	if h != nil {
 		allowAlways := supportsAllowAlways(m.Method, p["availableDecisions"])
-		if r, err := h.Submit(context.Background(), interaction.Request{SessionID: sid, ToolName: tool, ToolInput: input, Cwd: cwd, Preview: preview, Reason: reason, AllowAlways: allowAlways}); err == nil && r.Behavior == "allow" {
+		r, err := h.Submit(ctx, interaction.Request{SessionID: sid, ToolName: tool, ToolInput: input, Cwd: cwd, Preview: preview, Reason: reason, AllowAlways: allowAlways})
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil && r.Behavior == "allow" {
 			if r.Scope == "always" && allowAlways {
 				decision = "acceptForSession"
 			} else {
@@ -724,13 +794,10 @@ func rawJSONContainsString(raw json.RawMessage, want string) bool {
 	return false
 }
 
-func (c *Client) died(cmd *exec.Cmd, err error) {
-	c.failProcess(cmd, fmt.Errorf("codex app-server exited: %w", err))
-}
-
-func (c *Client) failProcess(cmd *exec.Cmd, err error) {
+// failLink forgets a connection that is gone and fails what waited on it.
+func (c *Client) failLink(l link, err error) {
 	c.mu.Lock()
-	if c.cmd != cmd {
+	if c.in != l {
 		c.mu.Unlock()
 		return
 	}
@@ -739,15 +806,15 @@ func (c *Client) failProcess(cmd *exec.Cmd, err error) {
 		c.init.finished = true
 		close(c.init.done)
 	}
-	c.cmd = nil
 	c.in = nil
-	c.waitDone = nil
 	pending := c.pending
 	turns := c.turns
+	requests := c.requests
 	c.pending = map[string]chan response{}
 	c.turns = map[string]*turnStream{}
 	c.active = map[string]string{}
 	c.threads = map[string]string{}
+	c.requests = nil
 	c.goals = nil
 	c.commands = nil
 	c.mu.Unlock()
@@ -757,41 +824,39 @@ func (c *Client) failProcess(cmd *exec.Cmd, err error) {
 	for _, stream := range turns {
 		stream.finish(TurnResult{Status: "failed"})
 	}
+	for _, cancel := range requests {
+		cancel()
+	}
 }
-func (c *Client) stopProcess(cmd *exec.Cmd, reason error) {
+
+// stopLink drops the connection at once.
+func (c *Client) stopLink(l link, reason error) {
 	c.mu.Lock()
-	if c.cmd != cmd {
+	if c.in != l {
 		c.mu.Unlock()
 		return
 	}
-	in := c.in
 	c.mu.Unlock()
-	if in != nil {
-		_ = in.Close()
-	}
-	_ = procutil.KillGroup(cmd)
-	c.failProcess(cmd, reason)
+	l.Kill()
+	c.failLink(l, reason)
 }
+
+// Shutdown ends the connection gracefully, forcibly after a grace period. An
+// attached server keeps running; only usher's subscriptions end.
 func (c *Client) Shutdown() {
 	c.mu.Lock()
-	cmd := c.cmd
-	in := c.in
-	done := c.waitDone
+	l := c.in
 	c.mu.Unlock()
-	if cmd == nil {
+	if l == nil {
 		return
 	}
-	if in != nil {
-		_ = in.Close()
+	_ = l.Close()
+	select {
+	case <-l.Done():
+		return
+	case <-time.After(2 * time.Second):
 	}
-	if done != nil {
-		select {
-		case <-done:
-			return
-		case <-time.After(2 * time.Second):
-		}
-	}
-	c.stopProcess(cmd, errors.New("app-server shutdown timeout"))
+	c.stopLink(l, errors.New("app-server shutdown timeout"))
 }
 
 func cloneMap(in map[string]any) map[string]any {
@@ -991,7 +1056,7 @@ func (c *Client) RenameThread(ctx context.Context, id, title string) error {
 
 func (c *Client) Interrupt(ctx context.Context, id string) error {
 	c.mu.Lock()
-	running := c.cmd != nil
+	running := c.in != nil
 	_, turning := c.turns[id]
 	turnID, active := c.active[id]
 	if active {
@@ -1014,7 +1079,7 @@ func (c *Client) Has(id string) bool {
 func (c *Client) Running() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cmd != nil
+	return c.in != nil
 }
 
 func (c *Client) Busy(id string) bool {
@@ -1063,6 +1128,30 @@ func (c *Client) SetGoal(ctx context.Context, id, objective string) error {
 	}
 	return c.call(ctx, "thread/goal/set", map[string]any{"threadId": id, "objective": objective}, nil)
 }
+
+// LoadedThreads lists the threads the server holds in memory for any client.
+func (c *Client) LoadedThreads(ctx context.Context) ([]string, error) {
+	if err := c.ensure(ctx); err != nil {
+		return nil, err
+	}
+	var ids []string
+	params := map[string]any{}
+	for {
+		var out struct {
+			Data       []string `json:"data"`
+			NextCursor string   `json:"nextCursor"`
+		}
+		if err := c.call(ctx, "thread/loaded/list", params, &out); err != nil {
+			return nil, err
+		}
+		ids = append(ids, out.Data...)
+		if out.NextCursor == "" || len(out.Data) == 0 {
+			return ids, nil
+		}
+		params = map[string]any{"cursor": out.NextCursor}
+	}
+}
+
 func (c *Client) LiveSessions() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

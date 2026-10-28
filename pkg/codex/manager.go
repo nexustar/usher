@@ -26,9 +26,11 @@ type worker struct {
 	idleSince time.Time
 }
 
-// Manager owns one app-server worker per live root Codex session.
+// Manager owns one app-server worker per live root Codex session: a process
+// of its own, or with SetAttach, one connection to a shared app-server.
 type Manager struct {
 	bin          string
+	attach       *Attach
 	interactions *interaction.Manager
 	sandbox      map[string]any
 	config       map[string]any
@@ -36,6 +38,12 @@ type Manager struct {
 	env          []string
 	logger       *slog.Logger
 	maxLive      int
+
+	// monitor is the attached server's thread list; loaded caches it.
+	monitorMu sync.Mutex
+	monitor   *Client
+	loaded    []string
+	loadedAt  time.Time
 
 	mu           sync.Mutex
 	workers      map[string]*worker
@@ -63,6 +71,15 @@ func NewManager(bin string, interactions *interaction.Manager, sandbox, config m
 	m := &Manager{bin: bin, interactions: interactions, sandbox: cloneMap(sandbox), config: cloneMap(config), env: append([]string(nil), env...), logger: logger, maxLive: maxLive, workers: map[string]*worker{}, switches: map[string]runtimeSwitch{}, stop: make(chan struct{})}
 	go m.reapLoop()
 	return m
+}
+
+// SetAttach makes every worker a connection to the app-server at a instead
+// of a process of its own. Its other clients' threads are shared: usher sees
+// their turns, may answer their approvals, and lists them live.
+func (m *Manager) SetAttach(a Attach) {
+	m.mu.Lock()
+	m.attach = &a
+	m.mu.Unlock()
 }
 
 // SetAutoPause stops a worker once it has held nothing for d. Codex lets one
@@ -157,24 +174,31 @@ func (m *Manager) isRouter(id string) bool {
 // codex assigns one only after the worker is up — so router selects the
 // routing-tools config for it in place of the id.
 func (m *Manager) newClient(id, instructions string, extra []string, router bool) *Client {
-	var args []string
-	if instructions != "" {
-		quoted, _ := json.Marshal(instructions)
-		args = []string{"-c", "developer_instructions=" + string(quoted)}
-	}
 	logger := m.logger
 	if id != "" {
 		logger = logger.With("session", id)
 	}
+	m.mu.Lock()
+	attach := m.attach
 	base := m.config
-	if router {
-		m.mu.Lock()
-		if m.routerConfig != nil {
-			base = m.routerConfig
-		}
-		m.mu.Unlock()
+	if router && m.routerConfig != nil {
+		base = m.routerConfig
 	}
-	sandbox, config := m.sandbox, base
+	m.mu.Unlock()
+	// An attached server has no argv of usher's: the instructions ride the
+	// thread params instead, where the same override lands.
+	var args []string
+	config := base
+	if instructions != "" {
+		if attach != nil {
+			config = cloneMap(config)
+			config["developer_instructions"] = instructions
+		} else {
+			quoted, _ := json.Marshal(instructions)
+			args = []string{"-c", "developer_instructions=" + string(quoted)}
+		}
+	}
+	sandbox := m.sandbox
 	if len(extra) > 0 {
 		extraSandbox, extraConfig := ParseHeadlessArgs(extra, logger)
 		sandbox, config = cloneMap(sandbox), cloneMap(config)
@@ -185,7 +209,41 @@ func (m *Manager) newClient(id, instructions string, extra []string, router bool
 			config[k] = v
 		}
 	}
-	return New(m.bin, m.interactions, sandbox, config, m.env, args, logger)
+	c := New(m.bin, m.interactions, sandbox, config, m.env, args, logger)
+	c.attach = attach
+	return c
+}
+
+// loadedCacheTTL spaces out thread/loaded/list calls under list polling.
+const loadedCacheTTL = 2 * time.Second
+
+// loadedThreads lists the threads the attached server holds in memory; nil
+// when not attached or unreachable.
+func (m *Manager) loadedThreads() []string {
+	m.mu.Lock()
+	attach := m.attach
+	m.mu.Unlock()
+	if attach == nil {
+		return nil
+	}
+	m.monitorMu.Lock()
+	defer m.monitorMu.Unlock()
+	if time.Since(m.loadedAt) < loadedCacheTTL {
+		return m.loaded
+	}
+	if m.monitor == nil {
+		m.monitor = New(m.bin, nil, nil, nil, nil, nil, m.logger.With("session", "monitor"))
+		m.monitor.attach = attach
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ids, err := m.monitor.LoadedThreads(ctx)
+	if err != nil {
+		m.logger.Debug("thread/loaded/list failed", "err", err)
+		ids = nil
+	}
+	m.loaded, m.loadedAt = ids, time.Now()
+	return ids
 }
 
 func (m *Manager) SetSystemPromptLookup(lookup func(string) string) {
@@ -573,17 +631,26 @@ func (m *Manager) Has(id string) bool {
 	return w != nil && w.ready == nil && w.err == nil && w.client.Running()
 }
 
+// LiveSessions lists usher's own workers and, when attached, the threads the
+// server holds for its other clients.
 func (m *Manager) LiveSessions() []backend.LiveSession {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	out := make([]backend.LiveSession, 0, len(m.workers))
+	seen := map[string]bool{}
 	for id, w := range m.workers {
 		if w.ready == nil && w.err == nil && w.client.Running() {
+			seen[id] = true
 			out = append(out, backend.LiveSession{
 				ID:       id,
 				Running:  w.busy || w.client.Busy(id),
 				Activity: core.Activity{Agents: w.client.ChildTurns(id), Goal: w.client.Goal(id)},
 			})
+		}
+	}
+	m.mu.Unlock()
+	for _, id := range m.loadedThreads() {
+		if !seen[id] {
+			out = append(out, backend.LiveSession{ID: id})
 		}
 	}
 	return out
@@ -619,5 +686,12 @@ func (m *Manager) Shutdown() {
 			<-w.ready
 		}
 		w.client.Shutdown()
+	}
+	m.monitorMu.Lock()
+	monitor := m.monitor
+	m.monitor = nil
+	m.monitorMu.Unlock()
+	if monitor != nil {
+		monitor.Shutdown()
 	}
 }

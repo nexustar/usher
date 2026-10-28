@@ -22,6 +22,7 @@ import (
 	"github.com/nexustar/usher/pkg/backend"
 	"github.com/nexustar/usher/pkg/broker"
 	"github.com/nexustar/usher/pkg/cli"
+	"github.com/nexustar/usher/pkg/codex"
 	"github.com/nexustar/usher/pkg/discovery"
 	"github.com/nexustar/usher/pkg/interaction"
 	"github.com/nexustar/usher/pkg/modelcatalog"
@@ -232,17 +233,34 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 		logger.Info("claude backend enabled", "sessions_dir", dir)
 		checkCLI("claude", o.ClaudeCmd, o.ReadOnly, logger)
 	}
+	if o.CodexAttach != "" && !isDir(o.CodexSessionsDir) {
+		return fmt.Errorf("--codex-attach needs the attached server's rollouts: --codex-sessions-dir %q is not a directory", o.CodexSessionsDir)
+	}
 	if dir := o.CodexSessionsDir; sessionsDir(dir, o.CodexCmd, logger) {
 		// codex's per-account model catalog sits next to the sessions dir.
 		modelsPath := filepath.Join(filepath.Dir(dir), "models_cache.json")
-		codexRuntime := sender.NewCodex(o.CodexCmd, dir, hookSock, o.CodexArgs, o.MaxLiveSessions, !o.DisableUsherTools, h, logger)
+		// An attached server may not reach usher's binary or hook socket, and
+		// its threads belong to another client: leave its config alone.
+		attached := o.CodexAttach != ""
+		codexRuntime := sender.NewCodex(o.CodexCmd, dir, hookSock, o.CodexArgs, o.MaxLiveSessions, !o.DisableUsherTools && !attached, h, logger)
 		codexRuntime.SetAutoPause(o.AutoPause)
+		if attached {
+			url := o.CodexAttach
+			if url == "unix://" {
+				url = "unix://" + codex.DefaultControlSocket(filepath.Dir(dir))
+			}
+			codexRuntime.AttachCodex(codex.Attach{URL: url, TokenFile: o.CodexAttachTokenFile})
+		}
 		add("codex", backend.Backend{
 			Runtime: codexRuntime, Transcript: transcript.Codex{}, Source: discovery.NewCodexSource(dir),
 			Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}, Replier: transcript.Codex{},
 		})
-		logger.Info("codex backend enabled", "sessions_dir", dir)
-		checkCLI("codex", o.CodexCmd, o.ReadOnly, logger)
+		if attached {
+			logger.Info("codex backend enabled", "sessions_dir", dir, "attach", o.CodexAttach)
+		} else {
+			logger.Info("codex backend enabled", "sessions_dir", dir)
+			checkCLI("codex", o.CodexCmd, o.ReadOnly, logger)
+		}
 	}
 	if dir := o.PiSessionsDir; sessionsDir(dir, o.PiCmd, logger) {
 		extra := append([]string(nil), o.PiArgs...)

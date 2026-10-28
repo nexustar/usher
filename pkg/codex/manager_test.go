@@ -359,9 +359,9 @@ func TestManagerWorkerFailureIsIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	first.client.mu.Lock()
-	cmd := first.client.cmd
+	l := first.client.in
 	first.client.mu.Unlock()
-	first.client.stopProcess(cmd, context.Canceled)
+	first.client.stopLink(l, context.Canceled)
 	if m.Has("first") {
 		t.Error("failed worker still reported live")
 	}

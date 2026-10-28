@@ -17,9 +17,14 @@ import (
 	"github.com/nexustar/usher/pkg/interaction"
 )
 
+// testWriteCloser is a link that records what the client sends.
 type testWriteCloser struct{ bytes.Buffer }
 
-func (*testWriteCloser) Close() error { return nil }
+func (*testWriteCloser) Close() error          { return nil }
+func (*testWriteCloser) Read() ([]byte, error) { select {} }
+func (*testWriteCloser) Kill()                 {}
+func (*testWriteCloser) Done() <-chan struct{} { return nil }
+func (*testWriteCloser) Err() error            { return nil }
 
 func TestThreadParamsCarryPolicySandboxAndNativeMCP(t *testing.T) {
 	c := New("codex", interaction.New(), map[string]any{"sandbox": "workspace-write"}, map[string]any{
