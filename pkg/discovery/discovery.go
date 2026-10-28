@@ -60,7 +60,12 @@ func NewMulti(logger *slog.Logger, sources ...backend.Source) (*Discovery, error
 
 // sourceFor returns the backend.Source that owns path — the one whose Root contains it
 // and whose IsSessionFile accepts it — or nil if path is not a session log.
+// Dot files are never logs: they are other tools' temp files, such as the
+// .!<pid>!<name>.jsonl that macOS sed -i writes and renames over <name>.jsonl.
 func (d *Discovery) sourceFor(path string) backend.Source {
+	if strings.HasPrefix(filepath.Base(path), ".") {
+		return nil
+	}
 	for _, s := range d.sources {
 		root := s.Root()
 		if path == root || strings.HasPrefix(path, root+string(os.PathSeparator)) {
@@ -184,11 +189,18 @@ func (d *Discovery) ingest(path string, whole bool) {
 		return
 	}
 
+	// A known id at a new path is a moved log (its project dir renamed): read
+	// it afresh from there, and take its cwd, which may have moved with it.
 	d.mu.Lock()
+	old, seen := d.paths[id]
+	moved := seen && old != path
 	r := d.readings[id]
-	if r == nil {
+	if r == nil || moved {
 		r = &reading{}
 		d.readings[id] = r
+	}
+	if moved {
+		d.paths[id] = path
 	}
 	d.mu.Unlock()
 	r.mu.Lock()
@@ -226,6 +238,9 @@ func (d *Discovery) ingest(path string, whole bool) {
 				}
 			} else if existing.Backend != "claude" || existing.Runtime.ContextWindow == 0 {
 				existing.Runtime = meta.Runtime
+			}
+			if moved && meta.Cwd != "" {
+				existing.Cwd = meta.Cwd
 			}
 			if existing.Cwd == "" || existing.Prompt == "" || existing.LastInputAt.IsZero() || needTitle {
 				applySubagentMeta(&existing, meta)
@@ -314,10 +329,21 @@ func applySubagentMeta(sess *core.Session, meta core.SessionMeta) {
 	}
 }
 
+// remove forgets the session logged at path, unless its log has since been
+// seen at another path (a move whose Create beat this Remove or Rename).
 func (d *Discovery) remove(path string) {
-	if src := d.sourceFor(path); src != nil {
-		d.Remove(src.SessionID(path))
+	src := d.sourceFor(path)
+	if src == nil {
+		return
 	}
+	id := src.SessionID(path)
+	d.mu.RLock()
+	cur, ok := d.paths[id]
+	d.mu.RUnlock()
+	if ok && cur != path {
+		return
+	}
+	d.Remove(id)
 }
 
 // Remove forgets a session by id. fsnotify would pick a file deletion up

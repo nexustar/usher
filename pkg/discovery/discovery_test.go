@@ -280,6 +280,54 @@ func TestDiscovery_Remove(t *testing.T) {
 	d.Remove("abc") // idempotent / unknown id is a no-op
 }
 
+func TestDiscovery_MovedLogTakesNewPathAndCwd(t *testing.T) {
+	tmp := t.TempDir()
+	oldPath := filepath.Join(tmp, "-tmp-old", "abc.jsonl")
+	writeJSONL(t, oldPath, "abc", "/tmp/old", "hi")
+
+	d := newTestDiscovery(t, tmp)
+	if err := d.scan(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The project dir is renamed and the log's cwd rewritten to match; the
+	// new path is seen before the old one's Rename arrives.
+	newPath := filepath.Join(tmp, "-tmp-new", "abc.jsonl")
+	writeJSONL(t, newPath, "abc", "/tmp/new", "hi")
+	if err := os.RemoveAll(filepath.Dir(oldPath)); err != nil {
+		t.Fatal(err)
+	}
+	d.upsert(newPath)
+	d.remove(oldPath)
+
+	if got, ok := d.Path("abc"); !ok || got != newPath {
+		t.Errorf("Path = %q ok=%v, want %q", got, ok, newPath)
+	}
+	if s, _ := d.Get("abc"); s.Cwd != "/tmp/new" {
+		t.Errorf("Cwd = %q, want /tmp/new", s.Cwd)
+	}
+
+	d.remove(newPath)
+	if _, ok := d.Get("abc"); ok {
+		t.Error("Get returned ok after its current log was removed")
+	}
+}
+
+func TestDiscovery_SkipsDotFiles(t *testing.T) {
+	tmp := t.TempDir()
+	writeJSONL(t, filepath.Join(tmp, "-p", "real.jsonl"), "real", "/tmp/p", "hi")
+	// macOS sed -i's temp file, renamed over real.jsonl when it is done.
+	writeJSONL(t, filepath.Join(tmp, "-p", ".!123!real.jsonl"), "real", "/tmp/p", "hi")
+
+	d := newTestDiscovery(t, tmp)
+	if err := d.scan(); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.List(); len(got) != 1 || got[0].ID != "real" {
+		t.Fatalf("List = %v, want only real", got)
+	}
+}
+
 func TestDiscovery_MarkInputOrdersList(t *testing.T) {
 	tmp := t.TempDir()
 	// Both fixtures carry the same content timestamp, so initial order is
