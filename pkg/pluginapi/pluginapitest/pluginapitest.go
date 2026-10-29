@@ -430,6 +430,10 @@ func (f *FakeRouter) OpenSession(id string, _ time.Duration) (core.Session, bool
 	return f.GetSession(id)
 }
 
+func (f *FakeRouter) Usage(context.Context, string, bool) (backend.Usage, bool, error) {
+	return backend.Usage{}, false, nil
+}
+
 func (f *FakeRouter) DefaultEffort(context.Context, string, string) string     { return "" }
 func (f *FakeRouter) SetRuntime(context.Context, string, string, string) error { return nil }
 func (f *FakeRouter) DeleteSession(string) error                               { return nil }

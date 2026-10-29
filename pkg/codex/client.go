@@ -106,6 +106,7 @@ type Client struct {
 	config       map[string]any
 	env          []string
 	args         []string
+	onRateLimits func(params json.RawMessage)
 }
 
 // New builds a client for one codex app-server process. args are extra binary
@@ -310,6 +311,12 @@ func (c *Client) dispatch(m rpcMessage) {
 	}
 	if len(m.ID) > 0 && m.Method != "" {
 		go c.handleServerRequest(m)
+		return
+	}
+	if m.Method == "account/rateLimits/updated" {
+		if c.onRateLimits != nil {
+			c.onRateLimits(m.Params)
+		}
 		return
 	}
 	if m.Method == "turn/started" {

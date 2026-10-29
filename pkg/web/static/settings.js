@@ -27,6 +27,7 @@ const PANES = [
   {id: 'general', label: 'General', render: renderGeneralPane},
   {id: 'agents', label: 'Agents', render: renderAgentsPane},
   {id: 'scheduled', label: 'Scheduled', render: renderScheduledPane},
+  {id: 'usage', label: 'Usage', render: renderUsagePane},
 ];
 
 // Matches the app's other inline icons (16px box, 1.5 stroke) so the drill-in
@@ -146,6 +147,95 @@ function renderGeneralPane(host) {
   // push.js owns the label, the disabled state, and the gesture-sensitive
   // click path; it keeps this button and the sidebar item in step.
   bindPushToggle(document.getElementById('general-notif'));
+}
+
+// ----- usage pane ----------------------------------------------------------
+
+// Opening reads the server's cache; only Refresh starts a CLI process.
+function renderUsagePane(host) {
+  host.innerHTML = `
+    <div id="usage-body"><div class="settings-section"><p class="muted">Loading…</p></div></div>
+    <div class="settings-section">
+      <div class="settings-row">
+        <div class="settings-row-text">
+          <span class="settings-row-label">Subscription limits</span>
+          <p id="usage-updated" class="settings-row-hint">Refresh asks each agent CLI.</p>
+        </div>
+        <button id="usage-refresh" class="settings-row-action" type="button">Refresh</button>
+      </div>
+    </div>`;
+  const button = document.getElementById('usage-refresh');
+  button.addEventListener('click', () => loadUsage(button, true));
+  loadUsage(button, false);
+}
+
+async function loadUsage(button, refresh) {
+  button.disabled = true;
+  let list = null;
+  try {
+    const res = await fetch('/api/v1/usage' + (refresh ? '?refresh=1' : ''));
+    if (res.ok) list = (await res.json()).backends || [];
+  } catch { /* shown below */ }
+  button.disabled = false;
+  const body = document.getElementById('usage-body');
+  if (!body) return; // the pane was left meanwhile
+  if (!list) {
+    body.innerHTML = `<div class="settings-section"><p class="usage-error">Could not load usage.</p></div>`;
+    return;
+  }
+  if (!list.length) {
+    body.innerHTML = `<div class="settings-section"><p class="muted">No backend reports subscription limits.</p></div>`;
+    return;
+  }
+  body.innerHTML = list.map(usageSectionHTML).join('');
+  const times = list.map(b => b.usage && Date.parse(b.usage.updated_at)).filter(Boolean);
+  if (times.length) {
+    document.getElementById('usage-updated').textContent = 'Updated ' + new Date(Math.min(...times))
+      .toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) + '.';
+  }
+}
+
+function usageSectionHTML(b) {
+  const name = b.name.charAt(0).toUpperCase() + b.name.slice(1);
+  const plan = b.usage?.plan ? ` · ${b.usage.plan}` : '';
+  const windows = b.usage?.windows || [];
+  let rows = windows.map(w => {
+    const pct = Math.max(0, Math.min(100, Math.round(w.used_percent)));
+    return `<div class="settings-row">
+      <div class="settings-row-text">
+        <span class="settings-row-label">${esc(windowLabel(w.window_minutes))}</span>
+        <p class="settings-row-hint">${esc(resetText(w.resets_at))}</p>
+      </div>
+      <div class="usage-meter${pct >= 90 ? ' high' : ''}">
+        <span class="usage-bar"><span style="width:${pct}%"></span></span>
+        <span class="usage-pct">${pct}%</span>
+      </div>
+    </div>`;
+  }).join('');
+  if (!b.usage && !b.error) {
+    rows = `<p class="muted">Not checked yet.</p>`;
+  } else if (b.usage && !windows.length && !b.error) {
+    rows = `<p class="muted">No subscription limits for this login.</p>`;
+  }
+  if (b.error) rows += `<p class="usage-error">${esc(b.error)}</p>`;
+  return `<div class="settings-section"><h2>${esc(name + plan)}</h2>${rows}</div>`;
+}
+
+function windowLabel(minutes) {
+  if (minutes === 10080) return 'Weekly limit';
+  if (minutes % 1440 === 0) return `${minutes / 1440}-day limit`;
+  if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
+  return `${minutes}-minute limit`;
+}
+
+function resetText(resetsAt) {
+  const at = resetsAt ? Date.parse(resetsAt) : NaN;
+  if (Number.isNaN(at)) return '';
+  const mins = Math.round((at - Date.now()) / 60000);
+  if (mins <= 0) return 'Reset since last report';
+  if (mins < 60) return `Resets in ${mins}m`;
+  if (mins < 24 * 60) return `Resets in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+  return 'Resets ' + new Date(at).toLocaleString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'});
 }
 
 // ----- agents pane ---------------------------------------------------------

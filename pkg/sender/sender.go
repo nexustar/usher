@@ -555,6 +555,17 @@ func (s *Sender) SetScheduled(f func(id string) bool) {
 	}
 }
 
+// Usage reports the account's subscription limits.
+func (s *Sender) Usage(ctx context.Context, refresh bool) (backend.Usage, error) {
+	if s.app != nil {
+		return s.app.Usage(ctx, refresh)
+	}
+	if s.claude != nil {
+		return s.claude.Usage(ctx, refresh)
+	}
+	return backend.Usage{}, errors.New("sender has no headless backend")
+}
+
 // LiveSessions lists the sessions with a live backend worker.
 func (s *Sender) LiveSessions() []backend.LiveSession {
 	if s.app != nil {

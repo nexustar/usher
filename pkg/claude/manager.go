@@ -186,6 +186,7 @@ type Manager struct {
 	// assistant message, so a model switch needs this only until a turn runs
 	// under it; effort is not recorded and falls back to the model's default.
 	runtimes map[string]Runtime
+	usage    backend.UsageCache
 }
 
 // Runtime is a model and effort switched to after a session started.
@@ -822,6 +823,10 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		}
 		if e.Type == "control_response" {
 			m.finishControlRequest(p, s.Bytes())
+			continue
+		}
+		if e.Type == "rate_limit_event" {
+			m.observeRateLimit(s.Bytes())
 			continue
 		}
 		if e.Type == "system" {

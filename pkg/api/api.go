@@ -60,6 +60,7 @@ type Router interface {
 	ComposerItems(ctx context.Context, id, cwd string) (backend.ComposerCatalog, error)
 	Backends() []string
 	Models(ctx context.Context, backendName string) ([]backend.Model, error)
+	Usage(ctx context.Context, backendName string, refresh bool) (backend.Usage, bool, error)
 	SearchSessionTranscript(id, query string, maxHits, contextChars int) ([]core.TranscriptSearchHit, bool, error)
 	SearchAllSessions(query string, maxSessions, contextChars int) ([]core.SessionSearchResult, bool, error)
 	ListPendingInteractions() []interaction.Pending
@@ -91,6 +92,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	}
 	handle("GET /info", s.handleInfo)
 	handle("GET /backends", s.handleBackends)
+	handle("GET /usage", s.handleUsage)
 
 	handle("GET /sessions", s.handleListSessions)
 	handle("POST /sessions", s.handleCreateSession)

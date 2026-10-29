@@ -1692,6 +1692,23 @@ func (r *Router) Approvals(backendName string) []string {
 	return nil
 }
 
+// Usage: ok is false for a backend without limits or without its CLI.
+func (r *Router) Usage(ctx context.Context, backendName string, refresh bool) (u backendpkg.Usage, ok bool, err error) {
+	b, found := r.backends[backendName]
+	if !found {
+		return u, false, nil
+	}
+	p, ok := b.Runtime.(backendpkg.UsageProvider)
+	if !ok {
+		return u, false, nil
+	}
+	u, err = p.Usage(ctx, refresh)
+	if errors.Is(err, backendpkg.ErrNoUsage) {
+		return u, false, nil
+	}
+	return u, true, err
+}
+
 // checkApproval accepts any known approval on a backend that does not list.
 func (r *Router) checkApproval(backendName, approval string) error {
 	approvals := r.Approvals(backendName)

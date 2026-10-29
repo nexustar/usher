@@ -49,6 +49,7 @@ type Manager struct {
 	switches map[string]runtimeSwitch
 	stop     chan struct{}
 	stopOnce sync.Once
+	usage    backend.UsageCache
 }
 
 type runtimeSwitch struct{ model, effort, approval string }
@@ -185,7 +186,9 @@ func (m *Manager) newClient(id, instructions string, extra []string, router bool
 			config[k] = v
 		}
 	}
-	return New(m.bin, m.interactions, sandbox, config, m.env, args, logger)
+	c := New(m.bin, m.interactions, sandbox, config, m.env, args, logger)
+	c.onRateLimits = m.observeRateLimits
+	return c
 }
 
 func (m *Manager) SetSystemPromptLookup(lookup func(string) string) {

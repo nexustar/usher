@@ -2062,6 +2062,20 @@ pre.raw-markdown {
 .settings-row-note { display: none; flex-shrink: 0; }
 .settings-row:has(> .settings-row-action[hidden]) .settings-row-note { display: block; }
 
+/* ----- Usage pane ------------------------------------------------------- */
+.usage-meter { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+.usage-bar {
+  width: 9rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--border-muted);
+  overflow: hidden;
+}
+.usage-bar > span { display: block; height: 100%; background: var(--accent); }
+.usage-meter.high .usage-bar > span { background: var(--danger); }
+.usage-pct { min-width: 2.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+.usage-error { margin: 0.5rem 0 0; color: var(--danger-text); }
+
 /* ----- Config panes (Agents, Scheduled) --------------------------------- */
 /* One list-beside-editor layout, shared by every settings pane that manages a
  * named collection. The panes differ only in their form fields. */
