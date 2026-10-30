@@ -176,8 +176,11 @@ func HookSocketPath(dataDir string) string {
 // interleave their set/restore.
 var listenMu sync.Mutex
 
-// ListenUnixSocket binds a Unix domain socket at path with mode 0600. A
-// stale socket file from a previous unclean shutdown is removed first.
+// ErrSocketInUse is a socket another process still listens on.
+var ErrSocketInUse = errors.New("socket in use")
+
+// ListenUnixSocket binds a Unix domain socket at path with mode 0600,
+// replacing a leftover socket file but not a live one (ErrSocketInUse).
 // Shared with the web package's hook listener.
 //
 // The socket is born 0600, not chmod'd down after bind: a chmod-after-listen
@@ -190,6 +193,10 @@ func ListenUnixSocket(path string) (net.Listener, error) {
 		return nil, err
 	}
 	if info, err := os.Stat(path); err == nil && info.Mode()&os.ModeSocket != 0 {
+		if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
+			c.Close()
+			return nil, fmt.Errorf("%s: %w", path, ErrSocketInUse)
+		}
 		_ = os.Remove(path)
 	}
 	listenMu.Lock()

@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -50,11 +52,9 @@ var Version = "dev"
 // integration (the token is a secret, so it's never a flag).
 const telegramTokenEnv = "TELEGRAM_BOT_TOKEN"
 
-// Main is the usher command line: args are the arguments after the program
-// name, and the result is the process exit status. Spawned sessions call the
-// running binary back as `<binary> hook` and `<binary> mcp-stdio`, so a custom
-// binary must dispatch those too, which Main does for it.
-func Main(args []string, exts ...Extension) int {
+// Main is the usher command line: args follow the program name; the result
+// is the exit status.
+func Main(args []string) int {
 	if len(args) < 1 {
 		usage()
 		return 2
@@ -63,7 +63,7 @@ func Main(args []string, exts ...Extension) int {
 	var err error
 	switch cmd {
 	case "serve":
-		err = serve(rest, exts)
+		err = serve(rest)
 	case "hook":
 		err = cli.Hook(rest)
 	case "setup":
@@ -102,17 +102,11 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  version            print version")
 }
 
-// serve parses the serve flags, the extensions' included, and runs until
-// SIGINT or SIGTERM.
-func serve(args []string, exts []Extension) error {
+// serve parses the serve flags and runs until SIGINT or SIGTERM.
+func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	o := DefaultOptions()
 	o.Flags(fs)
-	for _, ext := range exts {
-		if ext.Flags != nil {
-			ext.Flags(fs)
-		}
-	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -133,35 +127,102 @@ func serve(args []string, exts []Extension) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	return Run(ctx, o, exts...)
+	return Run(ctx, o)
 }
 
-// Run serves with o until ctx is cancelled. Extensions contribute in the
-// order given; the first error aborts startup.
-//
-// Spawned sessions call the running executable back as `<exe> hook` and
-// `<exe> mcp-stdio`. A process that embeds Run instead of Main must dispatch
-// those two subcommands from its own command line (pkg/cli has them), or
-// questions and show_image fail silently.
-func Run(ctx context.Context, o Options, exts ...Extension) error {
-	if o.AutoArchiveDays < 0 {
-		return fmt.Errorf("--auto-archive-days must be ≥ 0 (got %d)", o.AutoArchiveDays)
-	}
-	if o.DataDir == "" {
-		return errors.New("could not resolve data dir; pass --data-dir")
-	}
-	logger, err := o.logger()
+// Run is `usher serve`: New, then Serve on o.Addr until ctx is cancelled.
+func Run(ctx context.Context, o Options) error {
+	srv, err := New(ctx, o)
 	if err != nil {
 		return err
 	}
+	defer srv.Close()
+	ln, err := net.Listen("tcp", o.Addr)
+	if err != nil {
+		return fmt.Errorf("web listen %s: %w", o.Addr, err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-served:
+		return err
+	}
+}
+
+// ErrDataDirInUse is another usher already running on Options.DataDir.
+var ErrDataDirInUse = errors.New("another usher is running on this data dir")
+
+// Server is a running usher, from New.
+type Server struct {
+	app    *App
+	web    *web.Server
+	cancel context.CancelFunc
+	close  sync.Once
+}
+
+func (s *Server) App() *App { return s.app }
+
+// Handler is the UI and API behind usher's authentication.
+func (s *Server) Handler() http.Handler { return s.web.Handler() }
+
+// Handle adds h at pattern, an http.ServeMux pattern, to Handler. Name a
+// method in it: not every authenticating proxy covers OPTIONS.
+func (s *Server) Handle(pattern string, h http.Handler) { s.web.Handle(pattern, h) }
+
+// Serve serves Handler on ln until Close.
+func (s *Server) Serve(ln net.Listener) error { return s.web.Serve(ln) }
+
+// Close stops serving and all background work.
+func (s *Server) Close() error {
+	s.close.Do(func() {
+		s.cancel()
+		_ = s.web.Close()
+	})
+	return nil
+}
+
+// New assembles usher from o and returns once it is ready to serve; it runs
+// until ctx ends or Close.
+//
+// Spawned sessions call the running executable back as `<exe> hook` and
+// `<exe> mcp-stdio`: a program embedding usher must pass those to Main.
+func New(ctx context.Context, o Options) (*Server, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	srv, err := assemble(ctx, o)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	srv.cancel = cancel
+	return srv, nil
+}
+
+func assemble(ctx context.Context, o Options) (*Server, error) {
+	if o.AutoArchiveDays < 0 {
+		return nil, fmt.Errorf("--auto-archive-days must be ≥ 0 (got %d)", o.AutoArchiveDays)
+	}
+	if o.DataDir == "" {
+		return nil, errors.New("could not resolve data dir; pass --data-dir")
+	}
+	// Before backend setup writes into the data dir. Read-only shares it by
+	// design.
+	if !o.ReadOnly && socketAnswers(pluginapi.HookSocketPath(o.DataDir)) {
+		return nil, fmt.Errorf("%w: %s", ErrDataDirInUse, o.DataDir)
+	}
+	logger, err := o.logger()
+	if err != nil {
+		return nil, err
+	}
 	attachmentsDir, err := filepath.Abs(filepath.Join(o.DataDir, "attachments"))
 	if err != nil {
-		return fmt.Errorf("resolve attachments dir: %w", err)
+		return nil, fmt.Errorf("resolve attachments dir: %w", err)
 	}
 
 	authStore, err := auth.Load(o.DataDir)
 	if err != nil {
-		return fmt.Errorf("load auth: %w", err)
+		return nil, fmt.Errorf("load auth: %w", err)
 	}
 	cfg := settings.New(filepath.Join(o.DataDir, "settings.json"))
 	// A read-only companion leaves the files to the instance that owns them,
@@ -169,17 +230,17 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 	if !o.ReadOnly {
 		for _, key := range []string{"agents", "schedules"} {
 			if err := cfg.ImportFile(key, filepath.Join(o.DataDir, key+".json")); err != nil {
-				return fmt.Errorf("move %s into settings.json: %w", key, err)
+				return nil, fmt.Errorf("move %s into settings.json: %w", key, err)
 			}
 		}
 	}
 	agents, err := agentprofile.Open(cfg.Agents(), func(p []agentprofile.Profile) error { return cfg.SetAgents(p) })
 	if err != nil {
-		return err
+		return nil, err
 	}
 	schedules, err := schedule.Open(cfg.Schedules(), func(t []schedule.Task) error { return cfg.SetSchedules(t) })
 	if err != nil {
-		return err
+		return nil, err
 	}
 	switch {
 	case o.AuthHeader != "":
@@ -187,9 +248,9 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 		if authStore.IsConfigured() {
 			logger.Warn("the web password is not checked while --auth-header is set")
 		}
-	case !authStore.IsConfigured() && !addrIsLoopback(o.Addr):
+	case !authStore.IsConfigured() && o.Addr != "" && !addrIsLoopback(o.Addr):
 		if !o.Insecure {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"refusing to bind non-loopback %q without a password.\n"+
 					"  run `usher set-password` to set one,\n"+
 					"  or bind to 127.0.0.1 / localhost for local-only access,\n"+
@@ -202,7 +263,7 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 	}
 
 	// Each built-in backend is enabled when its session dir exists or its CLI
-	// is installed; extensions add theirs after. At least one is required.
+	// is installed. At least one backend is required.
 	// defaultBackend (new-session/fallback) is the first enabled, so Claude
 	// when it is.
 	hookSock := pluginapi.HookSocketPath(o.DataDir)
@@ -275,14 +336,10 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 		checkCLI("pi", o.PiCmd, o.ReadOnly, logger)
 	}
 
-	env := Env{Options: o, HookSocket: hookSock, Interactions: h, Logger: logger}
-	for _, ext := range exts {
-		if ext.Backends == nil {
-			continue
-		}
-		added, err := ext.Backends(env)
+	if o.Backends != nil {
+		added, err := o.Backends(Env{Options: o, HookSocket: hookSock, Interactions: h, Logger: logger})
 		if err != nil {
-			return fmt.Errorf("extension %s: %w", ext.Name, err)
+			return nil, fmt.Errorf("backends: %w", err)
 		}
 		names := make([]string, 0, len(added))
 		for name := range added {
@@ -292,18 +349,18 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 		for _, name := range names {
 			b := added[name]
 			if _, dup := backends[name]; dup {
-				return fmt.Errorf("extension %s: backend %q is already registered", ext.Name, name)
+				return nil, fmt.Errorf("backend %q is already registered", name)
 			}
 			if b.Runtime == nil || b.Transcript == nil {
-				return fmt.Errorf("extension %s: backend %q needs a Runtime and a Transcript", ext.Name, name)
+				return nil, fmt.Errorf("backend %q needs a Runtime and a Transcript", name)
 			}
 			add(name, b)
-			logger.Info("backend enabled", "backend", name, "extension", ext.Name)
+			logger.Info("backend enabled", "backend", name)
 		}
 	}
 
 	if len(backends) == 0 {
-		return fmt.Errorf("no backend found: none of %q, %q, %q is installed, and the sessions directories "+
+		return nil, fmt.Errorf("no backend found: none of %q, %q, %q is installed, and the sessions directories "+
 			"%q, %q, and %q do not exist.\n"+
 			"  install a supported agent, or pass its binary or sessions-directory flag.",
 			o.ClaudeCmd, o.CodexCmd, o.PiCmd, o.ClaudeSessionsDir, o.CodexSessionsDir, o.PiSessionsDir)
@@ -311,7 +368,7 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 
 	d, err := discovery.NewMulti(logger, sources...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if claudeRuntime, ok := backends["claude"].Runtime.(*sender.Sender); ok {
 		claudeRuntime.SetScheduled(func(id string) bool {
@@ -362,8 +419,38 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 	}
 	logger.Info("web push", "enabled", pushMgr != nil)
 
+	// Scheduled tasks: each due task creates a session, so the runner needs
+	// only the two seams the composer uses. Inert until a task is saved.
+	// Read-only mode keeps the runner for GET /api/v1/schedules but never fires it.
+	scheduleRunner := schedule.NewRunner(schedules, r, agents, logger)
+	apiConfig := api.Config{
+		Agents:         agents,
+		Schedules:      scheduleRunner,
+		AttachmentsDir: attachmentsDir,
+		Version:        Version,
+		ReadOnly:       o.ReadOnly,
+	}
+	themePath := filepath.Join(o.DataDir, "theme.css")
+	proxy := web.ProxyAuth{Header: o.AuthHeader, LogoutURL: o.LogoutURL}
+	srv := web.NewServer(hookSock, authStore, proxy, r, pushMgr, o.EditorURL, o.UIDir, themePath, o.AppName, apiConfig, logger)
+
+	// Bind the hook socket before starting anything; it also catches an
+	// usher started since the check above.
+	if err := srv.Start(); err != nil {
+		if errors.Is(err, pluginapi.ErrSocketInUse) {
+			return nil, fmt.Errorf("%w: %s", ErrDataDirInUse, o.DataDir)
+		}
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			_ = srv.Close()
+		}
+	}()
+
 	if err := d.Start(ctx); err != nil {
-		return err
+		return nil, err
 	}
 
 	if pushMgr != nil {
@@ -372,35 +459,23 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 
 	logger.Info("auth",
 		"configured", authStore.IsConfigured(),
-		"loopback_bind", addrIsLoopback(o.Addr),
+		"loopback_bind", o.Addr == "" || addrIsLoopback(o.Addr),
 	)
 
 	if o.ReadOnly {
 		logger.Info("read-only mode: web mutations rejected; schedule runner, telegram, plugin api, hook socket, and web push disabled")
 	} else if err := startTelegramHub(ctx, r, o, logger); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Scheduled tasks: each due task creates a session, so the runner needs
-	// only the two seams the composer uses. Inert until a task is saved.
-	// Read-only mode keeps the runner for GET /api/v1/schedules but never fires it.
-	scheduleRunner := schedule.NewRunner(schedules, r, agents, logger)
 	if !o.ReadOnly {
 		go scheduleRunner.Run(ctx)
-	}
-	apiConfig := api.Config{
-		Agents:         agents,
-		Schedules:      scheduleRunner,
-		AttachmentsDir: attachmentsDir,
-		Version:        Version,
-		ReadOnly:       o.ReadOnly,
 	}
 
 	// Plugin API: out-of-process IM frontends (e.g. usher-lark) consume the
 	// same Router seam the Telegram hub uses, over a 0600 Unix socket. Inert
 	// until a plugin connects. Read-only skips it: plugins drive sessions,
-	// and binding would steal a shared data-dir's socket from the live
-	// instance.
+	// and the socket belongs to the live instance sharing the data dir.
 	if !o.ReadOnly {
 		go func() {
 			if err := pluginapi.NewServer(r, apiConfig, logger).Run(ctx, pluginapi.SocketPath(o.DataDir)); err != nil && ctx.Err() == nil {
@@ -409,26 +484,14 @@ func Run(ctx context.Context, o Options, exts ...Extension) error {
 		}()
 	}
 
-	themePath := filepath.Join(o.DataDir, "theme.css")
-	proxy := web.ProxyAuth{Header: o.AuthHeader, LogoutURL: o.LogoutURL}
-	srv := web.NewServer(o.Addr, hookSock, authStore, proxy, r, pushMgr, o.EditorURL, o.UIDir, themePath, o.AppName, apiConfig, logger)
-
-	app := &App{Options: o, Router: r, Broker: b, Interactions: h, Agents: agents, Logger: logger, web: srv}
-	for _, ext := range exts {
-		if ext.Start == nil {
-			continue
-		}
-		if err := ext.Start(ctx, app); err != nil {
-			return fmt.Errorf("extension %s: %w", ext.Name, err)
-		}
-	}
-
 	// Foreign-turn watcher: turns usher didn't start (background workflow
 	// continuations, pane-typed prompts) still have to refresh the transcript
 	// views that are open on their session.
 	go r.RunForeignWatch(ctx, 0)
 
-	return srv.Run(ctx)
+	started = true
+	app := &App{Options: o, Router: r, Broker: b, Interactions: h, Agents: agents, Logger: logger}
+	return &Server{app: app, web: srv}, nil
 }
 
 // startTelegramHub launches the Telegram forum mirror in a background goroutine
@@ -460,6 +523,16 @@ func startTelegramHub(ctx context.Context, r *router.Router, o Options, logger *
 		}
 	}()
 	return nil
+}
+
+// socketAnswers reports whether something listens on the Unix socket.
+func socketAnswers(path string) bool {
+	c, err := net.DialTimeout("unix", path, time.Second)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }
 
 // addrIsLoopback reports whether the host part of addr binds only on loopback

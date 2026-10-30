@@ -1,11 +1,10 @@
 // Package web serves the usher HTTP API and embedded static UI.
 //
-// Two listeners run side by side:
+// Two kinds of listener run side by side:
 //
-//   - the **web** listener (TCP at s.addr) serves the SPA, JSON API, SSE
-//     stream, and /login. Every non-exempt request is gated by auth
-//     middleware when a password is configured or a proxy header is
-//     trusted.
+//   - **web** listeners, any the caller passes to Serve, serve Handler: the
+//     SPA, JSON API, SSE stream, and /login, behind auth middleware when a
+//     password is configured or a proxy header is trusted.
 //   - the **hook** listener (Unix socket at s.hookSockPath, mode 0600)
 //     serves only /hook/{event}. Hook traffic from the local `usher hook`
 //     subprocess never touches the public TCP port, so it doesn't need
@@ -27,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nexustar/usher/pkg/api"
@@ -58,7 +58,6 @@ type ProxyAuth struct {
 }
 
 type Server struct {
-	addr         string
 	hookSockPath string
 	auth         *auth.Store
 	proxy        ProxyAuth
@@ -75,24 +74,24 @@ type Server struct {
 	// readOnly rejects every state-changing web request (see
 	// readOnlyMiddleware); reads, SSE, and static files stay available.
 	readOnly bool
-	// routes are the handlers added with Handle, mounted by Run.
-	routes []route
-}
 
-type route struct {
-	pattern string
+	build   sync.Once
+	mux     *http.ServeMux
 	handler http.Handler
+
+	mu      sync.Mutex
+	servers []*http.Server // one per Serve
+	hookSrv *http.Server
 }
 
-// Handle serves h at pattern, an http.ServeMux pattern, behind the same
-// authentication as the built-in routes. Call it before Run; a pattern that
-// duplicates a built-in route panics there, as ServeMux does.
+// Handle adds h at pattern to Handler. A duplicate pattern panics, as in
+// ServeMux.
 func (s *Server) Handle(pattern string, h http.Handler) {
-	s.routes = append(s.routes, route{pattern, h})
+	s.Handler()
+	s.mux.Handle(pattern, h)
 }
 
 func NewServer(
-	addr string,
 	hookSockPath string,
 	authStore *auth.Store,
 	proxy ProxyAuth,
@@ -113,7 +112,6 @@ func NewServer(
 	}
 	c.Router = r
 	return &Server{
-		addr:         addr,
 		hookSockPath: hookSockPath,
 		auth:         authStore,
 		proxy:        proxy,
@@ -129,7 +127,13 @@ func NewServer(
 	}
 }
 
-func (s *Server) Run(ctx context.Context) error {
+// Handler is the web surface behind its authentication.
+func (s *Server) Handler() http.Handler {
+	s.build.Do(s.buildHandler)
+	return s.handler
+}
+
+func (s *Server) buildHandler() {
 	webMux := http.NewServeMux()
 
 	webMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -154,20 +158,13 @@ func (s *Server) Run(ctx context.Context) error {
 	webMux.HandleFunc("POST /internal/push/subscribe", s.handlePushSubscribe)
 	webMux.HandleFunc("POST /internal/push/unsubscribe", s.handlePushUnsubscribe)
 	webMux.HandleFunc("GET /theme.css", s.handleTheme)
-	for _, rt := range s.routes {
-		webMux.Handle(rt.pattern, rt.handler)
-	}
 
 	var staticRoot fs.FS
 	if s.uiDir != "" {
 		staticRoot = os.DirFS(s.uiDir)
 		s.logger.Info("serving UI from disk", "dir", s.uiDir)
 	} else {
-		var err error
-		staticRoot, err = fs.Sub(staticFS, "static")
-		if err != nil {
-			return err
-		}
+		staticRoot, _ = fs.Sub(staticFS, "static") // a constant, valid path
 	}
 	webMux.HandleFunc("GET /{$}", s.serveTemplated(staticRoot, "index.html", "text/html; charset=utf-8"))
 	webMux.HandleFunc("GET /manifest.webmanifest", s.serveTemplated(staticRoot, "manifest.webmanifest", "application/manifest+json"))
@@ -177,67 +174,64 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.readOnly {
 		apiHandler = readOnlyMiddleware(webMux)
 	}
-	webSrv := &http.Server{
-		Addr:              s.addr,
-		Handler:           s.hostGuard(contentSecurityPolicy(gzipMiddleware(crossOriginGuard(s.authMiddleware(apiHandler))))),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	s.mux = webMux
+	s.handler = s.hostGuard(contentSecurityPolicy(gzipMiddleware(crossOriginGuard(s.authMiddleware(apiHandler)))))
+}
 
-	webListener, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return fmt.Errorf("web listen %s: %w", s.addr, err)
-	}
-
-	errCh := make(chan error, 2)
-
-	// Read-only never binds the hook socket: it spawns no sessions so no
-	// hook can arrive, and on a data-dir shared with a live instance binding
-	// would steal that instance's socket (ListenUnixSocket unlinks it).
-	var hookSrv *http.Server
-	if !s.readOnly {
-		hookMux := http.NewServeMux()
-		hookMux.HandleFunc("POST /hook/{event}", s.handleHook)
-		sockListener, err := pluginapi.ListenUnixSocket(s.hookSockPath)
-		if err != nil {
-			_ = webListener.Close()
-			return fmt.Errorf("hook socket: %w", err)
-		}
-		hookSrv = &http.Server{
-			Handler:           hookMux,
-			ReadHeaderTimeout: 5 * time.Second,
-		}
-		go func() {
-			s.logger.Info("usher hook listening", "socket", s.hookSockPath)
-			errCh <- hookSrv.Serve(sockListener)
-		}()
-	}
-
-	go func() {
-		s.logger.Info("usher web listening", "addr", s.addr)
-		errCh <- webSrv.Serve(webListener)
-	}()
-
-	shutdown := func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = webSrv.Shutdown(shutdownCtx)
-		if hookSrv != nil {
-			_ = hookSrv.Shutdown(shutdownCtx)
-			_ = os.Remove(s.hookSockPath)
-		}
-	}
-
-	select {
-	case <-ctx.Done():
-		shutdown()
+// Start binds the hook socket, except read-only: it spawns no sessions, and
+// the socket belongs to the live instance sharing its data dir.
+func (s *Server) Start() error {
+	if s.readOnly {
 		return nil
-	case err := <-errCh:
-		shutdown()
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+	}
+	hookMux := http.NewServeMux()
+	hookMux.HandleFunc("POST /hook/{event}", s.handleHook)
+	ln, err := pluginapi.ListenUnixSocket(s.hookSockPath)
+	if err != nil {
+		return fmt.Errorf("hook socket: %w", err)
+	}
+	srv := &http.Server{Handler: hookMux, ReadHeaderTimeout: 5 * time.Second}
+	s.mu.Lock()
+	s.hookSrv = srv
+	s.mu.Unlock()
+	go func() {
+		s.logger.Info("usher hook listening", "socket", s.hookSockPath)
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Warn("hook socket stopped", "err", err)
 		}
+	}()
+	return nil
+}
+
+// Serve serves Handler on ln until Close.
+func (s *Server) Serve(ln net.Listener) error {
+	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	s.mu.Lock()
+	s.servers = append(s.servers, srv)
+	s.mu.Unlock()
+	s.logger.Info("usher web listening", "addr", ln.Addr().String())
+	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	return nil
+}
+
+// Close stops every Serve and the hook socket.
+func (s *Server) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.mu.Lock()
+	servers, hook := s.servers, s.hookSrv
+	s.servers, s.hookSrv = nil, nil
+	s.mu.Unlock()
+	for _, srv := range servers {
+		_ = srv.Shutdown(ctx)
+	}
+	if hook != nil {
+		_ = hook.Shutdown(ctx)
+		_ = os.Remove(s.hookSockPath)
+	}
+	return nil
 }
 
 // handleTheme serves the operator-supplied CSS outside the embedded static

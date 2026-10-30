@@ -1,20 +1,17 @@
-// Package usher assembles a usher binary: the web router over local
-// coding-agent sessions. cmd/usher calls Main; a custom binary calls Main or
-// Run with Extensions that add backends, HTTP routes and in-process frontends
-// without forking, keeping their own dependencies in their own module.
+// Package usher assembles usher, the web router over local coding-agent
+// sessions. cmd/usher calls Main; a program embedding usher calls New and
+// serves the Server it returns.
 //
 // Stability: this package, pkg/backend, pkg/core, pkg/interaction and pkg/api
-// are the extension contract, and changes to them are called out in release
-// notes. Every other package under pkg/ is importable but may change in any
-// release.
+// are what a program embedding usher builds on, and changes to them are
+// called out in release notes. Every other package under pkg/ is importable
+// but may change in any release.
 package usher
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,29 +24,9 @@ import (
 	"github.com/nexustar/usher/pkg/interaction"
 	"github.com/nexustar/usher/pkg/pluginapi"
 	"github.com/nexustar/usher/pkg/router"
-	"github.com/nexustar/usher/pkg/web"
 )
 
-// Extension adds to a usher binary at build time. Every field is optional.
-// Main calls Flags before parsing the serve command line; Run calls Backends
-// before the router exists and Start once it does, each in the order the
-// extensions were given.
-type Extension struct {
-	// Name labels the extension in logs and errors.
-	Name string
-	// Flags registers serve flags the extension reads back in Backends or
-	// Start.
-	Flags func(fs *flag.FlagSet)
-	// Backends returns the backends the extension contributes, keyed by the
-	// name sessions carry. A name a built-in or earlier extension already
-	// uses is an error.
-	Backends func(env Env) (map[string]backend.Backend, error)
-	// Start runs after the router and web server are built and before
-	// serving begins. Long-running work belongs in a goroutine bound to ctx.
-	Start func(ctx context.Context, app *App) error
-}
-
-// Env is what Run constructs the built-in backends with.
+// Env is what backends are constructed with.
 type Env struct {
 	Options Options
 	// HookSocket is the Unix socket spawned sessions report tool calls to;
@@ -61,7 +38,7 @@ type Env struct {
 	Logger       *slog.Logger
 }
 
-// App is the assembled server an Extension's Start receives.
+// App is what a Server is made of.
 type App struct {
 	Options      Options
 	Router       *router.Router
@@ -69,18 +46,13 @@ type App struct {
 	Interactions *interaction.Manager
 	Agents       *agentprofile.Store
 	Logger       *slog.Logger
-	web          *web.Server
 }
 
-// Handle serves h at pattern, an http.ServeMux pattern, behind the web
-// server's authentication. Only valid during Start. Name a method in the
-// pattern: not every authenticating proxy covers OPTIONS.
-func (a *App) Handle(pattern string, h http.Handler) { a.web.Handle(pattern, h) }
-
-// Options configures Run. DefaultOptions fills in what `usher serve` uses
-// without flags; Flags binds the serve flags on top.
+// Options configures New and Run. DefaultOptions fills in what `usher serve`
+// uses without flags; Flags binds the serve flags on top.
 type Options struct {
-	// Addr is the web listen address.
+	// Addr is where Run listens. New only checks that a non-loopback Addr
+	// has a password.
 	Addr string
 	// DataDir holds usher's own state: auth, settings, sockets, attachments.
 	DataDir string
@@ -148,9 +120,13 @@ type Options struct {
 	LogLevel  string
 	LogFormat string
 	// Logger replaces the one built from LogLevel and LogFormat. When nil,
-	// Run builds one and installs it as slog's default, as the usher binary
+	// New builds one and installs it as slog's default, as the usher binary
 	// does.
 	Logger *slog.Logger
+
+	// Backends adds backends beside the built-in ones, keyed by the name
+	// their sessions carry.
+	Backends func(env Env) (map[string]backend.Backend, error)
 }
 
 // DefaultOptions is `usher serve` without flags.

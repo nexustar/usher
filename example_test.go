@@ -3,40 +3,52 @@ package usher_test
 import (
 	"context"
 	"flag"
+	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 
 	"github.com/nexustar/usher"
 	"github.com/nexustar/usher/pkg/backend"
 )
 
-// A custom binary is cmd/usher plus the extensions it compiles in: here one
-// that adds a backend behind its own flag and a route behind usher's
-// authentication. Its module depends on github.com/nexustar/usher; usher's
-// own dependencies stay as they are.
+// A program embedding usher: its own serve adds a backend and a route;
+// every other command, hook and mcp-stdio included, goes to Main.
 func Example() {
-	var root string
-	echo := usher.Extension{
-		Name: "echo",
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&root, "echo-sessions-dir", "", "echo session logs directory")
-		},
-		Backends: func(env usher.Env) (map[string]backend.Backend, error) {
-			if root == "" {
-				return nil, nil
-			}
-			return map[string]backend.Backend{"echo": {
-				Runtime:    echoRuntime{},
-				Transcript: echoTranscript{},
-				Source:     echoSource{root},
-			}}, nil
-		},
-		Start: func(ctx context.Context, app *usher.App) error {
-			app.Handle("GET /echo/ping", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = w.Write([]byte("pong"))
-			}))
-			return nil
-		},
+	if len(os.Args) < 2 || os.Args[1] != "serve" {
+		os.Exit(usher.Main(os.Args[1:]))
 	}
-	os.Exit(usher.Main(os.Args[1:], echo))
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	o := usher.DefaultOptions()
+	o.Flags(fs)
+	root := fs.String("echo-sessions-dir", "", "echo session logs directory")
+	_ = fs.Parse(os.Args[2:])
+	o.Backends = func(usher.Env) (map[string]backend.Backend, error) {
+		if *root == "" {
+			return nil, nil
+		}
+		return map[string]backend.Backend{"echo": {
+			Runtime:    echoRuntime{},
+			Transcript: echoTranscript{},
+			Source:     echoSource{*root},
+		}}, nil
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	srv, err := usher.New(ctx, o)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer srv.Close()
+	srv.Handle("GET /echo/ping", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("pong"))
+	}))
+	ln, err := net.Listen("tcp", o.Addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	go srv.Serve(ln)
+	<-ctx.Done()
 }
