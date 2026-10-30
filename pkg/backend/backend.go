@@ -331,7 +331,7 @@ type MetadataSource interface {
 // Backend explicitly composes the capabilities registered for one agent CLI.
 // Runtime and Transcript are required; Source enables discovery of the
 // backend's sessions on disk. There is deliberately no global init registry:
-// usher.Run assembles the built-in backends and Extensions add theirs.
+// usher.New assembles the built-in backends and Options.Backends adds others.
 type Backend struct {
 	Runtime    Runtime
 	Transcript Transcript

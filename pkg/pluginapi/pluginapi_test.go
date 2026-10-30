@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -476,4 +478,29 @@ func TestEventStreamCarriesOnlyPublicEvents(t *testing.T) {
 			t.Fatal("no event received")
 		}
 	}
+}
+
+// A live socket is refused; a leftover one is replaced.
+func TestListenUnixSocketRefusesALiveSocket(t *testing.T) {
+	dir, err := os.MkdirTemp("", "usher-sock") // short: socket paths cap near 100 bytes
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s.sock")
+	ln, err := pluginapi.ListenUnixSocket(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pluginapi.ListenUnixSocket(path); !errors.Is(err, pluginapi.ErrSocketInUse) {
+		t.Fatalf("second listen: %v, want ErrSocketInUse", err)
+	}
+	// Leave the file behind, as a crash would.
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+	ln2, err := pluginapi.ListenUnixSocket(path)
+	if err != nil {
+		t.Fatalf("listen over a leftover socket: %v", err)
+	}
+	ln2.Close()
 }

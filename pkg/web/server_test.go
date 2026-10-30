@@ -119,7 +119,7 @@ func TestAppName(t *testing.T) {
 	})
 
 	t.Run("default", func(t *testing.T) {
-		if got := NewServer("", "", nil, ProxyAuth{}, nil, nil, "", "", "", "", api.Config{}, nil).appName; got != "usher" {
+		if got := NewServer("", nil, ProxyAuth{}, nil, nil, "", "", "", "", api.Config{}, nil).appName; got != "usher" {
 			t.Errorf("appName = %q, want usher", got)
 		}
 	})
