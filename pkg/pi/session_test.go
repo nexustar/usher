@@ -788,3 +788,22 @@ done
 		t.Fatalf("requests = %s", got)
 	}
 }
+
+func TestToolTargetByName(t *testing.T) {
+	cases := []struct{ name, args, want string }{
+		{"bash", `{"command":"ls\npwd"}`, "ls\npwd"},
+		{"powershell", `{"command":"Get-ChildItem"}`, "Get-ChildItem"},
+		{"read", `{"path":"a.go","offset":2}`, "a.go"},
+		{"write", `{"path":"a.go","content":"x"}`, "a.go"},
+		{"grep", `{"pattern":"TODO","path":"src"}`, "TODO in src"},
+		{"find", `{"pattern":"*.go"}`, "*.go"},
+		{"ls", `{}`, "."},
+		{"show_image", `{"file_path":"/tmp/a.png"}`, "/tmp/a.png"},
+		{"mcp__x__y", `{"query":"a\nb"}`, "a"},
+	}
+	for _, c := range cases {
+		if got := toolTarget(c.name, json.RawMessage(c.args)); got != c.want {
+			t.Errorf("toolTarget(%s, %s) = %q, want %q", c.name, c.args, got, c.want)
+		}
+	}
+}

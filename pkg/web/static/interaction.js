@@ -110,7 +110,7 @@ function permissionBody(p) {
     catch { inputJSON = String(p.tool_input || ''); }
     return `<pre class="tool-input">${esc(inputJSON)}</pre>`;
   }
-  const shell = /^(bash|shell)$/i.test(v.tool_name || '') ? ' shell' : '';
+  const shell = /^(bash|shell|powershell)$/i.test(v.tool_name || '') ? ' shell' : '';
   return (v.tool_input ? `<pre class="tool-input${shell}">${esc(v.tool_input)}</pre>` : '') +
     (v.content
       ? `<pre class="tool-input">${v.content_kind === 'diff' ? diffHTML(v.content) : esc(v.content)}</pre>`

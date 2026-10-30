@@ -884,8 +884,7 @@ func (a *Assembler) feedResponseItem(l line) (part *core.TurnPart) {
 		if isMCP {
 			stash.target, stash.input = toolTargetMap(args), textutil.IndentJSON(args)
 		} else {
-			target, command := splitToolTarget(args)
-			stash.target, stash.input = core.ToolTitle(target, command), command
+			stash.target, stash.input = functionTarget(p.Name, args)
 		}
 		a.pending[p.CallID] = stash
 		return nil
@@ -1056,19 +1055,88 @@ func argString(m map[string]json.RawMessage, keys ...string) string {
 	return ""
 }
 
-// splitToolTarget separates a function_call's shell command from its display
-// target (file path).
-func splitToolTarget(m map[string]json.RawMessage) (target, command string) {
-	if cmd := argString(m, "cmd", "command"); cmd != "" {
-		return "", cmd
+// functionTarget titles a built-in function call's card and picks what its
+// body shows as input. Tools not named here show a path, else their
+// arguments.
+func functionTarget(name string, m map[string]json.RawMessage) (target, input string) {
+	switch name {
+	case "exec_command", "shell", "shell_command", "local_shell", "container.exec":
+		cmd := argString(m, "cmd", "command")
+		if cmd == "" {
+			var argv []string
+			if json.Unmarshal(m["command"], &argv) == nil && len(argv) > 0 {
+				cmd = shellScript(argv)
+			}
+		}
+		return core.ToolTitle("", cmd), cmd
+	case "write_stdin":
+		return "session " + argText(m["session_id"]), argString(m, "chars")
+	case "update_plan":
+		return textutil.FirstLine(argString(m, "explanation")), planSteps(m["plan"])
+	case "spawn_agent":
+		return textutil.FirstLine(argString(m, "task_name", "nickname", "agent_type")), argString(m, "message")
+	case "send_input", "send_message", "followup_task":
+		return argString(m, "target"), argString(m, "message")
+	case "wait_agent":
+		var ids []string
+		_ = json.Unmarshal(m["targets"], &ids)
+		return strings.Join(ids, ", "), ""
+	case "close_agent", "interrupt_agent":
+		return argString(m, "target"), ""
+	case "resume_agent":
+		return argString(m, "id"), ""
+	case "wait":
+		return argText(m["cell_id"]), ""
+	case "list_mcp_resources", "list_mcp_resource_templates":
+		return argString(m, "server"), ""
+	case "read_mcp_resource":
+		return argString(m, "uri"), ""
+	case "tool_search":
+		return textutil.FirstLine(argString(m, "query")), ""
 	}
-	return argString(m, "file_path", "path"), ""
+	if path := argString(m, "file_path", "path", "dir_path"); path != "" {
+		return path, ""
+	}
+	if len(m) == 0 {
+		return "", ""
+	}
+	return "", textutil.IndentJSON(m)
+}
+
+// argText renders a string or number argument.
+func argText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	if len(raw) > 0 && string(raw) != "null" {
+		return string(raw)
+	}
+	return ""
+}
+
+// planSteps renders update_plan's steps one per line, marked by status.
+func planSteps(raw json.RawMessage) string {
+	var steps []struct{ Step, Status string }
+	_ = json.Unmarshal(raw, &steps)
+	lines := make([]string, len(steps))
+	for i, st := range steps {
+		mark := "[ ]"
+		switch st.Status {
+		case "completed":
+			mark = "[x]"
+		case "in_progress":
+			mark = "[~]"
+		}
+		lines[i] = mark + " " + st.Step
+	}
+	return strings.Join(lines, "\n")
 }
 
 // toolTargetMap picks the display target of an MCP/dynamic tool, whose command
 // keys are plain values rather than shell commands.
 func toolTargetMap(m map[string]json.RawMessage) string {
-	return textutil.FirstLine(argString(m, "cmd", "command", "file_path", "path"))
+	return textutil.FirstLine(argString(m, "cmd", "command", "file_path", "path", "title"))
 }
 
 // renderOutputBody normalizes a tool call output: either a JSON string (older
@@ -1322,8 +1390,10 @@ func customCallHasCanonicalEvent(name, input string) bool {
 // names pass through unchanged (low-maintenance, honest about new tools).
 func prettyToolName(name string) string {
 	switch name {
-	case "exec", "exec_command", "shell", "local_shell":
+	case "exec", "exec_command", "shell", "shell_command", "local_shell":
 		return "Shell"
+	case "write_stdin":
+		return "Stdin"
 	case "apply_patch":
 		return "Edit"
 	case "":

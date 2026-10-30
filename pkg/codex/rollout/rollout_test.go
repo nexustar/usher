@@ -957,3 +957,25 @@ func TestReadSessionMetaUsesLatestCodexUsageSnapshot(t *testing.T) {
 		t.Fatalf("usage = %+v", u)
 	}
 }
+
+func TestFunctionTargetByName(t *testing.T) {
+	cases := []struct{ name, args, target, input string }{
+		{"exec_command", `{"cmd":"go test ./...\necho ok"}`, "go test ./...", "go test ./...\necho ok"},
+		{"shell", `{"command":["bash","-lc","make build"]}`, "make build", "make build"},
+		{"write_stdin", `{"session_id":3,"chars":"y\n"}`, "session 3", "y\n"},
+		{"update_plan", `{"explanation":"Ship it","plan":[{"step":"build","status":"completed"},{"step":"test","status":"in_progress"}]}`, "Ship it", "[x] build\n[~] test"},
+		{"spawn_agent", `{"task_name":"review","message":"look"}`, "review", "look"},
+		{"send_input", `{"target":"a1","message":"go"}`, "a1", "go"},
+		{"wait_agent", `{"targets":["a1","a2"]}`, "a1, a2", ""},
+		{"wait", `{"cell_id":"7","yield_time_ms":100}`, "7", ""},
+		{"read_mcp_resource", `{"server":"s","uri":"file:///a"}`, "file:///a", ""},
+		{"view_image", `{"path":"/tmp/a.png"}`, "/tmp/a.png", ""},
+		{"lookup", `{"id":"x"}`, "", "{\n  \"id\": \"x\"\n}"},
+	}
+	for _, c := range cases {
+		target, input := functionTarget(c.name, parseArgs(c.args))
+		if target != c.target || input != c.input {
+			t.Errorf("functionTarget(%s) = %q, %q; want %q, %q", c.name, target, input, c.target, c.input)
+		}
+	}
+}

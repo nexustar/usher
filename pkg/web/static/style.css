@@ -1621,6 +1621,7 @@ pre.raw-markdown {
 .interaction { padding: 0.75rem 0; border-top: 1px solid var(--border-muted); }
 .interaction:first-of-type { border-top: 0; }
 .interaction .meta { margin-bottom: 0.4rem; }
+.interaction .meta:has(+ .actions) { margin-bottom: 0.9rem; }
 .interaction .meta .interaction-source { margin-left: 0.5rem; color: var(--text-muted); font-size: var(--font-sm); text-decoration: none; }
 .interaction .meta .interaction-source:hover { text-decoration: underline; }
 .interaction .meta .muted { margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--font-sm); }

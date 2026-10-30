@@ -2,6 +2,7 @@ package interaction
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -242,4 +243,24 @@ func waitForPending(t *testing.T, m *Manager) string {
 	}
 	t.Fatal("no pending interaction registered")
 	return ""
+}
+
+// The web UI shows the first pending interaction: the order must be oldest
+// first and stable, or the prompt could change under the user's finger.
+func TestListOldestFirst(t *testing.T) {
+	m := New()
+	now := time.Now()
+	for id, age := range map[string]time.Duration{"c": 0, "a": 2 * time.Minute, "b2": time.Minute, "b1": time.Minute} {
+		m.pending[id] = &pendingEntry{Pending: Pending{ID: id, CreatedAt: now.Add(-age)}}
+	}
+	want := []string{"a", "b1", "b2", "c"}
+	for range 20 {
+		var got []string
+		for _, p := range m.List() {
+			got = append(got, p.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("List order = %v, want %v", got, want)
+		}
+	}
 }

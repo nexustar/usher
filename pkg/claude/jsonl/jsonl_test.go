@@ -861,8 +861,70 @@ func TestToolPreview(t *testing.T) {
 	if bash.ToolTarget != "List files" || bash.ToolInput != "ls -la" || bash.Content != "" {
 		t.Fatalf("Bash preview = %+v", bash)
 	}
-	fetch := ToolPreview("WebFetch", json.RawMessage(`{"url":"https://example.com"}`))
-	if fetch.ToolInput != "{\n  \"url\": \"https://example.com\"\n}" {
+	fetch := ToolPreview("WebFetch", json.RawMessage(`{"url":"https://example.com","prompt":"Sum it up"}`))
+	if fetch.ToolTarget != "https://example.com" || fetch.Content != "Sum it up" || fetch.ToolInput != "" {
 		t.Fatalf("WebFetch preview = %+v", fetch)
+	}
+	search := ToolPreview("WebSearch", json.RawMessage(`{"query":"go 1.26 release"}`))
+	if search.ToolTarget != "go 1.26 release" || search.Content != "" || search.ToolInput != "" {
+		t.Fatalf("WebSearch preview = %+v", search)
+	}
+	search = ToolPreview("WebSearch", json.RawMessage(`{"query":"q","allowed_domains":["go.dev"],"blocked_domains":["a.com","b.com"]}`))
+	if search.Content != "only: go.dev\nnot: a.com, b.com" {
+		t.Fatalf("WebSearch domains = %q", search.Content)
+	}
+	other := ToolPreview("NotebookEdit", json.RawMessage(`{"cell_id":"c1"}`))
+	if other.ToolInput != "{\n  \"cell_id\": \"c1\"\n}" {
+		t.Fatalf("other preview = %+v", other)
+	}
+}
+
+func TestToolTargetByName(t *testing.T) {
+	cases := []struct{ name, input, want string }{
+		{"Read", `{"file_path":"/w/a.go","offset":3}`, "/w/a.go"},
+		{"NotebookEdit", `{"notebook_path":"/w/n.ipynb","new_source":"x"}`, "/w/n.ipynb"},
+		{"Grep", `{"pattern":"TODO","path":"pkg"}`, "TODO"},
+		{"Agent", `{"description":"Find bugs","prompt":"long\nprompt"}`, "Find bugs"},
+		{"WebFetch", `{"url":"https://go.dev","prompt":"p"}`, "https://go.dev"},
+		{"WebSearch", `{"query":"go release"}`, "go release"},
+		{"Skill", `{"skill":"review","args":"x"}`, "review"},
+		{"TaskStop", `{"shell_id":"b7"}`, "b7"},
+		{"ScheduleWakeup", `{"reason":"watch CI","prompt":"p"}`, "watch CI"},
+		{"ReadMcpResourceTool", `{"server":"s","uri":"file:///a"}`, "file:///a"},
+		{"TodoWrite", `{"todos":[]}`, ""},
+		// Unknown tools keep the generic keys, never a query or URL.
+		{"mcp__db__run", `{"query":"SELECT 1\nFROM t","description":"Count rows\nmore"}`, "Count rows"},
+		{"mcp__db__run", `{"query":"SELECT 1"}`, ""},
+	}
+	for _, c := range cases {
+		if got := toolTarget(c.name, json.RawMessage(c.input)); got != c.want {
+			t.Errorf("toolTarget(%s, %s) = %q, want %q", c.name, c.input, got, c.want)
+		}
+	}
+	// A Bash preview without a description is titled by its command.
+	if p := ToolPreview("Bash", json.RawMessage(`{"command":"go test ./...\necho done"}`)); p.ToolTarget != "go test ./..." {
+		t.Errorf("Bash preview title = %q", p.ToolTarget)
+	}
+}
+
+func TestRenderToolResultSearches(t *testing.T) {
+	search := Event{ToolUseResult: json.RawMessage(`{"query":"go","durationSeconds":1,"results":[
+		{"tool_use_id":"s1","content":[{"title":"Go","url":"https://go.dev"},{"title":"Docs","url":"https://go.dev/doc"}]},
+		"Go is a language."]}`)}
+	inline := json.RawMessage(`"Web search results for query: \"go\"\n\nLinks: [{\"title\":\"Go\"}]"`)
+	got, _ := renderToolResult(search, body{blocks: []bodyBlock{{Type: "tool_result", Content: inline}}}, "go")
+	want := "Go\nhttps://go.dev\n\nDocs\nhttps://go.dev/doc\n\nGo is a language."
+	if got != want {
+		t.Errorf("WebSearch body = %q, want %q", got, want)
+	}
+	// Without structured results the inline text stands.
+	got, _ = renderToolResult(Event{}, body{blocks: []bodyBlock{{Type: "tool_result", Content: json.RawMessage(`"nothing found"`)}}}, "go")
+	if got != "nothing found" {
+		t.Errorf("fallback body = %q", got)
+	}
+	refs := json.RawMessage(`[{"type":"tool_reference","tool_name":"WebSearch"},{"type":"tool_reference","tool_name":"WebFetch"}]`)
+	got, _ = renderToolResult(Event{}, body{blocks: []bodyBlock{{Type: "tool_result", Content: refs}}}, "select:WebSearch")
+	if got != "WebSearch\nWebFetch" {
+		t.Errorf("ToolSearch body = %q", got)
 	}
 }

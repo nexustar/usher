@@ -5,6 +5,7 @@
 package interaction
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -293,7 +295,7 @@ func (m *Manager) submit(ctx context.Context, ev Request) (Response, error) {
 	}
 }
 
-// List returns a snapshot of all currently-pending interactions.
+// List returns a snapshot of all currently-pending interactions, oldest first.
 func (m *Manager) List() []Pending {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -301,6 +303,9 @@ func (m *Manager) List() []Pending {
 	for _, p := range m.pending {
 		out = append(out, p.Pending)
 	}
+	slices.SortFunc(out, func(a, b Pending) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
 	return out
 }
 

@@ -220,8 +220,8 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 			case "toolCall":
 				target, input := toolTarget(b.Name, b.Arguments), ""
 				switch {
-				case strings.EqualFold(b.Name, "bash"):
-					// bash's target is its command: the first line titles the card.
+				case strings.EqualFold(b.Name, "bash") || b.Name == "powershell":
+					// A shell's target is its command: the first line titles the card.
 					target, input = textutil.FirstLine(target), target
 				case b.Name == "codemode":
 					input = codemodeScript(b.Arguments)
@@ -284,14 +284,36 @@ func (a *Assembler) FeedLineParts(raw []byte) ([]core.Turn, []*core.TurnPart) {
 	return nil, nil
 }
 
+// toolTarget titles a tool's card: a shell's whole command, else the
+// argument that names what the tool acts on. Tools not named here (MCP,
+// extensions) fall back to the first of a few common keys.
 func toolTarget(name string, args json.RawMessage) string {
 	var v map[string]any
 	if json.Unmarshal(args, &v) != nil {
 		return ""
 	}
+	str := func(key string) string { s, _ := v[key].(string); return s }
+	switch strings.ToLower(name) {
+	case "bash", "powershell":
+		return str("command")
+	case "read", "edit", "write":
+		return str("path")
+	case "grep", "find":
+		if p := str("path"); p != "" && str("pattern") != "" {
+			return str("pattern") + " in " + p
+		}
+		return str("pattern")
+	case "ls":
+		if p := str("path"); p != "" {
+			return p
+		}
+		return "."
+	case "show_image":
+		return str("file_path")
+	}
 	for _, key := range []string{"command", "path", "file_path", "query", "pattern"} {
-		if s, ok := v[key].(string); ok {
-			return s
+		if s := str(key); s != "" {
+			return textutil.FirstLine(s)
 		}
 	}
 	return ""

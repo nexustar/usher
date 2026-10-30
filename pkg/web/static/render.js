@@ -346,7 +346,7 @@ export function renderToolPart(p) {
   // doesn't already show it all.
   const input = p.tool_input || '';
   // Shell input gets a CSS-drawn `$ ` prompt, so copying never picks it up.
-  const inputClass = /^(bash|shell)$/i.test(name) ? 'tool-input shell' : 'tool-input';
+  const inputClass = /^(bash|shell|powershell)$/i.test(name) ? 'tool-input shell' : 'tool-input';
   // A title that is only the input's first line gets a CSS-drawn ellipsis.
   const targetClass = input.includes('\n') && input.split('\n', 1)[0].trim() === target
     ? 'tool-target more' : 'tool-target';

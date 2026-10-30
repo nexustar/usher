@@ -310,7 +310,7 @@ func (b body) hasToolResult() bool {
 func (b body) collectToolUses(dst map[string]toolInfo) {
 	for _, blk := range b.blocks {
 		if blk.Type == "tool_use" && blk.ID != "" && blk.Name != "" {
-			ti := toolInfo{name: blk.Name, target: toolTarget(blk.Input)}
+			ti := toolInfo{name: blk.Name, target: toolTarget(blk.Name, blk.Input)}
 			switch {
 			case blk.Name == "Bash":
 				ti.input = InputString(blk.Input, "command")
@@ -709,14 +709,18 @@ func flattenToolResult(raw json.RawMessage) string {
 		return s
 	}
 	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ToolName string `json:"tool_name"`
 	}
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		var parts []string
 		for _, b := range blocks {
-			if b.Type == "text" {
+			switch b.Type {
+			case "text":
 				parts = append(parts, b.Text)
+			case "tool_reference": // ToolSearch loading a tool
+				parts = append(parts, b.ToolName)
 			}
 		}
 		return strings.Join(parts, "\n")
@@ -746,6 +750,9 @@ type toolUseResultData struct {
 	} `json:"file"`
 	Stdout string `json:"stdout"`
 	Stderr string `json:"stderr"`
+	// A web search's links and summary; the inline text embeds them as JSON.
+	Query   string            `json:"query"`
+	Results []json.RawMessage `json:"results"`
 }
 
 // render turns the structured payload into output text and its content kind,
@@ -765,8 +772,36 @@ func (t toolUseResultData) render() (body, kind string) {
 			out += t.Stderr
 		}
 		return out, ""
+	case t.Query != "":
+		return searchResults(t.Results), ""
 	}
 	return "", ""
+}
+
+// searchResults renders a web search's results: each link on its own lines,
+// then the summary text.
+func searchResults(results []json.RawMessage) string {
+	var links, texts []string
+	for _, raw := range results {
+		var text string
+		if json.Unmarshal(raw, &text) == nil {
+			if text = strings.TrimSpace(text); text != "" {
+				texts = append(texts, text)
+			}
+			continue
+		}
+		var r struct {
+			Content []struct {
+				Title string `json:"title"`
+				URL   string `json:"url"`
+			} `json:"content"`
+		}
+		_ = json.Unmarshal(raw, &r)
+		for _, c := range r.Content {
+			links = append(links, strings.TrimSpace(c.Title+"\n"+c.URL))
+		}
+	}
+	return strings.Join(append(links, texts...), "\n\n")
 }
 
 // patchBody renders structuredPatch hunks as unified-diff text.
@@ -787,14 +822,20 @@ func patchBody(hunks []patchHunk) string {
 
 // ToolPreview renders a tool call that has not run yet.
 func ToolPreview(name string, input json.RawMessage) *core.TurnPart {
-	p := &core.TurnPart{Type: "tool", ToolName: name, ToolTarget: toolTarget(input)}
+	p := &core.TurnPart{Type: "tool", ToolName: name, ToolTarget: toolTarget(name, input)}
 	switch name {
 	case "Bash":
-		p.ToolInput = textutil.ClampBody(InputString(input, "command"))
+		cmd := InputString(input, "command")
+		p.ToolTarget = core.ToolTitle(p.ToolTarget, cmd)
+		p.ToolInput = textutil.ClampBody(cmd)
 	case "Edit":
 		p.Content = lineDiff(InputString(input, "old_string"), InputString(input, "new_string"))
 	case "Write":
 		p.Content = lineDiff("", InputString(input, "content"))
+	case "WebFetch":
+		p.Content = textutil.ClampBody(InputString(input, "prompt"))
+	case "WebSearch":
+		p.Content = searchDomains(input)
 	default:
 		p.ToolInput = textutil.ClampBody(textutil.IndentJSON(input))
 	}
@@ -803,6 +844,24 @@ func ToolPreview(name string, input json.RawMessage) *core.TurnPart {
 		p.ContentKind = core.ContentDiff
 	}
 	return p
+}
+
+// searchDomains lists the domains a web search is limited to or kept off;
+// the query itself is the target.
+func searchDomains(input json.RawMessage) string {
+	var in struct {
+		Allowed []string `json:"allowed_domains"`
+		Blocked []string `json:"blocked_domains"`
+	}
+	_ = json.Unmarshal(input, &in)
+	var lines []string
+	if len(in.Allowed) > 0 {
+		lines = append(lines, "only: "+strings.Join(in.Allowed, ", "))
+	}
+	if len(in.Blocked) > 0 {
+		lines = append(lines, "not: "+strings.Join(in.Blocked, ", "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // lineDiff marks every old line removed and every new line added.
@@ -824,18 +883,56 @@ func lineDiff(old, new string) string {
 	return b.String()
 }
 
-// toolTarget picks the most informative non-command argument to show beside a
-// tool name: a file path, a human description, or a search pattern. A Bash
+// toolTarget picks the argument that titles a tool's card: a path, a
+// pattern, a URL, a query, a description. Tools not named here (MCP and
+// newer ones) fall back to a file path, description or pattern. A Bash
 // command travels separately as the part's ToolInput.
-func toolTarget(input json.RawMessage) string {
-	if p := InputString(input, "file_path"); p != "" {
-		return p
+func toolTarget(name string, input json.RawMessage) string {
+	var keys []string
+	switch name {
+	case "Read", "Write", "Edit", "MultiEdit":
+		keys = []string{"file_path"}
+	case "NotebookEdit":
+		keys = []string{"notebook_path"}
+	case "Glob", "Grep":
+		keys = []string{"pattern"}
+	case "Bash", "Monitor", "Agent", "Task":
+		keys = []string{"description"}
+	case "Workflow":
+		keys = []string{"title", "name", "description"}
+	case "WebFetch":
+		keys = []string{"url"}
+	case "WebSearch", "ToolSearch":
+		keys = []string{"query"}
+	case "Skill":
+		keys = []string{"skill"}
+	case "TaskStop", "KillShell", "KillBash", "TaskOutput", "BashOutput":
+		keys = []string{"task_id", "shell_id", "bash_id"}
+	case "TaskCreate":
+		keys = []string{"subject"}
+	case "TaskGet", "TaskUpdate":
+		keys = []string{"taskId"}
+	case "CronCreate":
+		keys = []string{"cron"}
+	case "CronDelete":
+		keys = []string{"id"}
+	case "ScheduleWakeup":
+		keys = []string{"reason"}
+	case "PushNotification":
+		keys = []string{"message"}
+	case "SendMessage":
+		keys = []string{"to"}
+	case "EnterWorktree":
+		keys = []string{"name", "path"}
+	case "ListMcpResourcesTool", "ReadMcpResourceTool", "ListMcpResources", "ReadMcpResource":
+		keys = []string{"uri", "server"}
+	default:
+		keys = []string{"file_path", "description", "pattern"}
 	}
-	if d := InputString(input, "description"); d != "" {
-		return d
-	}
-	if pat := InputString(input, "pattern"); pat != "" {
-		return pat
+	for _, k := range keys {
+		if v := InputString(input, k); v != "" {
+			return textutil.FirstLine(v)
+		}
 	}
 	return ""
 }
