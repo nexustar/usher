@@ -204,8 +204,8 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Serve serves Handler on ln until Close; after Close it returns
-// http.ErrServerClosed at once.
+// Serve serves Handler on ln until Close, then returns
+// http.ErrServerClosed, as it does at once after Close.
 func (s *Server) Serve(ln net.Listener) error {
 	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	s.mu.Lock()
@@ -217,10 +217,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	s.servers = append(s.servers, srv)
 	s.mu.Unlock()
 	s.logger.Info("usher web listening", "addr", ln.Addr().String())
-	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	return srv.Serve(ln)
 }
 
 // Close stops every Serve and the hook socket.

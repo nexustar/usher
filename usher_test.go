@@ -237,8 +237,8 @@ func TestContextEndStopsEverything(t *testing.T) {
 	cancel()
 	select {
 	case err := <-served:
-		if err != nil {
-			t.Fatalf("Serve after ctx ended: %v", err)
+		if !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("Serve after ctx ended = %v, want http.ErrServerClosed", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Serve kept serving after ctx ended")

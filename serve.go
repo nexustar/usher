@@ -147,6 +147,9 @@ func Run(ctx context.Context, o Options) error {
 	case <-ctx.Done():
 		return nil
 	case err := <-served:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
 		return err
 	}
 }
@@ -173,8 +176,9 @@ func (s *Server) Handler() http.Handler { return s.web.Handler() }
 // method in it: not every authenticating proxy covers OPTIONS.
 func (s *Server) Handle(pattern string, h http.Handler) { s.web.Handle(pattern, h) }
 
-// Serve serves Handler on ln until Close. A listener off loopback needs a
-// password, as Addr does.
+// Serve serves Handler on ln until Close, then returns
+// http.ErrServerClosed. A listener off loopback needs a password, as Addr
+// does.
 func (s *Server) Serve(ln net.Listener) error {
 	if err := exposed(ln.Addr(), s.app.Options, s.auth); err != nil {
 		ln.Close()
