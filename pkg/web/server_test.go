@@ -410,9 +410,6 @@ func TestProxyAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetPassword("pw"); err != nil {
-		t.Fatal(err)
-	}
 	var logs bytes.Buffer
 	s := &Server{
 		auth:   store,
@@ -455,21 +452,9 @@ func TestProxyAuth(t *testing.T) {
 		t.Errorf("read logged: %q", logs.String())
 	}
 
-	// The password store is not consulted: a login cookie alone is refused.
-	cookie, err := store.IssueCookie()
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
-	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	// With no password, /login sends the browser back through the proxy
+	// to the page it wanted, and Sign out goes to the proxy.
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("cookie without header = %d, want 401", rec.Code)
-	}
-
-	// /login sends the browser back through the proxy to the page it wanted.
-	rec = httptest.NewRecorder()
 	s.handleLogin(rec, httptest.NewRequest(http.MethodGet, "/login?next=/sessions/abc", nil))
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/sessions/abc" {
 		t.Errorf("login = %d %q, want 303 /sessions/abc", rec.Code, rec.Header().Get("Location"))
@@ -487,12 +472,75 @@ func TestProxyAuth(t *testing.T) {
 	}
 
 	// Named hosts are served.
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
 	req.Host = "usher.example"
 	rec = httptest.NewRecorder()
 	s.hostGuard(ok).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("named host = %d, want 200", rec.Code)
+	}
+}
+
+// With a password set, the proxy header does not replace it: a request
+// needs both, and Sign out drops the cookie before the proxy's logout.
+func TestProxyAuthKeepsThePassword(t *testing.T) {
+	store, err := auth.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPassword("pw"); err != nil {
+		t.Fatal(err)
+	}
+	cookie, err := store.IssueCookie()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		auth:   store,
+		proxy:  ProxyAuth{Header: "X-Forwarded-Email", LogoutURL: "https://sso.example/logout"},
+		logger: slog.New(slog.DiscardHandler),
+	}
+	h := s.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	status := func(header, withCookie bool) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		if header {
+			req.Header.Set("X-Forwarded-Email", "alice")
+		}
+		if withCookie {
+			req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, c := range []struct {
+		name           string
+		header, cookie bool
+		want           int
+	}{
+		{"both", true, true, http.StatusOK},
+		{"header only", true, false, http.StatusUnauthorized},
+		{"cookie only", false, true, http.StatusUnauthorized},
+		{"neither", false, false, http.StatusUnauthorized},
+	} {
+		if got := status(c.header, c.cookie); got != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	s.handleLogin(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("login page = %d, want 200", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	s.handleLogout(rec, httptest.NewRequest(http.MethodGet, "/logout", nil))
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		cleared = cleared || (c.Name == auth.CookieName && c.MaxAge < 0)
+	}
+	if !cleared || rec.Header().Get("Location") != s.proxy.LogoutURL {
+		t.Errorf("logout = %q, cookie cleared %v", rec.Header().Get("Location"), cleared)
 	}
 }
 
@@ -511,11 +559,15 @@ func TestLogoutURL(t *testing.T) {
 		t.Errorf("password = %q, want /logout", got)
 	}
 	gw := ProxyAuth{Header: "X-Forwarded-Email"}
-	if got := (&Server{auth: store, proxy: gw}).logoutURL(); got != "" {
+	if got := (&Server{proxy: gw}).logoutURL(); got != "" {
 		t.Errorf("proxy without logout url = %q, want hidden", got)
 	}
 	gw.LogoutURL = "https://sso.example/logout"
 	if got := (&Server{proxy: gw}).logoutURL(); got != gw.LogoutURL {
 		t.Errorf("proxy = %q, want %q", got, gw.LogoutURL)
+	}
+	// With a password too, Sign out drops its cookie first.
+	if got := (&Server{auth: store, proxy: gw}).logoutURL(); got != "/logout" {
+		t.Errorf("proxy and password = %q, want /logout", got)
 	}
 }

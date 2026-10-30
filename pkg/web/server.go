@@ -338,17 +338,16 @@ func (s *Server) passwordConfigured() bool {
 	return s.auth != nil && s.auth.IsConfigured()
 }
 
-// authMiddleware gates every web route on the proxy header, else on a
-// valid cookie when a password is configured; with neither it passes
-// everything through.
+// authMiddleware gates every web route on the proxy header when one is
+// trusted, and on a valid cookie when a password is configured: both, with
+// both. With neither it passes everything through.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAuthExempt(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if s.proxy.Header != "" {
-			s.serveProxy(next, w, r)
+		if s.proxy.Header != "" && !s.proxySignedIn(w, r) {
 			return
 		}
 		if !s.passwordConfigured() {
@@ -374,17 +373,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// serveProxy admits a request carrying the proxy header.
-func (s *Server) serveProxy(next http.Handler, w http.ResponseWriter, r *http.Request) {
+// proxySignedIn reports whether r carries the proxy header, answering 401
+// itself when it does not.
+func (s *Server) proxySignedIn(w http.ResponseWriter, r *http.Request) bool {
 	actor := strings.TrimSpace(r.Header.Get(s.proxy.Header))
 	if actor == "" {
 		api.WriteError(w, http.StatusUnauthorized, "no signed-in user from the proxy")
-		return
+		return false
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		s.logger.Info("request", "actor", actor, "method", r.Method, "path", r.URL.Path)
 	}
-	next.ServeHTTP(w, r)
+	return true
 }
 
 func isAuthExempt(p string) bool {
@@ -424,13 +424,13 @@ func validateNext(next string) string {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if s.proxy.Header != "" {
-		// The SPA lands here on a 401; going back through the proxy signs
-		// the browser in again.
-		http.Redirect(w, r, validateNext(r.URL.Query().Get("next")), http.StatusSeeOther)
-		return
-	}
 	if !s.passwordConfigured() {
+		if s.proxy.Header != "" {
+			// The SPA lands here on a 401; going back through the proxy
+			// signs the browser in again.
+			http.Redirect(w, r, validateNext(r.URL.Query().Get("next")), http.StatusSeeOther)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -485,19 +485,20 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, errMsg stri
 	})
 }
 
+// handleLogout drops the password's cookie, then signs out of the proxy
+// when it has a logout address.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if s.proxy.Header != "" {
-		target := s.proxy.LogoutURL
-		if target == "" {
-			target = "/"
-		}
-		http.Redirect(w, r, target, http.StatusSeeOther)
-		return
-	}
 	if s.auth != nil {
 		http.SetCookie(w, s.auth.ClearCookie())
 	}
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	target := "/login"
+	switch {
+	case s.proxy.Header != "" && s.proxy.LogoutURL != "":
+		target = s.proxy.LogoutURL
+	case s.proxy.Header != "" && !s.passwordConfigured():
+		target = "/"
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // --- sessions ------------------------------------------------------------
@@ -516,10 +517,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 // logoutURL is where Sign out leads; "" hides the entry.
 func (s *Server) logoutURL() string {
 	switch {
+	case s.passwordConfigured():
+		return "/logout" // drops the cookie, then the proxy's logout
 	case s.proxy.Header != "":
 		return s.proxy.LogoutURL
-	case s.passwordConfigured():
-		return "/logout"
 	}
 	return ""
 }

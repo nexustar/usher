@@ -260,10 +260,8 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 	}
 	switch {
 	case o.AuthHeader != "":
-		logger.Info("trusting proxy header as the signed-in user", "header", o.AuthHeader)
-		if authStore.IsConfigured() {
-			logger.Warn("the web password is not checked while --auth-header is set")
-		}
+		logger.Info("trusting proxy header as the signed-in user", "header", o.AuthHeader,
+			"password_too", authStore.IsConfigured())
 	case !authStore.IsConfigured() && o.Addr != "" && !addrIsLoopback(o.Addr):
 		if !o.Insecure {
 			return nil, refuseExposed(o.Addr)

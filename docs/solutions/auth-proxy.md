@@ -1,7 +1,8 @@
 # Run usher behind an authenticating proxy
 
-A proxy that signs people in can replace usher's password: usher trusts the
-identity header the proxy sets and refuses requests without it. Everyone the
+A proxy that signs people in can stand in for usher's password: usher trusts
+the identity header the proxy sets and refuses requests without it. A
+password, if set, is still required too. Everyone the
 proxy admits drives the same sessions as the same OS user; run one usher per
 group whose work must stay separate.
 
@@ -18,6 +19,9 @@ usher serve --auth-header X-Forwarded-Email --logout-url /oauth2/sign_out
   hides the entry.
 
 With `--auth-header`, usher binds a non-loopback address without a password.
+Set one as well (`usher set-password`) to keep a second layer: then a
+request needs the header and a signed-in cookie, and Sign out drops the
+cookie before going to `--logout-url`.
 
 ## Which header
 
@@ -38,8 +42,8 @@ its port:
 
 - On one machine, keep usher on `127.0.0.1` and point the proxy at it. The
   [Tailscale Serve and Cloudflare Tunnel setups](remote-access.md) already do;
-  add `--auth-header` and drop the password. Other OS users on that machine can
-  still connect to loopback and set the header themselves.
+  add `--auth-header`. Other OS users on that machine can still connect to
+  loopback and set the header themselves, which only a password stops.
 - In Kubernetes, a network policy that admits only the proxy's pods.
 
 ## Check
