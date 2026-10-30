@@ -102,7 +102,7 @@ func run(args []string) error {
 	router := pluginapi.NewClient(*socket, logger)
 	// Only the backend-neutral event types the hub renders — raw log lines
 	// (with their whole tool payloads) never cross the socket.
-	router.EventTypes = []string{"turn.prompt", "turn.part", "turn.ended", "turn.failed"}
+	router.EventTypes = []string{"turn.prompt", "turn.part", "turn.ended", "turn.failed", "turn.notice"}
 	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 	err = router.Ping(pingCtx)
 	pingCancel()

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexustar/usher/pkg/backend"
 	"github.com/nexustar/usher/pkg/broker"
 	"github.com/nexustar/usher/pkg/core"
 	"github.com/nexustar/usher/pkg/interaction"
@@ -268,6 +269,40 @@ func TestHubMirrorsShowImage(t *testing.T) {
 	}
 }
 
+// TestWarningNoticeMirrored: a refusal's fallback notice reaches the topic,
+// so the reader knows the reply above was withdrawn; plain notices do not.
+func TestWarningNoticeMirrored(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		sent = append(sent, body.Text)
+		mu.Unlock()
+		resultJSON, _ := json.Marshal(Message{MessageID: 1})
+		_ = json.NewEncoder(w).Encode(apiResponse{OK: true, Result: resultJSON})
+	}))
+	defer srv.Close()
+
+	fr := &fakeRouter{events: make(chan broker.Event), sessions: map[string]core.Session{"s1": {ID: "s1"}}}
+	hub, _ := NewHub(NewClient("T", srv.URL), fr, Config{GroupID: -100}, nil)
+	_ = hub.store.put("s1", 5)
+	hub.handleEvent(context.Background(), broker.Event{SessionID: "s1", Type: backend.EventTurnNotice,
+		Raw: json.RawMessage(`{"role":"system","content":"Context compacted"}`)})
+	hub.handleEvent(context.Background(), broker.Event{SessionID: "s1", Type: backend.EventTurnNotice,
+		Raw: json.RawMessage(`{"role":"system","content":"Switched to Opus","level":"warning"}`)})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 1 || sent[0] != "⚠️ Switched to Opus" {
+		t.Fatalf("sent = %q", sent)
+	}
+}
+
 func TestMirrorImageFailureNotice(t *testing.T) {
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cwd, "big.png"), []byte("data"), 0o600); err != nil {
@@ -320,6 +355,17 @@ func TestPermissionHTML(t *testing.T) {
 	// Command goes in a <pre> block, HTML-escaped.
 	if !strings.Contains(got, "<pre>grep -r &#34;x&lt;y&#34; .</pre>") {
 		t.Errorf("command should be escaped inside <pre>, got %q", got)
+	}
+}
+
+// The backend's preview replaces the raw input: Codex's JSON-RPC params
+// show as the command they run.
+func TestPermissionHTMLUsesPreview(t *testing.T) {
+	p := interaction.Pending{ToolName: "Bash", ToolInput: json.RawMessage(`{"itemId":"i1","command":"bash -lc 'make'"}`),
+		Preview: &core.TurnPart{ToolTarget: "Build", ToolInput: "make"}}
+	got := permissionHTML(p)
+	if !strings.Contains(got, "Bash · Build") || !strings.Contains(got, "<pre>make</pre>") || strings.Contains(got, "itemId") {
+		t.Errorf("permissionHTML = %q", got)
 	}
 }
 

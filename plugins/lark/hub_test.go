@@ -883,6 +883,25 @@ func TestTurnCompleteOnlyWithExistingThread(t *testing.T) {
 	})
 }
 
+// TestWarningNoticeMirrored: a refusal's fallback notice reaches the thread,
+// so the reader knows the reply above was withdrawn; plain notices do not.
+func TestWarningNoticeMirrored(t *testing.T) {
+	f, r := &fakeLark{}, newFakeRouter()
+	r.sessions["s1"] = core.Session{ID: "s1"}
+	h := newTestHub(t, f, r)
+	if err := h.store.put("s1", "om_root_1"); err != nil {
+		t.Fatal(err)
+	}
+	h.handleEvent(context.Background(), broker.Event{SessionID: "s1", Type: "turn.notice",
+		Raw: json.RawMessage(`{"role":"system","content":"Context compacted"}`)})
+	h.handleEvent(context.Background(), broker.Event{SessionID: "s1", Type: "turn.notice",
+		Raw: json.RawMessage(`{"role":"system","content":"Switched to Opus","level":"warning"}`)})
+	msgs := f.messages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0].body, "⚠️ Switched to Opus") {
+		t.Fatalf("messages = %+v", msgs)
+	}
+}
+
 func TestInboundRoutingAndAuth(t *testing.T) {
 	f, r := &fakeLark{}, newFakeRouter()
 	r.sessions["s1"] = core.Session{ID: "s1"}
@@ -1297,6 +1316,28 @@ func TestResolvedCardReplacesButtons(t *testing.T) {
 	}
 	if got, _ := r.response("q1"); got.Answers["Go?"] != "Yes" {
 		t.Fatalf("answer = %+v", got.Answers)
+	}
+
+	// A question from another tool stays a question card once answered.
+	r.pendingCh <- interaction.Pending{ID: "q2", SessionID: "s1", Kind: interaction.KindChoice, ToolName: "request_user_input",
+		ToolInput: json.RawMessage(`{"questions":[{"question":"Ship?","options":[{"label":"Yes"}]}]}`)}
+	waitFor(t, "codex ask card", func() bool { return len(f.messages()) >= 4 })
+	resp = h.HandleCardAction(context.Background(), cardTap(testChat, testUser, obj{"k": "q", "id": "q2", "opt": "0"}))
+	if resp.Card == nil {
+		t.Fatalf("tap should resolve, got %+v", resp)
+	}
+	if rendered := cardJSON(resp.Card.Data.(obj)); strings.Contains(rendered, "Permission requested") || !strings.Contains(rendered, "Ship?") {
+		t.Fatalf("resolved question rendered as a permission: %s", rendered)
+	}
+}
+
+// The backend's preview replaces the raw input: an edit shows its diff.
+func TestPermissionCardUsesPreview(t *testing.T) {
+	p := interaction.Pending{ID: "p1", ToolName: "Edit", ToolInput: json.RawMessage(`{"file_path":"/w/a.go","old_string":"a","new_string":"b"}`),
+		Preview: &core.TurnPart{ToolTarget: "/w/a.go", Content: "-a\n+b", ContentKind: core.ContentDiff}}
+	rendered := cardJSON(permissionCard(p, nil, ""))
+	if !strings.Contains(rendered, "/w/a.go") || !strings.Contains(rendered, `-a\n+b`) || strings.Contains(rendered, "old_string") {
+		t.Fatalf("card = %s", rendered)
 	}
 }
 

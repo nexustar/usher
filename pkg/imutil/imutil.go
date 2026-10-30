@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/nexustar/usher/pkg/interaction"
 )
 
 // SamePromptEcho reports whether an observed canonical prompt is the input an
@@ -33,6 +35,21 @@ func TurnUserText(raw json.RawMessage) string {
 		return ""
 	}
 	return o.Content
+}
+
+// WarningNotice extracts the text of a "turn.notice" event the user should
+// not miss, such as a refusal moving the turn to a fallback model; "" for
+// other notices (e.g. "Context compacted").
+func WarningNotice(raw json.RawMessage) string {
+	var o struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+		Level   string `json:"level"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil || o.Role != "system" || o.Level != "warning" {
+		return ""
+	}
+	return strings.TrimSpace(o.Content)
 }
 
 // PartText extracts assistant text from router's backend-neutral "turn.part" event.
@@ -136,6 +153,26 @@ func HumanizeDuration(d time.Duration) string {
 		return "<1s"
 	}
 	return d.Round(time.Second).String()
+}
+
+// PermissionView is what a permission prompt shows beside the tool name and
+// in its body: the backend's preview (a command, a diff) when it has one,
+// else the compact raw input.
+func PermissionView(p interaction.Pending) (target, body string) {
+	v := p.Preview
+	if v == nil || v.ToolTarget+v.ToolInput+v.Content == "" {
+		return "", CompactInput(p.ToolInput)
+	}
+	// A multi-line target (pi's prompt) titles with its first line; the
+	// rest leads the body.
+	target, rest, _ := strings.Cut(strings.TrimSpace(v.ToolTarget), "\n")
+	var parts []string
+	for _, s := range []string{rest, v.ToolInput, v.Content} {
+		if s = strings.Trim(s, "\n"); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return target, strings.Join(parts, "\n")
 }
 
 // CompactInput flattens a tool input to a one-or-few-line summary. Bash shows

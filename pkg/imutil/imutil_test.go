@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nexustar/usher/pkg/core"
+	"github.com/nexustar/usher/pkg/interaction"
 )
 
 func TestTurnUserText(t *testing.T) {
@@ -40,6 +43,45 @@ func TestSamePromptEchoAllowsCodexSlashSkillNormalization(t *testing.T) {
 	for _, tt := range tests {
 		if got := SamePromptEcho(tt.sent, tt.observed); got != tt.want {
 			t.Errorf("SamePromptEcho(%q, %q) = %v, want %v", tt.sent, tt.observed, got, tt.want)
+		}
+	}
+}
+
+func TestWarningNotice(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{`{"role":"system","content":"Switched to Opus","level":"warning"}`, "Switched to Opus"},
+		{`{"role":"system","content":"Context compacted"}`, ""},
+		{`{"role":"user","content":"hi","level":"warning"}`, ""},
+		{`not json`, ""},
+	}
+	for _, c := range cases {
+		if got := WarningNotice(json.RawMessage(c.raw)); got != c.want {
+			t.Errorf("WarningNotice(%s) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestPermissionView(t *testing.T) {
+	cases := []struct {
+		name         string
+		p            interaction.Pending
+		target, body string
+	}{
+		{"raw input without a preview",
+			interaction.Pending{ToolInput: json.RawMessage(`{"command":"ls"}`)}, "", "ls"},
+		{"command and description",
+			interaction.Pending{Preview: &core.TurnPart{ToolTarget: "List files", ToolInput: "ls -la"}}, "List files", "ls -la"},
+		{"diff",
+			interaction.Pending{Preview: &core.TurnPart{ToolTarget: "/w/a.go", Content: "-a\n+b\n"}}, "/w/a.go", "-a\n+b"},
+		{"multi-line target",
+			interaction.Pending{Preview: &core.TurnPart{ToolTarget: "Permission Required\nbash wants ls"}}, "Permission Required", "bash wants ls"},
+		{"empty preview",
+			interaction.Pending{ToolInput: json.RawMessage(`{"q":1}`), Preview: &core.TurnPart{}}, "", `{"q":1}`},
+	}
+	for _, c := range cases {
+		target, body := PermissionView(c.p)
+		if target != c.target || body != c.body {
+			t.Errorf("%s: got %q, %q; want %q, %q", c.name, target, body, c.target, c.body)
 		}
 	}
 }

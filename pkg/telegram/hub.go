@@ -435,6 +435,8 @@ func (h *Hub) handleEvent(ctx context.Context, ev broker.Event) {
 		h.notifyTurnComplete(ctx, ev)
 	case backend.EventTurnFailed:
 		h.notifyTurnError(ctx, ev)
+	case backend.EventTurnNotice:
+		h.notifyWarning(ctx, ev)
 	}
 }
 
@@ -636,6 +638,27 @@ func (h *Hub) notifyTurnError(ctx context.Context, ev broker.Event) {
 		Text:            "⚠️ " + payload.Message,
 	}); err != nil {
 		h.logger.Warn("turn-error notice", "session", ev.SessionID, "err", err)
+	}
+}
+
+// notifyWarning posts a notice the user should not miss, such as a refusal
+// moving the turn to another model. Text already mirrored stays: the notice
+// is what tells the reader it was withdrawn.
+func (h *Hub) notifyWarning(ctx context.Context, ev broker.Event) {
+	text := imutil.WarningNotice(ev.Raw)
+	if text == "" {
+		return
+	}
+	thread, ok := h.store.thread(ev.SessionID)
+	if !ok {
+		return
+	}
+	if _, err := h.client.SendMessage(ctx, SendMessageParams{
+		ChatID:          h.group,
+		MessageThreadID: thread,
+		Text:            "⚠️ " + text,
+	}); err != nil {
+		h.logger.Warn("turn notice", "session", ev.SessionID, "err", err)
 	}
 }
 

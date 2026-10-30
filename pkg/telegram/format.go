@@ -39,8 +39,8 @@ func decodeDecision(data string) (behavior, scope, id string, ok bool) {
 }
 
 // permissionHTML renders a concise prompt body for a pending interaction as
-// Telegram HTML: the tool name in bold and its input (Bash command / compact
-// JSON) in a <pre> monospace block so a long command stays readable.
+// Telegram HTML: the tool name and what it acts on, then its preview (a
+// command, a diff) or compact input in a <pre> block.
 func permissionHTML(p interaction.Pending) string {
 	var b strings.Builder
 	b.WriteString("🔐 <b>Permission requested</b>")
@@ -48,9 +48,14 @@ func permissionHTML(p interaction.Pending) string {
 		b.WriteString(": ")
 		b.WriteString(html.EscapeString(p.ToolName))
 	}
-	if summary := imutil.CompactInput(p.ToolInput); summary != "" {
+	target, body := imutil.PermissionView(p)
+	if target != "" {
+		b.WriteString(" · ")
+		b.WriteString(html.EscapeString(imutil.Truncate(target, 120)))
+	}
+	if body != "" {
 		b.WriteString("\n<pre>")
-		b.WriteString(html.EscapeString(imutil.Truncate(summary, 600)))
+		b.WriteString(html.EscapeString(imutil.Truncate(body, 600)))
 		b.WriteString("</pre>")
 	}
 	return b.String()

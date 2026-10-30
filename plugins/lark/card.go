@@ -157,7 +157,8 @@ func mentionMD(openIDs []string) string {
 }
 
 // permissionCard renders a pending permission interaction as an interactive
-// card: tool name in the header, its input in a code block, allow/deny
+// card: tool name in the header, what it acts on, its preview (a command, a
+// diff) or input in a code block, allow/deny
 // buttons. resolved != "" renders the post-decision state instead: the
 // outcome line, no buttons (so a stale card can't be re-tapped).
 func permissionCard(p interaction.Pending, mentions []string, resolved string) obj {
@@ -165,9 +166,13 @@ func permissionCard(p interaction.Pending, mentions []string, resolved string) o
 	if p.ToolName != "" {
 		header += ": " + imutil.Truncate(p.ToolName, 80)
 	}
+	target, body := imutil.PermissionView(p)
 	var elements arr
-	if summary := imutil.CompactInput(p.ToolInput); summary != "" {
-		elements = append(elements, fencedEl(imutil.Truncate(summary, 600)))
+	if target != "" {
+		elements = append(elements, textDiv(imutil.Truncate(target, 200)))
+	}
+	if body != "" {
+		elements = append(elements, fencedEl(imutil.Truncate(body, 600)))
 	}
 	if resolved != "" {
 		elements = append(elements, textDiv(resolved))
@@ -256,7 +261,7 @@ func multiStepCard(pendingID string, mentions []string, resolved string) obj {
 // outcome line, no buttons. Used as the card-callback replacement so a stale
 // card can't be re-tapped.
 func resolvedCard(p interaction.Pending, outcome string) obj {
-	if p.ToolName == "AskUserQuestion" {
+	if p.Kind == interaction.KindChoice || p.Kind == interaction.KindText {
 		if qs := imutil.ParseQuestions(p.ToolInput); len(qs) == 1 {
 			return askCard(qs[0], p.ID, nil, outcome)
 		}
