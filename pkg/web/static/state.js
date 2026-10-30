@@ -51,6 +51,9 @@ export function setSuppressAppendScroll(v) { suppressAppendScroll = v; }
 export let editorUrl = '';
 export function setEditorUrl(v) { editorUrl = v; }
 
+// https://developer.mozilla.org/en-US/docs/Web/API/Element/keydown_event#keydown_events_with_ime
+export function imeKey(e) { return e.isComposing || e.keyCode === 229; }
+
 // --- constants used by multiple modules ---
 
 // Auto-scroll to the bottom on new content only when the user is already near

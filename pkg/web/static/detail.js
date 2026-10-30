@@ -7,7 +7,7 @@ import {
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
   registerRefreshSubtitle, fetchBackends, patchSession, copyText,
-  approvalToggleHTML, setApprovalToggle, wireApprovalToggle,
+  approvalToggleHTML, setApprovalToggle, wireApprovalToggle, imeKey,
 } from './state.js';
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
@@ -175,7 +175,7 @@ function wireCommandPreview(promptEl, sessionID) {
     load();
   });
   promptEl.addEventListener('keydown', (e) => {
-    if (popup.hidden || e.isComposing) return;
+    if (popup.hidden || imeKey(e)) return;
     const found = matches();
     if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && found.length) {
       e.preventDefault();
@@ -640,7 +640,7 @@ export async function showNewSession(opts = {}) {
 
   sendBtn.addEventListener('click', submit);
   promptEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey && !imeKey(e)) {
       e.preventDefault();
       submit();
     }
@@ -991,7 +991,7 @@ export async function showDetail(id) {
     termSend.addEventListener('click', submitTerminal);
     termInput.addEventListener('input', () => { terminalRequestID = null; });
     termInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      if (e.key === 'Enter' && !e.shiftKey && !imeKey(e)) {
         e.preventDefault();
         submitTerminal();
       }
@@ -1092,7 +1092,7 @@ export async function showDetail(id) {
   sendBtn.addEventListener('click', () => detailStreaming ? cancel() : submit());
   promptEl.addEventListener('keydown', (e) => {
     if (e.defaultPrevented) return;
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey && !imeKey(e)) {
       e.preventDefault();
       submit();
     }
@@ -1411,7 +1411,7 @@ export async function showRouter(fresh) {
   };
   sendBtn.addEventListener('click', start);
   promptEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); start(); }
+    if (e.key === 'Enter' && !e.shiftKey && !imeKey(e)) { e.preventDefault(); start(); }
   });
   promptEl.focus();
 }
