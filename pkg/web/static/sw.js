@@ -24,6 +24,7 @@ const SHELL = [
   '/detail.js',
   '/settings.js',
   '/details.js',
+  '/widgets.js',
   '/terminal.js',
   '/interaction.js',
   '/push.js',

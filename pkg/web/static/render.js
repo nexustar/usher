@@ -1,5 +1,6 @@
 // usher SPA: markdown + turn rendering + appendChatMessage.
 
+import { icon } from './widgets.js';
 import {
   esc, renderMode, setRenderModeValue, renderPillMd, renderPillRaw,
   isNearBottom, suppressAppendScroll, currentDetailId, getLastSessions,
@@ -296,7 +297,7 @@ function renderRoutedPart(p) {
   return '<details class="tool-details routed-part" data-session="' + esc(id) + '">' +
     '<summary><span class="routed-arrow" aria-hidden="true">→</span> ' +
     '<span class="routed-title">' + esc(sessionTitle(id)) + '</span>' +
-    '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) + '" title="Open this session">open ↗</a></summary>' +
+    '<a class="routed-open" href="#/s/' + esc(encodeURIComponent(id)) + '" title="Open this session">open ' + icon('arrow-up-right') + '</a></summary>' +
     (sent ? '<div class="tool-scroll"><pre class="tool-input">' + esc(sent) + '</pre></div>' : '') +
     '</details>';
 }
@@ -336,12 +337,7 @@ export function renderToolPart(p) {
   }
   const expandByDefault = /^(Edit|Write)$/i.test(name);
   const openAttr = expandByDefault ? ' open' : '';
-  // Inline SVG, not a text glyph (⧉ renders as tofu on fonts without coverage).
-  const copyIcon =
-    '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">' +
-    '<rect x="6" y="6" width="8" height="8" rx="1.5"/>' +
-    '<path d="M4.5 10.5h-1a1.5 1.5 0 0 1-1.5-1.5V3.5A1.5 1.5 0 0 1 3.5 2h5.5A1.5 1.5 0 0 1 10.5 3.5v1"/>' +
-    '</svg>';
+  const copyIcon = icon('copy');
   // tool_input is the full command / JSON arguments, sent only when the title
   // doesn't already show it all.
   const input = p.tool_input || '';
@@ -370,7 +366,7 @@ export function renderToolPart(p) {
 // the last turn: fork the current state). data-uuid is the fork point the
 // server expects; clicks are handled by a document-level delegate.
 export function forkBtnHTML(uuid) {
-  return `<button class="turn-fork" type="button" data-uuid="${esc(uuid)}" title="Fork: branch a new session from this point">⑃ fork</button>`;
+  return `<button class="turn-fork" type="button" data-uuid="${esc(uuid)}" title="Fork: branch a new session from this point">${icon('fork')} fork</button>`;
 }
 
 // renderAssistantParts renders the parts array of a grouped assistant turn.
@@ -454,8 +450,8 @@ export function updateMessageTs(node, ts) {
 // usher holds a warm-but-idle process ("live"), and a brighter pulsing dot
 // while a turn is executing ("running"). Idle/undiscovered sessions get none.
 export function statusDot(status) {
-  if (status === 'running') return '<span class="running-dot executing" title="executing">●</span>';
-  if (status === 'live') return '<span class="running-dot" title="process live">●</span>';
+  if (status === 'running') return '<span class="running-dot executing" title="executing"></span>';
+  if (status === 'live') return '<span class="running-dot" title="process live"></span>';
   return '';
 }
 

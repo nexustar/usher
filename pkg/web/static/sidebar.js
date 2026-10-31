@@ -3,13 +3,14 @@
 import {
   esc, cwdExpanded, cwdArchivedVisible,
   isUnread, reconcileUnread,
-  setLastSessions, getLastSessions,
+  setLastSessions, getLastSessions, recencyKey,
   updateTabBadge,
   registerRenderSidebarSessions,
   refreshSubtitle, currentDetailId,
   editorUrl, pendingInteractionCount, routerDir, patchSession,
 } from './state.js';
 import { statusDot, backendMark } from './render.js';
+import { icon } from './widgets.js';
 import { loadList } from './list.js';
 import { showSessionDetails } from './details.js';
 
@@ -86,9 +87,6 @@ export function renderSidebarSessions(allSessions) {
     lastSidebarHtml = '';
     return;
   }
-  // Order by last user input, not file mtime, so a session doesn't jump on
-  // streaming or on pause/kill. Falls back to last_event_at when unset.
-  const recencyKey = s => Date.parse(s.last_input_at) || Date.parse(s.last_event_at) || 0;
   // Group ALL sessions by cwd (incl. archived) so each group's tail can
   // offer a "└[ N archived ]" disclosure without a separate count lookup.
   // By date, the router's own directory is still a group of its own.
@@ -131,9 +129,9 @@ export function renderSidebarSessions(allSessions) {
     const href = '#/s/' + encodeURIComponent(s.id);
     const interactions = pendingInteractionCount(s.id);
     const dot = interactions
-      ? `<span class="running-dot permission" title="${interactions} interaction${interactions === 1 ? '' : 's'} pending">●</span>`
+      ? `<span class="running-dot permission" title="${interactions} interaction${interactions === 1 ? '' : 's'} pending"></span>`
       : isUnread(s)
-        ? '<span class="running-dot unread" title="new response">●</span>'
+        ? '<span class="running-dot unread" title="new response"></span>'
         : statusDot(s.status);
     const title = s.title || '(untitled)';
     const showCwd = groupByDate && !!s.cwd;
@@ -155,7 +153,7 @@ export function renderSidebarSessions(allSessions) {
         data-pinned="${s.pinned ? '1' : '0'}"
         data-status="${esc(s.status || '')}"
         data-subagents="${subs.length}"
-        aria-label="session actions" title="more">⋮</button>
+        aria-label="session actions" title="more">${icon('kebab')}</button>
     </li>`;
   };
 
@@ -206,7 +204,7 @@ export function renderSidebarSessions(allSessions) {
     const newHere = cwd === '(unknown)' || (groupByDate && cwd !== routerDir)
       ? ''
       : `<a class="sidebar-new cwd-new" href="${esc('#/new/' + encodeURIComponent(cwd))}"
-           title="new session here" aria-label="new session here">+</a>`;
+           title="new session here" aria-label="new session here">${icon('plus')}</a>`;
     return `<div class="cwd-group">
       <div class="cwd-label">
         <span class="cwd-label-text" title="${esc(cwd)}">${esc(cwd)}</span>

@@ -3,11 +3,11 @@
 import {
   esc, root, subtitle, closeES, closeTerminalES, clearListInterval,
   currentDetailId, setCurrentDetailId, setCurrentDraftKey,
-  setSuppressAppendScroll, setRoutedTargets, getLastSessions,
+  setSuppressAppendScroll, setRoutedTargets, getLastSessions, recentCwds,
   isNearBottom, markViewing, setCurrentES,
   restoreDraft, clearDraft, growPrompt,
   registerRefreshSubtitle, fetchBackends, patchSession, copyText,
-  approvalToggleHTML, setApprovalToggle, wireApprovalToggle, imeKey,
+  imeKey,
 } from './state.js';
 import {
   renderMarkdown, appendChatMessage, renderToolPart,
@@ -15,6 +15,7 @@ import {
   backendMark, statusDot, parseRoutedSession,
 } from './render.js';
 import { openTerminalScreen, wireTerminalControls, measureCols } from './terminal.js';
+import { attachCwdPicker, approvalToggleHTML, setApprovalToggle, wireApprovalToggle, icon } from './widgets.js';
 import { loadSidebar } from './sidebar.js';
 import { loadList } from './list.js';
 
@@ -329,23 +330,20 @@ export async function showNewSession(opts = {}) {
 
   let cwds = [];
   try {
-    const res = await fetch('/api/v1/sessions');
+    const res = await fetch('/api/v1/sessions?include_archived=1');
     if (res.ok) {
-      const data = (await res.json()).sessions || [];
-      cwds = [...new Set(data.map(s => s.cwd).filter(Boolean))].sort();
+      cwds = recentCwds((await res.json()).sessions || []);
     }
-  } catch {/* offline → datalist just empty */}
+  } catch {/* offline → no cwd suggestions */}
 
-  const options = cwds.map(c => `<option value="${esc(c)}"></option>`).join('');
   root.innerHTML = `
     <div id="chat-scroll" class="chat-area">
       <section class="send-anchor">
         <div class="send-controls">
           <label class="new-cwd-field">
             <span class="muted">cwd</span>
-            <input id="new-cwd" type="text" list="new-cwd-list" autocomplete="off"
+            <input id="new-cwd" type="text" autocomplete="off"
                    placeholder="/absolute/path/to/project">
-            <datalist id="new-cwd-list">${options}</datalist>
           </label>
         </div>
         <div class="composer">
@@ -353,7 +351,7 @@ export async function showNewSession(opts = {}) {
           <div class="composer-bar">
             <div class="composer-tools">
               <button id="upload-btn" class="upload-btn" type="button" title="upload file">
-                <span class="t-icon">+</span><span class="t-full">upload</span>
+                <span class="t-icon">${icon('plus')}</span><span class="t-full">upload</span>
               </button>
               <input id="upload-input" type="file" hidden multiple>
               ${approvalToggleHTML('ask')}
@@ -376,6 +374,7 @@ export async function showNewSession(opts = {}) {
   const promptEl = document.getElementById('prompt');
   const sendBtn = document.getElementById('send');
   const cwdEl = document.getElementById('new-cwd');
+  attachCwdPicker(cwdEl, cwds);
   const configBtn = document.getElementById('new-config');
   const configMenu = document.getElementById('new-config-menu');
   const approvalWrap = root.querySelector('.approval-wrap');
@@ -499,7 +498,7 @@ export async function showNewSession(opts = {}) {
   // submenu rather than inline expansion because the menu is bottom-anchored:
   // growing in place would push the agent rows upward.
   const renderConfigMenu = () => {
-    const check = on => `<span class="config-check">${on ? '✓' : ''}</span>`;
+    const check = on => `<span class="config-check">${on ? icon('check') : ''}</span>`;
     const agentRows = agentProfiles.length
       ? [{id: '', label: 'custom'}, ...agentProfiles.map(p => ({id: p.name, label: p.name}))].map(a =>
           `<button type="button" class="config-row" data-agent="${esc(a.id)}">` +
@@ -509,7 +508,7 @@ export async function showNewSession(opts = {}) {
     const fold = (name, choices, selectedID) =>
       `<button type="button" class="config-row config-fold${expanded === name ? ' open' : ''}" data-fold="${name}">` +
       `<span class="config-fold-name">${name}</span>` +
-      `<span>${esc(displayName(choices, selectedID))} <span class="muted">▸</span></span></button>`;
+      `<span>${esc(displayName(choices, selectedID))} ${icon('chevron-right', 'muted')}</span></button>`;
     const submenu = (name, choices, selectedID) =>
       `<div class="config-submenu">` + choices.map(c =>
         `<button type="button" class="config-row" data-${name}="${esc(c.id)}">` +
@@ -714,7 +713,7 @@ export async function showDetail(id) {
             <button type="button" data-control="down" aria-label="down">↓</button>
             <button type="button" data-control="left" aria-label="left">←</button>
             <button type="button" data-control="right" aria-label="right">→</button>
-            <button type="button" data-control="enter">⏎</button>
+            <button type="button" data-control="enter" aria-label="enter">${icon('enter')}</button>
           </div>
           <div class="term-ctrl-menu" id="term-ctrl-menu" hidden>
             <button type="button" data-control="ctrl-c">^C</button>
@@ -733,7 +732,7 @@ export async function showDetail(id) {
           <div class="composer-bar">
             <div class="composer-tools">
               <button id="upload-btn" class="upload-btn" type="button" title="upload file">
-                <span class="t-icon">+</span><span class="t-full">upload</span>
+                <span class="t-icon">${icon('plus')}</span><span class="t-full">upload</span>
               </button>
               <input id="upload-input" type="file" hidden multiple>
               ${approvalToggleHTML(sess.approval || 'ask', sess.router || sess.subagent)}
@@ -1441,7 +1440,7 @@ function renderSessionSubtitle(sess) {
         ` data-pinned="${sess.pinned ? '1' : '0'}" data-status="${esc(sess.status || '')}"` +
         ` data-cwd="${esc(sess.cwd || '')}" aria-label="session actions" aria-haspopup="menu">` +
         `<strong class="session-title">${sess.router ? 'Router' : esc(sess.title || '(untitled)')}</strong>` +
-        `<svg class="subtitle-chevron" viewBox="0 0 10 6" width="10" height="6" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>` +
+        icon('chevron-down', 'subtitle-chevron') +
       `</button>` +
       (sess.router ? '' :
         `<span class="session-id">${esc(sess.id.slice(0, 8))}</span>` +
@@ -2036,7 +2035,7 @@ function runtimeRows(u) {
   const current = models && u.model ? catalogModel(models, u.model) : null;
   const fold = (name, value) => rows.push(
     `<button type="button" class="config-row config-fold${runtimeFold === name ? ' open' : ''}" data-fold="${name}">` +
-    `<span class="config-fold-name">${name}</span><span>${esc(value)} <span class="muted">▸</span></span></button>`);
+    `<span class="config-fold-name">${name}</span><span>${esc(value)} ${icon('chevron-right', 'muted')}</span></button>`);
   const choices = {};
   if (models) {
     choices.model = models.map(m => ({ id: m.id, label: m.display_name || m.id, on: m === current }));
@@ -2060,7 +2059,7 @@ function runtimeRows(u) {
   const submenu = open
     ? '<div class="config-submenu">' + open.map(c =>
         `<button type="button" class="config-row" data-pick="${runtimeFold}" data-value="${esc(c.id)}">` +
-        `<span>${esc(c.label)}</span><span class="config-check">${c.on ? '✓' : ''}</span></button>`).join('') + '</div>'
+        `<span>${esc(c.label)}</span><span class="config-check">${c.on ? icon('check') : ''}</span></button>`).join('') + '</div>'
     : '';
   return { rows, submenu };
 }

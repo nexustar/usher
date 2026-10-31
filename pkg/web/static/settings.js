@@ -15,8 +15,9 @@
 // column is visible is left entirely to CSS — no viewport branching here, so
 // there is nothing to re-run on resize or rotate.
 
-import { esc, getLastSessions, fetchBackends, formatArgs, parseArgs, APPROVALS } from './state.js';
+import { esc, getLastSessions, recentCwds, fetchBackends, formatArgs, parseArgs, APPROVALS } from './state.js';
 import { bindPushToggle } from './push.js';
+import { attachCwdPicker, icon } from './widgets.js';
 
 const dialog = document.getElementById('settings-dialog');
 const paneHost = document.getElementById('settings-pane');
@@ -29,12 +30,6 @@ const PANES = [
   {id: 'scheduled', label: 'Scheduled', render: renderScheduledPane},
   {id: 'usage', label: 'Usage', render: renderUsagePane},
 ];
-
-// Matches the app's other inline icons (16px box, 1.5 stroke) so the drill-in
-// chevron and the back chevron in the header read as one weight.
-const CHEVRON = `<svg class="settings-nav-chevron" width="16" height="16" viewBox="0 0 16 16"
-  fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-  stroke-linejoin="round" aria-hidden="true"><path d="M6 3 L11 8 L6 13"/></svg>`;
 
 let onRequestClose = null;
 let renderedPane = '';
@@ -59,7 +54,7 @@ export function showSettings(pane, requestClose) {
   dialog.classList.toggle('at-pane', Boolean(selected));
   navHost.innerHTML = PANES.map(p =>
     `<a class="settings-nav-item${p === active ? ' active' : ''}" href="#/settings/${esc(p.id)}">
-      <span>${esc(p.label)}</span>${CHEVRON}
+      <span>${esc(p.label)}</span>${icon('chevron-right', 'settings-nav-chevron')}
     </a>`
   ).join('');
   titlePane.textContent = active.label;
@@ -350,9 +345,7 @@ function renderForm(agent, copy = false) {
                autocapitalize="off" autocorrect="off" spellcheck="false">
       </label>
       <label><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
-        list="agent-cwd-list" autocomplete="off" placeholder="/absolute/path or ~"></label>
-      <datalist id="agent-cwd-list">${[...new Set(getLastSessions().map(s => s.cwd).filter(Boolean))].sort()
-        .map(cwd => `<option value="${esc(cwd)}"></option>`).join('')}</datalist>
+        autocomplete="off" placeholder="/absolute/path or ~"></label>
       <div class="cfg-form-pair">
         <label><span>Backend</span><select name="backend">${backendOptions(selectedBackend)}</select></label>
         <label><span>Model</span><select name="model">${modelOptions(selectedBackend, value.model || '')}</select></label>
@@ -380,6 +373,7 @@ function renderForm(agent, copy = false) {
 
   paneDirty = false; // fresh render reflects the stored agent (or a blank)
   const form = host.querySelector('form');
+  attachCwdPicker(form.elements.cwd, recentCwds(getLastSessions()));
   const backendEl = form.elements.backend;
   const modelEl = form.elements.model;
   const effortEl = form.elements.effort;
@@ -652,9 +646,7 @@ function renderScheduleForm(task) {
         agentOptions(value.agent || '')
       }</select></label>
       <label><span>cwd</span><input name="cwd" value="${esc(value.cwd || '')}"
-        list="sched-cwd-list" autocomplete="off" placeholder="/absolute/path or ~"></label>
-      <datalist id="sched-cwd-list">${[...new Set(getLastSessions().map(s => s.cwd).filter(Boolean))].sort()
-        .map(cwd => `<option value="${esc(cwd)}"></option>`).join('')}</datalist>
+        autocomplete="off" placeholder="/absolute/path or ~"></label>
       <div class="cfg-form-pair">
         <label><span>Backend</span><select name="backend">${backendOptions(selectedBackend)}</select></label>
         <label><span>Model</span><select name="model">${
@@ -676,6 +668,7 @@ function renderScheduleForm(task) {
 
   paneDirty = false;
   const form = host.querySelector('form');
+  attachCwdPicker(form.elements.cwd, recentCwds(getLastSessions()));
   const showError = message => {
     const error = form.querySelector('.cfg-form-error');
     error.textContent = message;

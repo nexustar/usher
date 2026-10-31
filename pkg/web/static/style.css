@@ -235,6 +235,7 @@ body {
   font-size: var(--glyph);
   font-weight: 400;
 }
+.sidebar-new .icon, .sidebar-group-toggle .icon { width: 0.75rem; height: 0.75rem; } /* 12px for both */
 .sidebar-new:hover, .sidebar-group-toggle:hover { background: var(--bg-hover); color: var(--text); }
 .sidebar-new.active { background: var(--nav-selected-bg); color: var(--text); }
 .sidebar-list {
@@ -686,7 +687,8 @@ body.sidebar-collapsed .mobile-toggle {
   white-space: nowrap;
 }
 .subtitle-chevron {
-  flex: none;
+  width: 0.75em;
+  height: 0.75em;
   color: var(--text-faint);
   /* The button row aligns by baseline (title text), which would seat the
    * svg's bottom edge on the baseline — visibly low. Center it on the row
@@ -1260,7 +1262,6 @@ pre.raw-markdown {
   cursor: pointer;
   padding: 0.1rem 0.45rem; /* padding doubles as the mobile touch target */
 }
-.chat-message.assistant .tool-details .tool-copy svg { vertical-align: -0.15em; }
 .chat-message.assistant .tool-details .tool-copy.copied { color: var(--accent); }
 /* The button ends the summary line, so the mark can't shift content after it. */
 .chat-message.assistant .tool-details .tool-copy.copied::after { content: ' ✓'; }
@@ -1359,13 +1360,22 @@ pre.raw-markdown {
 .chat-message .turn-fork:disabled { opacity: 0.5; cursor: default; }
 .router-view .turn-fork { display: none; }
 
+/* widgets.js icon(): sized by the text around it. */
+.icon { width: 1em; height: 1em; vertical-align: -0.15em; flex: none; }
+
 /* Session status dot. "live" (warm process, idle) is a DIM solid green dot —
    present but quiet, so a row of idle sessions doesn't shout and full
-   brightness is reserved for actual activity. */
+   brightness is reserved for actual activity. A CSS disc, not a ● glyph,
+   whose size and baseline vary by font. */
 .running-dot {
+  display: inline-block;
+  width: 0.625em; /* the ● it replaces was ~0.75em */
+  height: 0.625em;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: middle; /* on the text's x-height in any font */
   font-size: var(--font-meta);
   color: var(--live-dot);
-  font-weight: 500;
   opacity: 0.5;
 }
 
@@ -1442,6 +1452,7 @@ pre.raw-markdown {
   vertical-align: -0.15em;
   animation: upload-spin 4s linear infinite;
 }
+.upload-btn.uploading .t-icon .icon { display: none; }
 @keyframes upload-spin { to { transform: rotate(1turn); } }
 .upload-btn { color: var(--text); }
 .approval-toggle[data-approval="auto"] { color: var(--caution-text); }
@@ -1917,6 +1928,40 @@ pre.raw-markdown {
 /* Ghost field (no border/fill); focus shows a fill since there's no border
  * left to highlight. */
 .new-cwd-field input:focus { outline: none; background: var(--bg-hover); }
+/* Popover, so left/top are viewport coordinates set by widgets.js. */
+.cwd-picker {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: 0.25rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 12px var(--shadow-modal);
+  color: var(--text);
+  animation: config-pop 120ms ease-out;
+}
+.cwd-picker button {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--font-base);
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cwd-picker button:hover,
+.cwd-picker button.active { background: var(--bg-hover); }
+.cwd-picker mark { background: none; color: var(--accent); }
+.cwd-picker-path { display: block; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.cwd-picker-parent { color: var(--text-faint); }
 @media (max-width: 720px) {
   /* cwd is a path: give it the row instead of the desktop's fixed 18rem. */
   .send-controls { align-items: stretch; }
@@ -2164,6 +2209,18 @@ pre.raw-markdown {
   padding: 0.55rem 0.65rem;
   font: inherit;
   font-size: var(--font-input);
+}
+/* Flat closed state beside the inputs; the list opens native. appearance:none
+ * drops the chevron, so draw one. */
+.cfg-form select,
+#list-cwd {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 1.9rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.65rem center;
+  background-size: 0.7rem auto;
 }
 /* Opt-in for the fields whose value is a token rather than prose: an agent
  * name, a cron expression. */
