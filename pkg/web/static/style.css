@@ -35,8 +35,7 @@
 
   /* Navigation: where you are, in a warm gray rather than the action blue */
   --nav-selected-bg: #e3dfda;
-  --nav-accent: #7c4a25;        /* the Router icon */
-  --nav-card-bg: var(--bg-canvas); /* the Router entry at rest */
+  --nav-card-bg: var(--bg-canvas); /* the Router / New session card at rest */
   --card-ring: rgb(0 0 0 / 6%);
 
   /* Agent purple */
@@ -179,28 +178,26 @@ body {
   justify-content: space-between;
 }
 .sidebar-brand a { color: inherit; text-decoration: none; }
-.sidebar-router {
+/* Router and New session: two rows in one card, the current one filled. */
+.sidebar-entries {
+  margin: 0 1.15rem 0.6rem;
+  background: var(--nav-card-bg);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--card-ring), 0 1px 2px rgb(0 0 0 / 6%);
+}
+.sidebar-entry {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding: 0.45rem 0.6rem;
-  margin-left: 1.15rem;
-  margin-right: 1.15rem;
-  border: none;
-  background: var(--nav-card-bg);
-  box-shadow: 0 0 0 1px var(--card-ring), 0 1px 2px rgb(0 0 0 / 6%);
-  border-radius: var(--radius);
-  margin-bottom: 0.5rem;
   color: var(--text);
   text-decoration: none;
 }
-.sidebar-router .router-icon { flex-shrink: 0; opacity: 0.85; color: var(--nav-accent); }
-.sidebar-router:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
-.sidebar-router.active {
-  background: var(--nav-selected-bg);
-  box-shadow: none;
-  font-weight: 500;
-}
+.sidebar-entry + .sidebar-entry { border-top: 1px solid var(--border-muted); }
+.sidebar-entry svg { flex-shrink: 0; width: 0.9375rem; height: 0.9375rem; color: var(--text-muted); } /* 15px */
+.sidebar-entry:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
+.sidebar-entry.active { background: var(--nav-selected-bg); font-weight: 500; }
 .sidebar-section { margin-bottom: 0; flex: 1; overflow-y: auto; min-height: 0; padding: 0 var(--sidebar-pad-x); }
 .sidebar-heading {
   border-top: 1px solid var(--border-muted);
@@ -237,7 +234,6 @@ body {
 }
 .sidebar-new .icon, .sidebar-group-toggle .icon { width: 0.75rem; height: 0.75rem; } /* 12px for both */
 .sidebar-new:hover, .sidebar-group-toggle:hover { background: var(--bg-hover); color: var(--text); }
-.sidebar-new.active { background: var(--nav-selected-bg); color: var(--text); }
 .sidebar-list {
   list-style: none;
   padding: 0;
@@ -2587,7 +2583,6 @@ pre.raw-markdown {
     --nav-selected-bg: #34312d;
     --nav-card-bg: var(--bg-raised);
     --card-ring: rgb(255 255 255 / 8%);
-    --nav-accent: #e4bb95;
 
     --purple: #bc8cff;
     --claude: #e0916f;

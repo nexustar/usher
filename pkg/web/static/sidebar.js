@@ -228,7 +228,7 @@ export function updateSidebarActive() {
   document.querySelectorAll('.sidebar-router').forEach(a => {
     a.classList.toggle('active', inRouter);
   });
-  document.querySelectorAll('.sidebar-new:not(.cwd-new)').forEach(a => {
+  document.querySelectorAll('.sidebar-new-entry').forEach(a => {
     a.classList.toggle('active', hash === '#/new');
   });
   document.querySelectorAll('.settings-item[href^="#/settings"]').forEach(a => {

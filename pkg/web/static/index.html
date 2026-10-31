@@ -21,11 +21,13 @@
 <div id="sidebar-backdrop" aria-hidden="true"></div>
 <aside id="sidebar">
   <h1 class="sidebar-brand"><a href="#/">{{html .AppName}}</a> <button class="sidebar-toggle sidebar-collapse" id="sidebar-collapse" title="Close sidebar" type="button"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="2"/><line x1="5.2" y1="1" x2="5.2" y2="15"/></svg></button></h1>
-  <a href="#/router" class="sidebar-router"><svg class="router-icon" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="3.5" cy="8" r="1.6"/><circle cx="12.5" cy="3.5" r="1.6"/><circle cx="12.5" cy="12.5" r="1.6"/><path d="M5.1 8h2.4M7.5 8l3.5-3.7M7.5 8l3.5 3.7"/></svg>Router</a>
+  <div class="sidebar-entries">
+  <a href="#/router" class="sidebar-entry sidebar-router"><svg class="router-icon" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="3.5" cy="8" r="1.6"/><circle cx="12.5" cy="3.5" r="1.6"/><circle cx="12.5" cy="12.5" r="1.6"/><path d="M5.1 8h2.4M7.5 8l3.5-3.7M7.5 8l3.5 3.7"/></svg>Router</a>
+  <a href="#/new" class="sidebar-entry sidebar-new-entry" title="new session"><svg class="icon icon-plus" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10" stroke-width="1.6"/></svg>New session</a>
+  </div>
   <div class="sidebar-heading">
     <span>sessions <span id="sidebar-session-count" class="muted"></span></span>
     <button id="sidebar-group-toggle" class="sidebar-group-toggle" type="button"><svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 6.25h11L11 3.75M13.5 9.75h-11L5 12.25"/></svg></button>
-    <a href="#/new" class="sidebar-new" title="new session" aria-label="new session"><svg class="icon icon-plus" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10" stroke-width="1.6"/></svg></a>
   </div>
   <div class="sidebar-section">
     <div id="sidebar-pinned"></div>
