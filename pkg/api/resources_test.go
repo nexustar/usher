@@ -1,17 +1,20 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/nexustar/usher/pkg/agentprofile"
+	"github.com/nexustar/usher/pkg/agentupdate"
 	"github.com/nexustar/usher/pkg/api"
 	"github.com/nexustar/usher/pkg/core"
 	"github.com/nexustar/usher/pkg/pluginapi/pluginapitest"
@@ -145,5 +148,36 @@ func serve(t *testing.T, c api.Config) func(method, path, body string) (int, str
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(method, api.Prefix+path, strings.NewReader(body)))
 		return rec.Code, rec.Body.String()
+	}
+}
+
+func TestUpdateRoutes(t *testing.T) {
+	cli := filepath.Join(t.TempDir(), "agent")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\necho 1.0.0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentupdate.Spec{
+		Name: "claude", Cmd: cli,
+		Latest: func(context.Context) (string, error) { return "1.1.0", nil },
+	}
+	m := agentupdate.New(t.Context(), []agentupdate.Spec{spec}, slog.New(slog.DiscardHandler))
+	do := serve(t, api.Config{Router: pluginapitest.NewFakeRouter(), Updates: m})
+
+	code, body := do(http.MethodGet, "/updates?refresh=1", "")
+	if code != http.StatusOK || !strings.Contains(body, `"latest":"1.1.0"`) || !strings.Contains(body, `"update_available":true`) {
+		t.Fatalf("GET /updates = %d %s", code, body)
+	}
+	if code, _ := do(http.MethodPost, "/updates/nope", ""); code != http.StatusNotFound {
+		t.Errorf("unknown agent = %d", code)
+	}
+	if code, _ := do(http.MethodPost, "/updates/claude", ""); code != http.StatusAccepted {
+		t.Errorf("start = %d", code)
+	}
+}
+
+func TestUpdateRoutesAbsentWithoutManager(t *testing.T) {
+	do := serve(t, api.Config{Router: pluginapitest.NewFakeRouter()})
+	if code, _ := do(http.MethodGet, "/updates", ""); code != http.StatusNotFound {
+		t.Errorf("GET /updates = %d", code)
 	}
 }

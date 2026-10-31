@@ -29,6 +29,7 @@ const PANES = [
   {id: 'agents', label: 'Agents', render: renderAgentsPane},
   {id: 'scheduled', label: 'Scheduled', render: renderScheduledPane},
   {id: 'usage', label: 'Usage', render: renderUsagePane},
+  {id: 'updates', label: 'Updates', render: renderUpdatesPane},
 ];
 
 let onRequestClose = null;
@@ -231,6 +232,88 @@ function resetText(resetsAt) {
   if (mins < 60) return `Resets in ${mins}m`;
   if (mins < 24 * 60) return `Resets in ${Math.floor(mins / 60)}h ${mins % 60}m`;
   return 'Resets ' + new Date(at).toLocaleString(undefined, {weekday: 'short', hour: 'numeric', minute: '2-digit'});
+}
+
+// ----- updates pane --------------------------------------------------------
+
+function renderUpdatesPane(host) {
+  host.innerHTML = `
+    <div class="settings-section">
+      <div id="updates-body"><p class="muted">Loading…</p></div>
+      <div class="settings-row">
+        <span class="settings-row-text"></span>
+        <button id="updates-check" class="settings-row-action" type="button">Check for updates</button>
+      </div>
+    </div>`;
+  updatesHTML = '';
+  const button = document.getElementById('updates-check');
+  button.addEventListener('click', () => loadUpdates(button, true));
+  document.getElementById('updates-body').addEventListener('click', e => {
+    const update = e.target.closest('[data-update]');
+    if (update) startUpdate(update.dataset.update, button);
+  });
+  loadUpdates(button, false);
+}
+
+async function startUpdate(name, button) {
+  try {
+    await fetch('/api/v1/updates/' + encodeURIComponent(name), {method: 'POST'});
+  } catch { /* the reload below shows what happened */ }
+  loadUpdates(button, false);
+}
+
+let updatesHTML = '';
+let updatesTimer = 0;
+
+async function loadUpdates(button, refresh) {
+  clearTimeout(updatesTimer);
+  if (refresh) button.disabled = true;
+  let list = null;
+  try {
+    const res = await fetch('/api/v1/updates' + (refresh ? '?refresh=1' : ''));
+    if (res.ok) list = (await res.json()).agents || [];
+  } catch { /* shown below */ }
+  button.disabled = false;
+  const body = document.getElementById('updates-body');
+  if (!body) return; // the pane was left meanwhile
+  // Without the CLI there is nothing to update.
+  const agents = (list || []).filter(a => a.path || !a.check_error);
+  const html = !list ? `<p class="usage-error">Could not load updates.</p>`
+    : agents.length ? agents.map(updateRowHTML).join('')
+    : `<p class="muted">No agent CLI to update.</p>`;
+  // Polled while an update runs; an unchanged rewrite would drop the log's scroll.
+  if (html !== updatesHTML) {
+    body.innerHTML = html;
+    updatesHTML = html;
+  }
+  if ((list || []).some(a => a.updating)) {
+    updatesTimer = setTimeout(() => loadUpdates(button, false), 1000);
+  }
+}
+
+function updateHint(a) {
+  if (a.update_available) return `${a.latest} available`;
+  if (a.latest) return 'Up to date';
+  return a.checked_at ? '' : 'Not checked';
+}
+
+function updateRowHTML(a) {
+  const name = a.name === 'claude' ? 'Claude Code' : a.name.charAt(0).toUpperCase() + a.name.slice(1);
+  const action = a.updating || a.update_available
+    ? `<button class="settings-row-action" type="button" data-update="${esc(a.name)}"${a.updating ? ' disabled' : ''}>${a.updating ? 'Updating…' : 'Update'}</button>`
+    : '';
+  let html = `<div class="settings-row">
+      <div class="settings-row-text">
+        <span class="settings-row-label">${esc(name)} ${esc(a.current || '')}</span>
+        <p class="settings-row-hint">${esc(updateHint(a))}</p>
+      </div>
+      ${action}
+    </div>`;
+  // A finished update's log is noise unless it failed.
+  if (a.output && (a.updating || a.update_error)) html += `<pre class="update-output">${esc(a.output)}</pre>`;
+  if (a.check_error) html += `<p class="usage-error">${esc(a.check_error)}</p>`;
+  if (a.update_error) html += `<p class="usage-error">Update failed. Run <code>${esc(a.command)}</code></p>`;
+  return html;
 }
 
 // ----- agents pane ---------------------------------------------------------

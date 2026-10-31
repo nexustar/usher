@@ -86,6 +86,8 @@ first understanding the authentication guidance there.
   Telegram or Lark/Feishu integration.
 - **Per-session tools:** one tmux shell per conversation and an optional deep
   link into an editor such as code-server.
+- **Agent updates:** check agent CLI versions and run their own update commands
+  from Settings, on request.
 - **Router:** one session holds usher's routing tools: it can list, search,
   create, and hand work to the other sessions, and shows their replies as they
   land.

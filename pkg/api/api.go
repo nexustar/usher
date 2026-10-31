@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/pkg/agentprofile"
+	"github.com/nexustar/usher/pkg/agentupdate"
 	"github.com/nexustar/usher/pkg/backend"
 	"github.com/nexustar/usher/pkg/broker"
 	"github.com/nexustar/usher/pkg/core"
@@ -73,7 +74,9 @@ type Config struct {
 	Router Router
 	Agents *agentprofile.Store
 	// Schedules nil leaves out the /schedules routes.
-	Schedules      *schedule.Runner
+	Schedules *schedule.Runner
+	// Updates nil leaves out the /updates routes.
+	Updates        *agentupdate.Manager
 	AttachmentsDir string
 	Version        string
 	ReadOnly       bool
@@ -127,6 +130,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 		handle("PUT /schedules/{id}", s.handleUpdateSchedule)
 		handle("DELETE /schedules/{id}", s.handleDeleteSchedule)
 		handle("POST /schedules/{id}/run", s.handleRunSchedule)
+	}
+
+	if s.Updates != nil {
+		handle("GET /updates", s.handleUpdates)
+		handle("POST /updates/{name}", s.handleStartUpdate)
 	}
 }
 

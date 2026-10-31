@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nexustar/usher/pkg/agentprofile"
+	"github.com/nexustar/usher/pkg/agentupdate"
 	"github.com/nexustar/usher/pkg/api"
 	"github.com/nexustar/usher/pkg/auth"
 	"github.com/nexustar/usher/pkg/backend"
@@ -292,11 +293,13 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 		}
 	}
 
+	var updateSpecs []agentupdate.Spec
 	if dir := o.ClaudeSessionsDir; sessionsDir(dir, o.ClaudeCmd, logger) {
 		claudeRuntime := sender.New(o.ClaudeCmd, dir, hookSock, o.MaxLiveSessions, !o.DisableUsherTools, h, logger)
 		claudeRuntime.SetAutoPause(o.AutoPause)
 		// Claude Code's per-account model catalog sits next to the projects dir.
 		claudeModels := modelcatalog.Claude{Dir: filepath.Join(filepath.Dir(dir), "cache", "model-catalog")}
+		updateSpecs = append(updateSpecs, agentupdate.Claude(o.ClaudeCmd, filepath.Dir(dir)))
 		add("claude", backend.Backend{
 			CLI: o.ClaudeCmd, Runtime: claudeRuntime, Transcript: transcript.Claude{}, Source: discovery.NewClaudeSource(dir),
 			Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: claudeModels,
@@ -309,6 +312,7 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 		modelsPath := filepath.Join(filepath.Dir(dir), "models_cache.json")
 		codexRuntime := sender.NewCodex(o.CodexCmd, dir, hookSock, o.CodexArgs, o.MaxLiveSessions, !o.DisableUsherTools, h, logger)
 		codexRuntime.SetAutoPause(o.AutoPause)
+		updateSpecs = append(updateSpecs, agentupdate.Codex(o.CodexCmd))
 		add("codex", backend.Backend{
 			CLI: o.CodexCmd, Runtime: codexRuntime, Transcript: transcript.Codex{}, Source: discovery.NewCodexSource(dir),
 			Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}, Replier: transcript.Codex{},
@@ -339,6 +343,7 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 		if routerExtension != "" {
 			piRuntime.SetRouterExtension(routerExtension)
 		}
+		updateSpecs = append(updateSpecs, agentupdate.Pi(o.PiCmd))
 		add("pi", backend.Backend{
 			CLI: o.PiCmd, Runtime: piRuntime, Transcript: piagent.Transcript{}, Source: discovery.NewPiSource(dir),
 			Forker: piRuntime, Renamer: piRuntime, Models: piModels,
@@ -440,6 +445,10 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 		AttachmentsDir: attachmentsDir,
 		Version:        Version,
 		ReadOnly:       o.ReadOnly,
+	}
+	// Read-only mode starts no process of its own, so it has no Updates.
+	if !o.ReadOnly {
+		apiConfig.Updates = agentupdate.New(ctx, updateSpecs, logger)
 	}
 	themePath := filepath.Join(o.DataDir, "theme.css")
 	proxy := web.ProxyAuth{Header: o.AuthHeader, LogoutURL: o.LogoutURL}
