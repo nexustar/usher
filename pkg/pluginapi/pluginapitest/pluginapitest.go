@@ -486,4 +486,6 @@ func (f *FakeRouter) ComposerItems(context.Context, string, string) (backend.Com
 
 func (f *FakeRouter) Backends() []string { return []string{"claude"} }
 
+func (f *FakeRouter) Writable(string) bool { return true }
+
 func (f *FakeRouter) Models(context.Context, string) ([]backend.Model, error) { return nil, nil }

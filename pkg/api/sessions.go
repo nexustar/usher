@@ -23,6 +23,7 @@ type Session struct {
 	Router            bool   `json:"router,omitempty"`
 	TerminalOpen      bool   `json:"terminal_open,omitempty"`
 	TerminalAvailable bool   `json:"terminal_available,omitempty"`
+	ReadOnly          bool   `json:"read_only,omitempty"`
 	// AppendSystemPrompt and ExtraArgs are the launch options, on a single
 	// session's view only.
 	AppendSystemPrompt string   `json:"append_system_prompt,omitempty"`
@@ -90,6 +91,7 @@ func (s *Server) view(ctx context.Context, id string, wait time.Duration) (Sessi
 		Router:             id == s.Router.RouterSession(),
 		TerminalOpen:       s.Router.HasTerminal(id),
 		TerminalAvailable:  s.Router.TerminalAvailable(),
+		ReadOnly:           !sess.IsSubagent && !s.Router.Writable(sess.Backend),
 		AppendSystemPrompt: prompt,
 		ExtraArgs:          args,
 	}, true
@@ -142,7 +144,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.Router.StartSession(opts)
 	if err != nil {
-		WriteError(w, http.StatusBadRequest, err.Error())
+		WriteError(w, ErrStatus(err), err.Error())
 		return
 	}
 	s.WriteCreated(w, r, id)
@@ -305,8 +307,8 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	if err := s.Router.ResumeSession(r.Context(), r.PathValue("id")); err != nil {
-		if errors.Is(err, core.ErrSessionNotFound) {
-			WriteError(w, http.StatusNotFound, err.Error())
+		if errors.Is(err, core.ErrSessionNotFound) || errors.Is(err, core.ErrCLINotFound) {
+			WriteError(w, ErrStatus(err), err.Error())
 			return
 		}
 		WriteError(w, http.StatusInternalServerError, err.Error())

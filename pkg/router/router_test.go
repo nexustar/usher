@@ -1592,3 +1592,29 @@ func TestStartSessionEffort(t *testing.T) {
 		t.Fatalf("unlisted model: err = %v, StartRequest.Effort = %q", err, rt.req.Effort)
 	}
 }
+
+func TestMissingCLIMakesSessionsReadOnly(t *testing.T) {
+	r := newQueueTestRouter(t)
+	b := r.backends["claude"]
+	b.CLI = filepath.Join(t.TempDir(), "gone")
+	r.backends["claude"] = b
+
+	writes := map[string]error{
+		"send":   r.SendToSession("abc12345", "hi"),
+		"resume": r.ResumeSession(context.Background(), "abc12345"),
+	}
+	_, writes["fork"] = r.ForkSession("abc12345", "")
+	_, writes["create"] = r.StartSession(core.CreateOptions{Backend: "claude", Cwd: t.TempDir(), InitialMessage: "hi"})
+	for name, err := range writes {
+		if !errors.Is(err, core.ErrCLINotFound) {
+			t.Errorf("%s = %v", name, err)
+		}
+	}
+
+	if err := os.WriteFile(b.CLI, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !r.Writable("claude") {
+		t.Error("not Writable once installed")
+	}
+}

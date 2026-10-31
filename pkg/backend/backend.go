@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 
 	"github.com/nexustar/usher/pkg/core"
 )
@@ -330,9 +331,12 @@ type MetadataSource interface {
 
 // Backend explicitly composes the capabilities registered for one agent CLI.
 // Runtime and Transcript are required; Source enables discovery of the
-// backend's sessions on disk. There is deliberately no global init registry:
-// usher.New assembles the built-in backends and Options.Backends adds others.
+// backend's sessions on disk. CLI, when set, must be found for sessions to be
+// written; they stay readable without it. There is deliberately no global init
+// registry: usher.New assembles the built-in backends and Options.Backends adds
+// others.
 type Backend struct {
+	CLI        string
 	Runtime    Runtime
 	Transcript Transcript
 	Source     Source
@@ -340,4 +344,13 @@ type Backend struct {
 	Renamer    Renamer
 	Models     ModelProvider
 	Replier    Replier
+}
+
+// Installed looks per call, so a newly installed CLI needs no restart.
+func (b Backend) Installed() bool {
+	if b.CLI == "" {
+		return true
+	}
+	_, err := exec.LookPath(b.CLI)
+	return err == nil
 }

@@ -204,6 +204,22 @@ func (r *Router) Backends() []string {
 	return out
 }
 
+// Writable reports whether usher can run the backend's CLI.
+func (r *Router) Writable(backendName string) bool {
+	if backendName == "" {
+		backendName = r.defaultBackend
+	}
+	b, ok := r.backends[backendName]
+	return ok && b.Installed()
+}
+
+func (r *Router) checkWritable(backendName string) error {
+	if r.Writable(backendName) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", core.ErrCLINotFound, backendName)
+}
+
 // ComposerItems returns an authoritative cwd-aware catalog. A cold backend
 // falls back to the last catalog observed for the same backend and cwd.
 func (r *Router) ComposerItems(ctx context.Context, id, cwd string) (backendpkg.ComposerCatalog, error) {
@@ -322,6 +338,9 @@ func (r *Router) SetRuntime(ctx context.Context, id, model, effort string) error
 	}
 	if sess.IsSubagent {
 		return ErrReadOnlySession
+	}
+	if err := r.checkWritable(sess.Backend); err != nil {
+		return err
 	}
 	if model == "" && effort == "" {
 		return nil
@@ -684,6 +703,9 @@ func (r *Router) ForkSession(srcID, afterUUID string) (string, error) {
 	if sess, ok := r.discovery.Get(srcID); ok && sess.IsSubagent {
 		return "", ErrReadOnlySession
 	}
+	if err := r.checkWritable(r.backendOf(srcID)); err != nil {
+		return "", err
+	}
 	path, ok := r.discovery.Path(srcID)
 	if !ok {
 		return "", ErrSessionNotFound
@@ -983,6 +1005,9 @@ func (r *Router) ResumeSession(ctx context.Context, id string) error {
 	if sess.IsSubagent {
 		return ErrReadOnlySession
 	}
+	if err := r.checkWritable(sess.Backend); err != nil {
+		return err
+	}
 	return r.senderFor(id).Resume(ctx, backendpkg.ResumeRequest{SessionID: id, Cwd: sess.Cwd})
 }
 
@@ -1131,6 +1156,9 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 	}
 	if sess.IsSubagent {
 		return ErrReadOnlySession
+	}
+	if err := r.checkWritable(sess.Backend); err != nil {
+		return err
 	}
 	// Reorder the sidebar the instant the user sends, without waiting for the
 	// prompt to land in the jsonl (see discovery.MarkInput).
@@ -2131,6 +2159,9 @@ func (r *Router) resolveCreateBackend(ctx context.Context, backend, model string
 			return "", fmt.Errorf("backend %q is not enabled", backend)
 		}
 		backend = r.defaultBackend
+	}
+	if err := r.checkWritable(backend); err != nil {
+		return "", err
 	}
 	if err := r.ValidateModel(ctx, backend, model); err != nil {
 		return "", err

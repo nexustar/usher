@@ -209,7 +209,7 @@ export async function fetchBackends() {
   if (!res.ok) return {};
   const list = (await res.json()).backends || [];
   return {
-    backends: list.map(b => b.name),
+    backends: list.filter(b => b.writable !== false).map(b => b.name),
     models: Object.fromEntries(list.map(b => [b.name, b.models])),
     approvals: Object.fromEntries(list.map(b => [b.name, b.approvals || []])),
   };

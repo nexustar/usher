@@ -59,6 +59,7 @@ type Router interface {
 	TerminalAvailable() bool
 	ComposerItems(ctx context.Context, id, cwd string) (backend.ComposerCatalog, error)
 	Backends() []string
+	Writable(backendName string) bool
 	Models(ctx context.Context, backendName string) ([]backend.Model, error)
 	Usage(ctx context.Context, backendName string, refresh bool) (backend.Usage, bool, error)
 	SearchSessionTranscript(id, query string, maxHits, contextChars int) ([]core.TranscriptSearchHit, bool, error)
@@ -192,7 +193,7 @@ func ErrStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, core.ErrSendQueueFull), errors.Is(err, core.ErrRouterSession):
 		return http.StatusConflict
-	case errors.Is(err, core.ErrReadOnlySession):
+	case errors.Is(err, core.ErrReadOnlySession), errors.Is(err, core.ErrCLINotFound):
 		return http.StatusForbidden
 	}
 	return http.StatusBadRequest

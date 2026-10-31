@@ -688,8 +688,9 @@ export async function showDetail(id) {
   // band, no fragile second-tier sticky element.
   renderSessionSubtitle(sess);
 
-  if (sess.subagent) {
-    root.innerHTML = `<div id="chat-scroll" class="chat-area"></div>`;
+  if (sess.subagent || sess.read_only) {
+    root.innerHTML = `<div id="chat-scroll" class="chat-area${sess.read_only ? ' router-view' : ''}"></div>` +
+      (sess.read_only ? `<p class="session-read-only muted">Read-only: the ${esc(sess.backend)} CLI is not installed.</p>` : '');
     openSubagentEventStream(id);
     await loadTranscript(id);
     return;

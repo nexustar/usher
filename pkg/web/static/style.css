@@ -505,6 +505,7 @@ body {
   padding-inline: max(1.5rem, calc((100% - 960px) / 2));
   box-sizing: border-box;
 }
+.session-read-only { margin: 0; padding: 0.6rem 1rem; text-align: center; }
 /* send-anchor is the last child of chat-area; sticky bottom pins it when
  * the chat scrolls, margin-top:auto parks it at the bottom when content
  * is short. Opaque bg lets messages scroll behind it invisibly. */

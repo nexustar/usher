@@ -233,7 +233,7 @@ func TestRespondInteraction(t *testing.T) {
 
 func TestBackendsAndInfo(t *testing.T) {
 	do := serve(t, api.Config{Router: pluginapitest.NewFakeRouter(), Version: "v0.10.0", ReadOnly: true})
-	if _, body := do(http.MethodGet, "/backends", ""); body != `{"backends":[{"name":"claude","models":[],"approvals":["ask","full"]}]}`+"\n" {
+	if _, body := do(http.MethodGet, "/backends", ""); body != `{"backends":[{"name":"claude","models":[],"approvals":["ask","full"],"writable":true}]}`+"\n" {
 		t.Errorf("backends = %s", body)
 	}
 	if _, body := do(http.MethodGet, "/info", ""); body != `{"version":"v0.10.0","read_only":true}`+"\n" {

@@ -55,6 +55,7 @@ type Backend struct {
 	Name      string          `json:"name"`
 	Models    []backend.Model `json:"models"`
 	Approvals []string        `json:"approvals"`
+	Writable  bool            `json:"writable"`
 }
 
 // BackendList is the body of GET /backends.
@@ -71,7 +72,7 @@ func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
 		if err != nil || models == nil {
 			models = []backend.Model{}
 		}
-		out = append(out, Backend{Name: name, Models: models, Approvals: s.Router.Approvals(name)})
+		out = append(out, Backend{Name: name, Models: models, Approvals: s.Router.Approvals(name), Writable: s.Router.Writable(name)})
 	}
 	WriteJSON(w, http.StatusOK, BackendList{Backends: out})
 }

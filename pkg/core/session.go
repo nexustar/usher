@@ -165,6 +165,7 @@ func ValidApproval(approval string) bool {
 var (
 	ErrSessionNotFound = errors.New("session not found")
 	ErrReadOnlySession = errors.New("subagent transcripts are read-only")
+	ErrCLINotFound     = errors.New("agent CLI not found")
 	ErrSendQueueFull   = errors.New("send queue full for session")
 	ErrInvalidTitle    = errors.New("session title must not be empty")
 	ErrRouterSession   = errors.New("the router session's flags are usher's")

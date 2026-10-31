@@ -287,7 +287,7 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 		if b.Source != nil {
 			sources = append(sources, b.Source)
 		}
-		if defaultBackend == "" {
+		if defaultBackend == "" || (!backends[defaultBackend].Installed() && b.Installed()) {
 			defaultBackend = name
 		}
 	}
@@ -298,7 +298,7 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 		// Claude Code's per-account model catalog sits next to the projects dir.
 		claudeModels := modelcatalog.Claude{Dir: filepath.Join(filepath.Dir(dir), "cache", "model-catalog")}
 		add("claude", backend.Backend{
-			Runtime: claudeRuntime, Transcript: transcript.Claude{}, Source: discovery.NewClaudeSource(dir),
+			CLI: o.ClaudeCmd, Runtime: claudeRuntime, Transcript: transcript.Claude{}, Source: discovery.NewClaudeSource(dir),
 			Forker: transcript.ClaudeForker{}, Renamer: claudeRuntime, Models: claudeModels,
 		})
 		logger.Info("claude backend enabled", "sessions_dir", dir)
@@ -310,7 +310,7 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 		codexRuntime := sender.NewCodex(o.CodexCmd, dir, hookSock, o.CodexArgs, o.MaxLiveSessions, !o.DisableUsherTools, h, logger)
 		codexRuntime.SetAutoPause(o.AutoPause)
 		add("codex", backend.Backend{
-			Runtime: codexRuntime, Transcript: transcript.Codex{}, Source: discovery.NewCodexSource(dir),
+			CLI: o.CodexCmd, Runtime: codexRuntime, Transcript: transcript.Codex{}, Source: discovery.NewCodexSource(dir),
 			Forker: transcript.CodexForker{}, Renamer: codexRuntime, Models: modelcatalog.Codex{Path: modelsPath}, Replier: transcript.Codex{},
 		})
 		logger.Info("codex backend enabled", "sessions_dir", dir)
@@ -340,7 +340,7 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 			piRuntime.SetRouterExtension(routerExtension)
 		}
 		add("pi", backend.Backend{
-			Runtime: piRuntime, Transcript: piagent.Transcript{}, Source: discovery.NewPiSource(dir),
+			CLI: o.PiCmd, Runtime: piRuntime, Transcript: piagent.Transcript{}, Source: discovery.NewPiSource(dir),
 			Forker: piRuntime, Renamer: piRuntime, Models: piModels,
 		})
 		logger.Info("pi backend enabled", "sessions_dir", dir)
@@ -593,7 +593,7 @@ func checkCLI(name, cmd string, readOnly bool, logger *slog.Logger) {
 	}
 	path, err := exec.LookPath(cmd)
 	if err != nil {
-		logger.Warn("backend CLI not found; its sessions cannot start", "backend", name, "cmd", cmd, "PATH", os.Getenv("PATH"))
+		logger.Warn("backend CLI not found; its sessions are read-only", "backend", name, "cmd", cmd, "PATH", os.Getenv("PATH"))
 		return
 	}
 	logger.Debug("backend CLI", "backend", name, "path", path)
