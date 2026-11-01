@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -1906,14 +1907,15 @@ func flattenTurnText(t core.Turn, includeTools bool) string {
 	return b.String()
 }
 
-// SearchSessionTranscript scans the whole transcript for a case-insensitive
-// substring of query in the user/assistant text (tool annotations excluded),
+// SearchSessionTranscript scans the whole transcript for the terms of query
+// (see searchTerms) in the user/assistant text (tool annotations excluded),
 // returning at most maxHits matching turns with a bounded snippet around each
 // first occurrence. The bool reports whether more turns matched than were
 // returned. limit-style truncation of read_session_transcript is exactly what
 // this avoids: it looks at every turn but returns only small located snippets.
 func (r *Router) SearchSessionTranscript(id, query string, maxHits, contextChars int) ([]core.TranscriptSearchHit, bool, error) {
-	if strings.TrimSpace(query) == "" {
+	terms := searchTerms(query)
+	if len(terms) == 0 {
 		return nil, false, errors.New("query is required")
 	}
 	path, ok := r.discovery.Path(id)
@@ -1924,11 +1926,11 @@ func (r *Router) SearchSessionTranscript(id, query string, maxHits, contextChars
 	if err != nil {
 		return nil, false, err
 	}
-	hits, matched := scanTurnsForQuery(turns, []rune(query), maxHits, contextChars)
+	hits, matched := scanTurnsForQuery(turns, terms, maxHits, contextChars)
 	return hits, matched > len(hits), nil
 }
 
-// SearchAllSessions runs the same substring search across every discovered
+// SearchAllSessions runs the same search across every discovered
 // session and returns one compact result per session that has a match: its
 // total hit count and a snippet at the first hit. It is the routing primitive
 // for "which session mentioned X?" — the alternative, calling
@@ -1937,37 +1939,33 @@ func (r *Router) SearchSessionTranscript(id, query string, maxHits, contextChars
 // matched than maxSessions returned. Every session's jsonl is read once, so
 // this is heavier than a single-session search — meant for user-driven lookup.
 func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) ([]core.SessionSearchResult, bool, error) {
-	if strings.TrimSpace(query) == "" {
+	terms := searchTerms(query)
+	if len(terms) == 0 {
 		return nil, false, errors.New("query is required")
 	}
-	q := []rune(query)
-	var results []core.SessionSearchResult
+	sessions := r.ListSessions()
+	found := make([]*core.SessionSearchResult, len(sessions))
 	// The router's own conversation repeats every query it was given.
 	asking := r.routerInbox()
-	for _, s := range r.ListSessions() {
+	slots := make(chan struct{}, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	for i, s := range sessions {
 		path, ok := r.discovery.Path(s.ID)
 		if !ok || s.ID == asking {
 			continue
 		}
-		turns, err := r.readTurnsForBackend(path, r.backendOf(s.ID), 0)
-		if err != nil {
-			continue
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
+			found[i] = r.searchSession(s, path, r.backendOf(s.ID), terms, contextChars)
+		})
+	}
+	wg.Wait()
+	var results []core.SessionSearchResult
+	for _, res := range found {
+		if res != nil {
+			results = append(results, *res)
 		}
-		hits, matched := scanTurnsForQuery(turns, q, 1, contextChars)
-		if matched == 0 {
-			continue
-		}
-		res := core.SessionSearchResult{
-			SessionID: s.ID,
-			Title:     s.Title,
-			Cwd:       s.Cwd,
-			HitCount:  matched,
-		}
-		if len(hits) > 0 {
-			res.Cursor = hits[0].Cursor
-			res.Snippet = hits[0].Snippet
-		}
-		results = append(results, res)
 	}
 	sort.SliceStable(results, func(i, j int) bool {
 		return results[i].HitCount > results[j].HitCount
@@ -1980,14 +1978,71 @@ func (r *Router) SearchAllSessions(query string, maxSessions, contextChars int) 
 	return results, truncated, nil
 }
 
-// scanTurnsForQuery scans decoded turns for a case-insensitive substring of q
-// in the user/assistant prose (tool annotations excluded), returning up to
-// maxHits located snippets and the total count of matching turns. Shared by
-// the single-session and cross-session searches.
-func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (hits []core.TranscriptSearchHit, matched int) {
+// searchSession is one session's result, nil when it has no match. It runs on
+// its own goroutine, out of net/http's reach: a log that panics the decoder
+// must cost that session's result, not the server.
+func (r *Router) searchSession(s core.Session, path, backend string, terms [][]rune, contextChars int) (res *core.SessionSearchResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("session search panicked", "session", s.ID, "panic", p)
+			res = nil
+		}
+	}()
+	turns, err := r.readTurnsForBackend(path, backend, 0)
+	if err != nil {
+		return nil
+	}
+	hits, matched := scanTurnsForQuery(turns, terms, 1, contextChars)
+	if matched == 0 {
+		return nil
+	}
+	res = &core.SessionSearchResult{
+		SessionID: s.ID,
+		Title:     s.Title,
+		Cwd:       s.Cwd,
+		HitCount:  matched,
+	}
+	if len(hits) > 0 {
+		res.Cursor = hits[0].Cursor
+		res.Snippet = hits[0].Snippet
+	}
+	return res
+}
+
+// searchTerms splits a query on whitespace; "double quotes" keep a phrase
+// together, and a quote left unclosed is an ordinary character.
+func searchTerms(query string) [][]rune {
+	var terms [][]rune
+	rest := strings.TrimSpace(query)
+	for rest != "" {
+		var term string
+		end := -1
+		if rest[0] == '"' {
+			end = strings.IndexByte(rest[1:], '"')
+		}
+		if end >= 0 {
+			term, rest = rest[1:end+1], rest[end+2:]
+		} else if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
+			term, rest = rest[:i], rest[i:]
+		} else {
+			term, rest = rest, ""
+		}
+		if term != "" {
+			terms = append(terms, []rune(term))
+		}
+		rest = strings.TrimSpace(rest)
+	}
+	return terms
+}
+
+// scanTurnsForQuery scans decoded turns for those holding every term,
+// case-insensitively, in the user/assistant prose (tool annotations excluded),
+// returning up to maxHits located snippets and the total count of matching
+// turns. Shared by the single-session and cross-session searches.
+func scanTurnsForQuery(turns []core.Turn, terms [][]rune, maxHits, contextChars int) (hits []core.TranscriptSearchHit, matched int) {
 	for _, t := range turns {
 		text := []rune(flattenTurnText(t, false))
-		first, count := foldFindAll(text, q)
+		first, firstLen, occurrences := findAllTerms(text, terms)
 		if first < 0 {
 			continue
 		}
@@ -1999,11 +2054,29 @@ func scanTurnsForQuery(turns []core.Turn, q []rune, maxHits, contextChars int) (
 			Role:        t.Role,
 			Time:        t.Time,
 			Cursor:      t.Cursor,
-			Occurrences: count,
-			Snippet:     snippetAround(text, first, len(q), contextChars),
+			Occurrences: occurrences,
+			Snippet:     snippetAround(text, first, firstLen, contextChars),
 		})
 	}
 	return hits, matched
+}
+
+// findAllTerms returns where the earliest term starts in text and that term's
+// length, plus how often the terms occur in total, or first = -1 unless every
+// term occurs.
+func findAllTerms(text []rune, terms [][]rune) (first, firstLen, occurrences int) {
+	first = -1
+	for _, term := range terms {
+		at, count := foldFindAll(text, term)
+		if at < 0 {
+			return -1, 0, 0
+		}
+		if first < 0 || at < first {
+			first, firstLen = at, len(term)
+		}
+		occurrences += count
+	}
+	return first, firstLen, occurrences
 }
 
 // foldFindAll returns the index of the first case-insensitive occurrence of

@@ -121,9 +121,9 @@ type SessionRuntime struct {
 	ContextWindow int64  `json:"context_window,omitempty"`
 }
 
-// TranscriptSearchHit is one matching turn from a transcript substring search.
-// Snippet is the matched text with limited context on either side of the first
-// occurrence; Occurrences counts all matches in that turn.
+// TranscriptSearchHit is one matching turn from a transcript search. Snippet is
+// the matched text with limited context on either side of the first occurrence
+// of any term; Occurrences counts all matches of all terms in that turn.
 type TranscriptSearchHit struct {
 	Role string    `json:"role"`
 	Time time.Time `json:"ts"`

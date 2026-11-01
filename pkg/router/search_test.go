@@ -1,8 +1,10 @@
 package router
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/nexustar/usher/pkg/backend"
 	"github.com/nexustar/usher/pkg/core"
 	"github.com/nexustar/usher/pkg/transcript"
 )
@@ -86,7 +88,7 @@ func TestScanTurnsForQuery(t *testing.T) {
 		}},
 	}
 	// case-insensitive; matches turns 0 and 1 (prose), not turn 3 (tool only).
-	hits, matched := scanTurnsForQuery(turns, []rune("auth"), 10, 40)
+	hits, matched := scanTurnsForQuery(turns, searchTerms("auth"), 10, 40)
 	if matched != 2 {
 		t.Fatalf("matched = %d, want 2 (tool part excluded)", matched)
 	}
@@ -94,7 +96,7 @@ func TestScanTurnsForQuery(t *testing.T) {
 		t.Fatalf("hits = %+v", hits)
 	}
 	// maxHits caps returned snippets but not the matched count.
-	hits, matched = scanTurnsForQuery(turns, []rune("auth"), 1, 40)
+	hits, matched = scanTurnsForQuery(turns, searchTerms("auth"), 1, 40)
 	if matched != 2 || len(hits) != 1 {
 		t.Fatalf("capped: matched=%d hits=%d, want 2 and 1", matched, len(hits))
 	}
@@ -114,5 +116,68 @@ func TestSnippetAround(t *testing.T) {
 	nl := []rune("line one\nline two")
 	if got := snippetAround(nl, 0, 4, 100); got != "line one line two" {
 		t.Errorf("newline collapse: got %q", got)
+	}
+}
+
+func TestSearchTerms(t *testing.T) {
+	cases := map[string][]string{
+		"auth":             {"auth"},
+		"  auth\ttimeout ": {"auth", "timeout"},
+		"迁移　记录":            {"迁移", "记录"}, // ideographic space
+		`"auth service"`:   {"auth service"},
+		`deploy "a b" x`:   {"deploy", "a b", "x"},
+		`"a b"c`:           {"a b", "c"},
+		`say "hi`:          {"say", `"hi`},
+		`it"s fine`:        {`it"s`, "fine"},
+		`""`:               nil,
+		"   ":              nil,
+	}
+	for query, want := range cases {
+		var got []string
+		for _, term := range searchTerms(query) {
+			got = append(got, string(term))
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("searchTerms(%q) = %q, want %q", query, got, want)
+		}
+	}
+}
+
+func TestScanTurnsRequiresEveryTermInOneTurn(t *testing.T) {
+	turns := []core.Turn{
+		{Role: "user", Cursor: "c0", Content: "the timeout came from auth"},
+		{Role: "user", Cursor: "c1", Content: "auth only, auth again"},
+		{Role: "user", Cursor: "c2", Content: "timeout only"},
+		{Role: "user", Cursor: "c3", Content: "auth service down"},
+		{Role: "assistant", Cursor: "c4", Parts: []core.TurnPart{
+			{Type: "text", Content: "AUTH"}, {Type: "text", Content: "TIMEOUT"},
+		}},
+	}
+	hits, matched := scanTurnsForQuery(turns, searchTerms("auth timeout"), 10, 3)
+	if matched != 2 || hits[0].Cursor != "c0" || hits[1].Cursor != "c4" {
+		t.Fatalf("matched %d, hits %+v", matched, hits)
+	}
+	// The snippet opens at whichever term comes first, in any query order.
+	if hits[0].Occurrences != 2 || hits[0].Snippet != "…he timeout ca…" {
+		t.Errorf("hit = %+v", hits[0])
+	}
+	if hits, matched := scanTurnsForQuery(turns, searchTerms(`"auth service"`), 10, 3); matched != 1 || hits[0].Cursor != "c3" {
+		t.Errorf("phrase: matched %d, hits %+v", matched, hits)
+	}
+	if _, matched := scanTurnsForQuery(turns, searchTerms(`"auth timeout"`), 10, 3); matched != 0 {
+		t.Errorf("phrase must stay contiguous: matched %d", matched)
+	}
+}
+
+type panickyTranscript struct{ backend.Transcript }
+
+func (panickyTranscript) ReadBefore(string, string, int) ([]core.Turn, bool, error) {
+	panic("bad log")
+}
+
+func TestSearchSessionSurvivesPanic(t *testing.T) {
+	r := &Router{backends: map[string]backend.Backend{"bad": {Transcript: panickyTranscript{}}}}
+	if res := r.searchSession(core.Session{ID: "s"}, "log", "bad", searchTerms("x"), 10); res != nil {
+		t.Fatalf("res = %+v", res)
 	}
 }

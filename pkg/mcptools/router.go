@@ -96,6 +96,7 @@ func RouterTools() []Tool {
 		{
 			Name: "search_sessions",
 			Description: "Search transcript text. With session_id, search that session; without it, find the sessions that match. " +
+				"A turn matches when it holds every space-separated word of query; \"double quotes\" keep an exact phrase together. " +
 				"Each hit carries a cursor for read_session_transcript's from.",
 			InputSchema: object(map[string]any{
 				"session_id":    sessionRef,
