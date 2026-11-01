@@ -30,6 +30,7 @@ var sessionEvents = map[string]bool{
 	backend.EventTurnNotice:  true,
 	backend.EventRuntime:     true,
 	core.EventRelayLanded:    true,
+	core.EventQueueChanged:   true,
 }
 
 // SSEStart asserts streaming support and writes the SSE preamble (headers +
@@ -133,6 +134,10 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 		state = "turn.active"
 	}
 	if !writeEvent(w, flusher, broker.Event{SessionID: id, Type: state}) {
+		return
+	}
+	raw, _ := json.Marshal(map[string]any{"queued": s.Router.QueuedSends(id)})
+	if !writeEvent(w, flusher, broker.Event{SessionID: id, Type: core.EventQueueChanged, Raw: raw}) {
 		return
 	}
 	stream(r.Context(), w, flusher, ch, nil, func(t string) bool { return sessionEvents[t] })

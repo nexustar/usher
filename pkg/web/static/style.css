@@ -1036,6 +1036,7 @@ button.session-usage.unknown .usage-ring {
   cursor: pointer;
   font: inherit;
   line-height: 1.2;
+  min-width: 5em;
 }
 ::placeholder { color: var(--text-faint); opacity: 1; }
 .composer-send > button:hover:not(:disabled) { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
@@ -1175,6 +1176,29 @@ pre.raw-markdown {
   border: 1px dashed var(--border);
   color: var(--text-muted);
 }
+/* Messages waiting for the running turn, pinned above the composer. */
+.queued-sends {
+  max-height: 30vh;
+  overflow-y: auto;
+  margin-bottom: 0.5rem;
+}
+.chat-message.user.queued {
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.25rem 0;
+  opacity: 0.55;
+}
+.chat-message.user.queued .content { white-space: pre-wrap; }
+.queued-retract {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.25rem 0.4rem;
+}
+.queued-retract:hover { color: var(--text); }
 .chat-message.agent .role { color: var(--purple); }
 .chat-message .turn-error {
   color: var(--danger-text);

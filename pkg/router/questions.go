@@ -118,7 +118,7 @@ func (r *Router) replyInPlace(sessionID, text string) {
 			slog.Debug("steer declined; answering as a turn", "session", sessionID, "err", err)
 		}
 	}
-	if err := r.enqueueSend(sessionID, text, nil, nil); err != nil {
+	if err := r.enqueueSend(sessionID, pendingSend{text: text}); err != nil {
 		slog.Warn("question answer not sent", "session", sessionID, "err", err)
 	}
 }

@@ -944,7 +944,7 @@ func TestSendQueueSerializesAndAttributesReplies(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	folded, _ := r.foldRelays("inbox-1", "next")
+	folded := r.foldRelays("inbox-1", "next")
 	for _, reply := range []string{"re: one", "re: two", "re: three"} {
 		if strings.Count(folded, "[session abc12345 replied] "+reply+"\n") != 1 {
 			t.Errorf("folded notes = %q — %q not attributed exactly once", folded, reply)
@@ -967,7 +967,7 @@ func TestFlushSendQueueAborts(t *testing.T) {
 	r.sendMu.Unlock()
 
 	aborted := make(chan error, 1)
-	if err := r.enqueueSend("abc12345", "queued", nil, func(err error) { aborted <- err }); err != nil {
+	if err := r.enqueueSend("abc12345", pendingSend{text: "queued", abort: func(err error) { aborted <- err }}); err != nil {
 		t.Fatal(err)
 	}
 	r.flushSendQueue("abc12345", errors.New("cancelled"))
@@ -978,6 +978,184 @@ func TestFlushSendQueueAborts(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("abort callback never ran")
+	}
+}
+
+// TestRetractSend: a retracted queued send leaves the queue without running,
+// its abort reports the retraction, viewers get the new queue, and the rest
+// still runs in order.
+func TestRetractSend(t *testing.T) {
+	r := newQueueTestRouter(t)
+	held := &sendToken{cancel: func() {}}
+	r.sendMu.Lock()
+	r.activeSend["abc12345"] = held
+	r.sendMu.Unlock()
+	events, cancel := r.broker.Subscribe("abc12345")
+	defer cancel()
+
+	aborted := make(chan error, 1)
+	if err := r.enqueueSend("abc12345", pendingSend{text: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.enqueueSend("abc12345", pendingSend{text: "two", abort: func(err error) { aborted <- err }}); err != nil {
+		t.Fatal(err)
+	}
+	q := r.QueuedSends("abc12345")
+	if len(q) != 2 || q[0].Text != "one" || q[1].Text != "two" || q[0].ID == q[1].ID {
+		t.Fatalf("queued = %+v", q)
+	}
+
+	text, err := r.RetractSend("abc12345", q[1].ID)
+	if err != nil || text != "two" {
+		t.Fatalf("retract = %q, %v", text, err)
+	}
+	select {
+	case err := <-aborted:
+		if err == nil || !strings.Contains(err.Error(), "retracted") {
+			t.Errorf("abort err = %v", err)
+		}
+	default:
+		t.Error("abort callback never ran")
+	}
+	if _, err := r.RetractSend("abc12345", q[1].ID); !errors.Is(err, ErrQueuedSendNotFound) {
+		t.Errorf("second retract err = %v", err)
+	}
+	var last []core.QueuedSend
+	for len(events) > 0 {
+		ev := <-events
+		if ev.Type != core.EventQueueChanged {
+			continue
+		}
+		var body struct{ Queued []core.QueuedSend }
+		if err := json.Unmarshal(ev.Raw, &body); err != nil {
+			t.Fatal(err)
+		}
+		last = body.Queued
+	}
+	if len(last) != 1 || last[0].Text != "one" {
+		t.Errorf("last queue event = %+v", last)
+	}
+
+	ran := make(chan string, 2)
+	r.runTurn = func(_ context.Context, sessionID, prompt, _ string, tok *sendToken) {
+		ran <- prompt
+		r.releaseSend(sessionID, tok)
+	}
+	r.releaseSend("abc12345", held)
+	if got := <-ran; got != "one" {
+		t.Errorf("ran %q, want one", got)
+	}
+	select {
+	case got := <-ran:
+		t.Errorf("retracted send ran: %q", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if len(r.QueuedSends("abc12345")) != 0 {
+		t.Error("queue not drained")
+	}
+}
+
+// TestRetractSendRestoresRelayNotes: notes folded into a router prompt go back
+// to the router's inbox when that prompt is retracted.
+func TestRetractSendKeepsRelayNotes(t *testing.T) {
+	r := newQueueTestRouter(t)
+	r.sendMu.Lock()
+	r.activeSend["abc12345"] = &sendToken{cancel: func() {}}
+	r.relayIn = map[string][]relayNote{"abc12345": {{sessionID: "s1", reply: "done"}}}
+	r.sendMu.Unlock()
+	if err := r.SendToSession("abc12345", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	q := r.QueuedSends("abc12345")
+	if len(q) != 1 || q[0].Text != "hello" {
+		t.Fatalf("queued = %+v", q)
+	}
+	if _, err := r.RetractSend("abc12345", q[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if folded := r.foldRelays("abc12345", "x"); !strings.Contains(folded, "[session s1 replied] done") {
+		t.Errorf("relay note lost: %q", folded)
+	}
+}
+
+// A queued prompt carries the replies landed by the time it is sent, and only
+// the first of several does.
+func TestQueuedPromptsFoldRelaysWhenSent(t *testing.T) {
+	r := newQueueTestRouter(t)
+	got := make(chan string, 2)
+	r.runTurn = func(_ context.Context, _, prompt, _ string, _ *sendToken) { got <- prompt }
+	held := &sendToken{cancel: func() {}}
+	r.sendMu.Lock()
+	r.activeSend["abc12345"] = held
+	r.sendMu.Unlock()
+	for _, text := range []string{"one", "two"} {
+		if err := r.SendToSession("abc12345", text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.queueRelay("abc12345", "s1", "done", nil)
+	if q := r.QueuedSends("abc12345"); len(q) != 2 || q[0].Text != "one" {
+		t.Fatalf("queued = %+v", q)
+	}
+
+	r.releaseSend("abc12345", held)
+	if first := <-got; !strings.Contains(first, "[session s1 replied] done") || !strings.HasSuffix(first, "one") {
+		t.Errorf("first prompt = %q", first)
+	}
+	r.sendMu.Lock()
+	next := r.activeSend["abc12345"]
+	r.sendMu.Unlock()
+	r.releaseSend("abc12345", next)
+	if second := <-got; second != "two" {
+		t.Errorf("second prompt = %q", second)
+	}
+}
+
+func TestCancelSendHandsBackTypedMessages(t *testing.T) {
+	r := newQueueTestRouter(t)
+	rt := &blockingInterruptRuntime{entered: make(chan struct{}), release: make(chan struct{})}
+	close(rt.release)
+	entry := r.backends["claude"]
+	entry.Runtime = rt
+	r.backends["claude"] = entry
+	r.sendMu.Lock()
+	r.activeSend["abc12345"] = &sendToken{cancel: func() {}}
+	r.relayIn = map[string][]relayNote{"abc12345": {{sessionID: "s1", reply: "done"}}}
+	r.sendMu.Unlock()
+	if err := r.SendToSession("abc12345", "one"); err != nil {
+		t.Fatal(err)
+	}
+	aborted := make(chan error, 1)
+	if err := r.enqueueSend("abc12345", pendingSend{text: "routed", abort: func(err error) { aborted <- err }}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.enqueueSend("abc12345", pendingSend{text: "answer envelope"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SendToSession("abc12345", "two"); err != nil {
+		t.Fatal(err)
+	}
+
+	typed, err := r.CancelSend("abc12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(typed, []string{"one", "two"}) {
+		t.Fatalf("typed = %q", typed)
+	}
+	if q := r.QueuedSends("abc12345"); len(q) != 0 {
+		t.Errorf("queue kept %+v", q)
+	}
+	select {
+	case err := <-aborted:
+		if err == nil || !strings.Contains(err.Error(), "cancelled") {
+			t.Errorf("abort err = %v", err)
+		}
+	default:
+		t.Error("routed send was not told")
+	}
+	if folded := r.foldRelays("abc12345", "x"); !strings.Contains(folded, "[session s1 replied] done") {
+		t.Errorf("relay note lost: %q", folded)
 	}
 }
 
@@ -1009,7 +1187,10 @@ func TestCancelSendCancelsCollectorBeforeBackendInterruptReturns(t *testing.T) {
 	r.sendMu.Unlock()
 
 	done := make(chan error, 1)
-	go func() { done <- r.CancelSend("abc12345") }()
+	go func() {
+		_, err := r.CancelSend("abc12345")
+		done <- err
+	}()
 	<-rt.entered
 	select {
 	case <-ctx.Done():
@@ -1189,7 +1370,7 @@ func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
 		t.Fatal("a prompt without folded notes was cut")
 	}
 	// Folding consumes: the next prompt carries only what the user typed.
-	if got, _ := r.foldRelays("abc12345", "again"); got != "again" {
+	if got := r.foldRelays("abc12345", "again"); got != "again" {
 		t.Fatalf("notes survived folding: %q", got)
 	}
 }
@@ -1199,7 +1380,7 @@ func TestQueuedRelaysRideTheNextPrompt(t *testing.T) {
 func TestFoldedRelayExcerptsLongReplies(t *testing.T) {
 	r := newQueueTestRouter(t)
 	r.queueRelay("abc12345", "worker", strings.Repeat("长", relayExcerptRunes+50), nil)
-	folded, _ := r.foldRelays("abc12345", "next")
+	folded := r.foldRelays("abc12345", "next")
 	if !strings.Contains(folded, "truncated") || strings.Contains(folded, strings.Repeat("长", relayExcerptRunes+1)) {
 		t.Fatalf("folded = %q", folded)
 	}
@@ -1229,7 +1410,7 @@ func TestFailedSendKeepsRelayNotes(t *testing.T) {
 	if err := r.SendToSession("gone", "next"); err == nil {
 		t.Fatal("send to a missing session succeeded")
 	}
-	if folded, _ := r.foldRelays("gone", "next"); !strings.Contains(folded, "[session worker replied] done") {
+	if folded := r.foldRelays("gone", "next"); !strings.Contains(folded, "[session worker replied] done") {
 		t.Fatalf("notes lost with the failed send: %q", folded)
 	}
 }

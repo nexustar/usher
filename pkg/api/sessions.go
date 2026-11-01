@@ -285,16 +285,41 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// InterruptResult is the body of POST /sessions/{id}/interrupt: the messages
+// the caller had queued, dropped with the turn.
+type InterruptResult struct {
+	Queued []string `json:"queued"`
+}
+
 func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.known(w, id) {
 		return
 	}
-	if err := s.Router.CancelSend(id); err != nil {
+	queued, err := s.Router.CancelSend(id)
+	if err != nil {
 		WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	WriteJSON(w, http.StatusOK, InterruptResult{Queued: queued})
+}
+
+func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.known(w, id) {
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"queued": s.Router.QueuedSends(id)})
+}
+
+// handleRetract drops a queued message and answers with its text.
+func (s *Server) handleRetract(w http.ResponseWriter, r *http.Request) {
+	text, err := s.Router.RetractSend(r.PathValue("id"), r.PathValue("qid"))
+	if err != nil {
+		WriteError(w, ErrStatus(err), err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{"text": text})
 }
 
 func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {

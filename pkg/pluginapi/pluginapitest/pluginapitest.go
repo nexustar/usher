@@ -438,7 +438,11 @@ func (f *FakeRouter) DefaultEffort(context.Context, string, string) string     {
 func (f *FakeRouter) SetRuntime(context.Context, string, string, string) error { return nil }
 func (f *FakeRouter) DeleteSession(string) error                               { return nil }
 func (f *FakeRouter) ForkSession(id, _ string) (string, error)                 { return id + "_fork", nil }
-func (f *FakeRouter) CancelSend(string) error                                  { return nil }
+func (f *FakeRouter) CancelSend(string) ([]string, error)                      { return nil, nil }
+func (f *FakeRouter) QueuedSends(string) []core.QueuedSend                     { return []core.QueuedSend{} }
+func (f *FakeRouter) RetractSend(string, string) (string, error) {
+	return "", core.ErrQueuedSendNotFound
+}
 func (f *FakeRouter) Rename(_ context.Context, _, title string) error {
 	if title == "" {
 		return core.ErrInvalidTitle

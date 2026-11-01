@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ var (
 	ErrSendQueueFull      = core.ErrSendQueueFull
 	ErrInvalidTitle       = core.ErrInvalidTitle
 	ErrBackendUnavailable = errors.New("backend capability unavailable")
+	ErrQueuedSendNotFound = core.ErrQueuedSendNotFound
 )
 
 type Router struct {
@@ -58,6 +60,7 @@ type Router struct {
 	sendMu     sync.Mutex
 	activeSend map[string]*sendToken    // sessionID -> in-flight turn's cancel handle
 	sendQueue  map[string][]pendingSend // sessionID -> sends waiting for the turn to end
+	queueSeq   uint64                   // last pendingSend id
 	creating   map[string]core.Session  // sessions usher is spawning, not yet on disk
 	relayIn    map[string][]relayNote   // router sessionID -> replies to fold into its next prompt
 	// switches are model/effort switches shown over what the transcript says
@@ -115,9 +118,13 @@ type runtimeSwitch struct {
 // in-flight turn. pre (optional) runs just before the turn starts — after
 // every event of the previous turn has been published — so a relay collector
 // can subscribe with correct turn attribution. abort (optional) runs instead
-// if the queued send is dropped (session deleted, turn cancelled).
+// if the queued send is dropped (session deleted, turn cancelled, retracted).
 type pendingSend struct {
-	text  string
+	id   string
+	text string
+	// typed is text the user wrote: relay notes go in front of it when it is
+	// sent, and a cancel hands it back.
+	typed bool
 	pre   func()
 	abort func(err error)
 }
@@ -1040,15 +1047,7 @@ func (r *Router) stopLive(id string) {
 // spoke — see queueRelay.
 func (r *Router) SendToSession(id, text string) error {
 	r.withdrawQuestions(id)
-	folded, notes := r.foldRelays(id, text)
-	err := r.enqueueSend(id, folded, nil, nil)
-	if err != nil && len(notes) > 0 {
-		// The prompt never left, so its notes go back to the front of the queue.
-		r.sendMu.Lock()
-		r.relayIn[id] = append(notes, r.relayIn[id]...)
-		r.sendMu.Unlock()
-	}
-	return err
+	return r.enqueueSend(id, pendingSend{text: text, typed: true})
 }
 
 // relayNote is one finished turn a router dispatched, waiting to be told to it.
@@ -1086,15 +1085,24 @@ func (r *Router) queueRelay(routerID, sessionID, reply string, err error) {
 	r.relayIn[routerID] = notes
 }
 
+// outgoing is the prompt the model receives for p, built as the turn starts so
+// it carries every reply landed by then.
+func (r *Router) outgoing(id string, p pendingSend) string {
+	if !p.typed {
+		return p.text
+	}
+	return r.foldRelays(id, p.text)
+}
+
 // foldRelays prefixes a router's pending notes to its next prompt and takes
-// them off the queue, returning them so a failed send can put them back.
-func (r *Router) foldRelays(id, text string) (string, []relayNote) {
+// them off the queue.
+func (r *Router) foldRelays(id, text string) string {
 	r.sendMu.Lock()
 	notes := r.relayIn[id]
 	delete(r.relayIn, id)
 	r.sendMu.Unlock()
 	if len(notes) == 0 {
-		return text, nil
+		return text
 	}
 	var b strings.Builder
 	for _, note := range notes {
@@ -1104,7 +1112,7 @@ func (r *Router) foldRelays(id, text string) (string, []relayNote) {
 	b.WriteString(relayNotesEnd)
 	b.WriteString("\n\n")
 	b.WriteString(text)
-	return b.String(), notes
+	return b.String()
 }
 
 // relayNotesEnd closes the notes folded in front of a router prompt.
@@ -1149,7 +1157,7 @@ func relayNoteText(note relayNote) string {
 // sound way to capture one turn's reply — a send injected mid-turn would
 // tail the PREVIOUS turn's remainder instead. Typing directly into an
 // attached tmux pane still bypasses this (the manual-attach corner).
-func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) error {
+func (r *Router) enqueueSend(id string, p pendingSend) error {
 	sess, ok := r.discovery.Get(id)
 	if !ok {
 		return ErrSessionNotFound
@@ -1173,8 +1181,11 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 			r.sendMu.Unlock()
 			return ErrSendQueueFull
 		}
-		r.sendQueue[id] = append(r.sendQueue[id], pendingSend{text: text, pre: pre, abort: abort})
+		r.queueSeq++
+		p.id = strconv.FormatUint(r.queueSeq, 10)
+		r.sendQueue[id] = append(r.sendQueue[id], p)
 		queued := len(r.sendQueue[id])
+		r.publishQueueLocked(id)
 		r.sendMu.Unlock()
 		slog.Debug("turn queued", "session", id, "queue_len", queued)
 		return nil
@@ -1183,13 +1194,64 @@ func (r *Router) enqueueSend(id, text string, pre func(), abort func(error)) err
 	tok := &sendToken{cancel: cancel, started: time.Now()}
 	r.activeSend[id] = tok
 	r.sendMu.Unlock()
-	slog.Debug("turn start", "session", id, "prompt_len", len(text))
+	slog.Debug("turn start", "session", id, "prompt_len", len(p.text))
 
-	if pre != nil {
-		pre()
+	if p.pre != nil {
+		p.pre()
 	}
-	r.startTurn(ctx, sess.ID, text, sess.Cwd, tok)
+	r.startTurn(ctx, sess.ID, r.outgoing(id, p), sess.Cwd, tok)
 	return nil
+}
+
+// QueuedSends lists the sends waiting behind id's running turn, oldest first.
+func (r *Router) QueuedSends(id string) []core.QueuedSend {
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
+	return r.queuedLocked(id)
+}
+
+func (r *Router) queuedLocked(id string) []core.QueuedSend {
+	out := []core.QueuedSend{}
+	for _, p := range r.sendQueue[id] {
+		out = append(out, core.QueuedSend{ID: p.id, Text: p.text})
+	}
+	return out
+}
+
+// publishQueueLocked tells id's viewers its queue changed. Called under sendMu
+// so snapshots publish in the order the queue changed.
+func (r *Router) publishQueueLocked(id string) {
+	if r.broker == nil {
+		return
+	}
+	raw, _ := json.Marshal(map[string]any{"queued": r.queuedLocked(id)})
+	r.broker.Publish(broker.Event{SessionID: id, Type: core.EventQueueChanged, Raw: raw})
+}
+
+// RetractSend drops one queued send before it is injected and returns its
+// text. A relayed send's caller is told it was retracted.
+func (r *Router) RetractSend(id, qid string) (string, error) {
+	r.sendMu.Lock()
+	q := r.sendQueue[id]
+	i := slices.IndexFunc(q, func(p pendingSend) bool { return p.id == qid })
+	if i < 0 {
+		r.sendMu.Unlock()
+		return "", ErrQueuedSendNotFound
+	}
+	p := q[i]
+	q = slices.Delete(slices.Clone(q), i, i+1)
+	if len(q) == 0 {
+		delete(r.sendQueue, id)
+	} else {
+		r.sendQueue[id] = q
+	}
+	r.publishQueueLocked(id)
+	r.sendMu.Unlock()
+	slog.Debug("queued turn retracted", "session", id)
+	if p.abort != nil {
+		p.abort(errors.New("retracted before it was sent"))
+	}
+	return p.text, nil
 }
 
 // injectDirect pastes text without turn tracking (see the '!' note in
@@ -1445,6 +1507,7 @@ func (r *Router) releaseSend(sessionID string, tok *sendToken) {
 			} else {
 				r.sendQueue[sessionID] = q[1:]
 			}
+			r.publishQueueLocked(sessionID)
 			ctx, cancel := context.WithCancel(context.Background())
 			nextTok = &sendToken{cancel: cancel, started: time.Now()}
 			nextCtx = ctx
@@ -1470,22 +1533,27 @@ func (r *Router) releaseSend(sessionID string, tok *sendToken) {
 		next.pre()
 	}
 	slog.Debug("turn start", "session", sess.ID, "prompt_len", len(next.text))
-	r.startTurn(nextCtx, sess.ID, next.text, sess.Cwd, nextTok)
+	r.startTurn(nextCtx, sess.ID, r.outgoing(sess.ID, *next), sess.Cwd, nextTok)
 }
 
-// flushSendQueue drops every queued send for sessionID, calling each abort.
-// Used when the user cancels the in-flight turn or the session goes away —
-// continuing to inject queued messages after an explicit stop would surprise.
-func (r *Router) flushSendQueue(sessionID string, reason error) {
+// flushSendQueue drops every queued send for sessionID, calling each abort,
+// and returns them. Used when the user cancels the in-flight turn or the
+// session goes away — continuing to inject queued messages after an explicit
+// stop would surprise.
+func (r *Router) flushSendQueue(sessionID string, reason error) []pendingSend {
 	r.sendMu.Lock()
 	q := r.sendQueue[sessionID]
 	delete(r.sendQueue, sessionID)
+	if len(q) > 0 {
+		r.publishQueueLocked(sessionID)
+	}
 	r.sendMu.Unlock()
 	for _, p := range q {
 		if p.abort != nil {
 			p.abort(reason)
 		}
 	}
+	return q
 }
 
 // markSendIdle clears the running-state bit before publishing a terminal
@@ -1517,29 +1585,35 @@ func (r *Router) markSendIdle(sessionID string, tok *sendToken) {
 // CancelSend stops the in-flight turn for sessionID. It both cancels usher's
 // tail goroutine (tok.cancel) and interrupts the live interactive claude with
 // Ctrl-C — the process is persistent now, so cancelling the listener alone
-// would leave claude generating into the void.
-func (r *Router) CancelSend(sessionID string) error {
+// would leave claude generating into the void. It returns the messages the
+// user had queued, which are no longer going to be sent.
+func (r *Router) CancelSend(sessionID string) ([]string, error) {
 	r.sendMu.Lock()
 	tok, ok := r.activeSend[sessionID]
 	r.sendMu.Unlock()
 	if !ok {
 		// A worker on its own turn (a /loop tick) has no send to cancel.
 		if !r.liveSet()[sessionID].Running {
-			return errors.New("no active send")
+			return nil, errors.New("no active send")
 		}
 		slog.Debug("foreign turn cancelled", "session", sessionID)
-		return r.senderFor(sessionID).Interrupt(sessionID)
+		return nil, r.senderFor(sessionID).Interrupt(sessionID)
 	}
 	slog.Debug("turn cancelled", "session", sessionID)
 	// Cancel means stop: drop queued follow-ups too, before cancelling the
 	// turn, so releaseSend finds nothing to promote.
-	r.flushSendQueue(sessionID, errors.New("cancelled"))
+	typed := []string{}
+	for _, p := range r.flushSendQueue(sessionID, errors.New("cancelled")) {
+		if p.typed {
+			typed = append(typed, p.text)
+		}
+	}
 	// Stop local collection before the best-effort interrupt RPC.
 	tok.cancel()
 	if err := r.senderFor(sessionID).Interrupt(sessionID); err != nil {
 		slog.Warn("interrupt session turn", "session", sessionID, "err", err)
 	}
-	return nil
+	return typed, nil
 }
 
 // SubscribeSession seeds a mid-turn subscriber with the streamed text it
@@ -2009,8 +2083,8 @@ func (r *Router) RouteToSession(id, text string) (bool, error) {
 // noise, and the reply, if any, is in the transcript.
 func (r *Router) SendToSessionRelayed(id, text string, onDone func(sessionID, reply string, err error)) error {
 	r.withdrawQuestions(id)
-	return r.enqueueSend(id, text,
-		func() {
+	return r.enqueueSend(id, pendingSend{text: text,
+		pre: func() {
 			ch, cancel := r.broker.Subscribe(id)
 			go func() {
 				defer cancel()
@@ -2024,8 +2098,8 @@ func (r *Router) SendToSessionRelayed(id, text string, onDone func(sessionID, re
 				onDone(id, reply, err)
 			}()
 		},
-		func(err error) { onDone(id, "", err) },
-	)
+		abort: func(err error) { onDone(id, "", err) },
+	})
 }
 
 // collectTurnText accumulates one turn's assistant text from a broker

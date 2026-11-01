@@ -163,13 +163,24 @@ func ValidApproval(approval string) bool {
 
 // Errors a caller can branch on, whichever layer raised them.
 var (
-	ErrSessionNotFound = errors.New("session not found")
-	ErrReadOnlySession = errors.New("subagent transcripts are read-only")
-	ErrCLINotFound     = errors.New("agent CLI not found")
-	ErrSendQueueFull   = errors.New("send queue full for session")
-	ErrInvalidTitle    = errors.New("session title must not be empty")
-	ErrRouterSession   = errors.New("the router session's flags are usher's")
+	ErrSessionNotFound    = errors.New("session not found")
+	ErrReadOnlySession    = errors.New("subagent transcripts are read-only")
+	ErrCLINotFound        = errors.New("agent CLI not found")
+	ErrSendQueueFull      = errors.New("send queue full for session")
+	ErrInvalidTitle       = errors.New("session title must not be empty")
+	ErrRouterSession      = errors.New("the router session's flags are usher's")
+	ErrQueuedSendNotFound = errors.New("queued message not found (already sent?)")
 )
+
+// EventQueueChanged is published when a session's queued sends change; its
+// raw is {"queued": []QueuedSend}.
+const EventQueueChanged = "queue.changed"
+
+// QueuedSend is a message waiting for the session's running turn to end.
+type QueuedSend struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
 
 // EventRelayLanded is published on the router session when a session it routed
 // work to has replied; its raw names that session.

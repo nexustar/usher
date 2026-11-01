@@ -193,7 +193,7 @@ func TestCreateAndControlRoutes(t *testing.T) {
 		method, path string
 		want         int
 	}{
-		{http.MethodPost, "/sessions/s1/interrupt", http.StatusNoContent},
+		{http.MethodPost, "/sessions/s1/interrupt", http.StatusOK},
 		{http.MethodPost, "/sessions/nope/interrupt", http.StatusNotFound},
 		{http.MethodPost, "/sessions/s1/pause", http.StatusNoContent},
 		{http.MethodPost, "/sessions/nope/pause", http.StatusNotFound},

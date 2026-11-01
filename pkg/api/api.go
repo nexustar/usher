@@ -36,7 +36,9 @@ type Router interface {
 	DeleteSession(id string) error
 	ForkSession(srcID, afterUUID string) (string, error)
 	SendToSession(id, text string) error
-	CancelSend(id string) error
+	CancelSend(id string) ([]string, error)
+	QueuedSends(id string) []core.QueuedSend
+	RetractSend(id, qid string) (string, error)
 	PauseSession(id string) error
 	ResumeSession(ctx context.Context, id string) error
 	ReadTurns(id, before string, limit int) ([]core.Turn, bool, error)
@@ -106,6 +108,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	handle("POST /sessions/{id}/fork", s.handleFork)
 	handle("POST /sessions/{id}/messages", s.handleMessage)
 	handle("POST /sessions/{id}/interrupt", s.handleInterrupt)
+	handle("GET /sessions/{id}/queue", s.handleQueue)
+	handle("DELETE /sessions/{id}/queue/{qid}", s.handleRetract)
 	handle("POST /sessions/{id}/pause", s.handlePause)
 	handle("POST /sessions/{id}/resume", s.handleResume)
 	handle("GET /sessions/{id}/transcript", s.handleTranscript)
@@ -197,7 +201,7 @@ func WriteError(w http.ResponseWriter, status int, msg string) {
 // ErrStatus maps a router error onto an HTTP status.
 func ErrStatus(err error) int {
 	switch {
-	case errors.Is(err, core.ErrSessionNotFound):
+	case errors.Is(err, core.ErrSessionNotFound), errors.Is(err, core.ErrQueuedSendNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, core.ErrSendQueueFull), errors.Is(err, core.ErrRouterSession):
 		return http.StatusConflict

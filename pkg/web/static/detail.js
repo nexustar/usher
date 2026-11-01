@@ -699,6 +699,7 @@ export async function showDetail(id) {
   root.innerHTML = `
     <div id="chat-scroll" class="chat-area">
       <section class="send-anchor">
+        <div id="queued-sends" class="queued-sends" hidden></div>
         <div id="term-panel" class="term-panel" hidden>
           <div class="term-screen"><pre id="term-grid" class="term-grid muted">connecting…</pre></div>
           <div class="term-input-row">
@@ -1005,8 +1006,10 @@ export async function showDetail(id) {
   let actionPending = null; // null | send | cancel
   let sendAccepted = false;
   let sendLifecycleObserved = false;
+  // Mid-turn the button cancels only while there is nothing to send.
+  const cancels = () => detailStreaming && !promptEl.value.trim();
   const renderAction = () => {
-    const action = actionPending || (detailStreaming ? 'cancel' : 'send');
+    const action = actionPending || (cancels() ? 'cancel' : 'send');
     sendBtn.textContent = action;
     sendBtn.classList.toggle('cancel', action === 'cancel');
     sendBtn.disabled = actionPending !== null;
@@ -1020,34 +1023,48 @@ export async function showDetail(id) {
     renderAction();
   };
   openEventStream(id, chatEl, renderAction, observeSendLifecycle);
+  wireQueuedSends(id, promptEl);
 
   const submit = async () => {
     const text = promptEl.value;
-    if (!text.trim() || detailStreaming || actionPending) return;
-    actionPending = 'send';
-    sendAccepted = false;
-    sendLifecycleObserved = false;
-    renderAction();
+    if (!text.trim() || actionPending) return;
+    // Mid-turn the server queues the message; queue.changed shows it.
+    const queueing = detailStreaming;
+    if (!queueing) {
+      actionPending = 'send';
+      sendAccepted = false;
+      sendLifecycleObserved = false;
+    }
     promptEl.value = '';
     clearDraft();
     growPrompt(promptEl); // shrink back; programmatic clear fires no input event
-    // Optimistic: show the user message immediately. The live bubble is
-    // created by openEventStream on turn.started. Marked .optimistic so
-    // the turn.prompt event (or a truth-up fetch) replaces it with the
-    // canonical turn — same text, server timestamp.
-    const el = document.getElementById('chat-scroll');
-    if (el) el.querySelectorAll(':scope > .chat-loading').forEach(n => n.remove());
-    const userNode = appendChatMessage({ role: 'user', content: text });
-    if (userNode) userNode.classList.add('optimistic');
-    // Codex slash input may become an RPC operation or normalize /skill to
-    // $skill. Pi's local metadata/compaction commands also create no canonical
-    // user turn. Reconcile at turn end so optimistic command text disappears
-    // and newly persisted system records become visible.
-    const piLocalCommand = sess.backend === 'pi' &&
-      /^\/(?:name|compact)(?:\s|$)/.test(text);
-    if ((sess.backend === 'codex' && text.startsWith('/')) || piLocalCommand) {
-      liveTurnDirty = true;
+    renderAction();
+    if (!queueing) {
+      // Optimistic: show the user message immediately. The live bubble is
+      // created by openEventStream on turn.started. Marked .optimistic so
+      // the turn.prompt event (or a truth-up fetch) replaces it with the
+      // canonical turn — same text, server timestamp.
+      const el = document.getElementById('chat-scroll');
+      if (el) el.querySelectorAll(':scope > .chat-loading').forEach(n => n.remove());
+      const userNode = appendChatMessage({ role: 'user', content: text });
+      if (userNode) userNode.classList.add('optimistic');
+      // Codex slash input may become an RPC operation or normalize /skill to
+      // $skill. Pi's local metadata/compaction commands also create no canonical
+      // user turn. Reconcile at turn end so optimistic command text disappears
+      // and newly persisted system records become visible.
+      const piLocalCommand = sess.backend === 'pi' &&
+        /^\/(?:name|compact)(?:\s|$)/.test(text);
+      if ((sess.backend === 'codex' && text.startsWith('/')) || piLocalCommand) {
+        liveTurnDirty = true;
+      }
     }
+    const failed = (message) => {
+      if (queueing) restorePrompt(promptEl, text);
+      appendChatMessage({ role: 'error', content: message, ts: new Date().toISOString() });
+      if (queueing) return;
+      actionPending = null;
+      renderAction();
+    };
     try {
       const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/messages', {
         method: 'POST',
@@ -1056,11 +1073,10 @@ export async function showDetail(id) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        appendChatMessage({ role: 'error', content: 'send failed: ' + (err.error?.message || ('HTTP ' + res.status)), ts: new Date().toISOString() });
-        actionPending = null;
-        renderAction();
+        failed('send failed: ' + (err.error?.message || ('HTTP ' + res.status)));
         return;
       }
+      if (queueing) return;
       sendAccepted = true;
       // Wait for the running lifecycle event; it may precede this response.
       if (sendLifecycleObserved) {
@@ -1068,9 +1084,7 @@ export async function showDetail(id) {
         renderAction();
       }
     } catch (e) {
-      appendChatMessage({ role: 'error', content: String(e), ts: new Date().toISOString() });
-      actionPending = null;
-      renderAction(); // an SSE start may already have made this cancel
+      failed(String(e)); // an SSE start may already have made the button cancel
     }
   };
 
@@ -1081,6 +1095,8 @@ export async function showDetail(id) {
     try {
       const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/interrupt', { method: 'POST' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
+      const { queued = [] } = await res.json().catch(() => ({}));
+      if (queued.length) restorePrompt(promptEl, queued.join('\n'));
     } catch (e) {
       appendChatMessage({ role: 'error', content: 'cancel failed: ' + String(e), ts: new Date().toISOString() });
     } finally {
@@ -1089,7 +1105,8 @@ export async function showDetail(id) {
     }
   };
 
-  sendBtn.addEventListener('click', () => detailStreaming ? cancel() : submit());
+  sendBtn.addEventListener('click', () => cancels() ? cancel() : submit());
+  promptEl.addEventListener('input', renderAction);
   promptEl.addEventListener('keydown', (e) => {
     if (e.defaultPrevented) return;
     if (e.key === 'Enter' && !e.shiftKey && !imeKey(e)) {
@@ -1099,6 +1116,52 @@ export async function showDetail(id) {
   });
 
   promptEl.focus();
+}
+
+let queuedHTML = '';
+
+// renderQueuedSends shows the messages waiting for the running turn to end.
+function renderQueuedSends(queued) {
+  const box = document.getElementById('queued-sends');
+  if (!box) return;
+  const html = queued.map(q => `
+    <div class="chat-message user queued">
+      <div class="content">${esc(q.text)}</div>
+      <button type="button" class="queued-retract" data-qid="${esc(q.id)}"
+        title="take back" aria-label="take back queued message">✕</button>
+    </div>`).join('');
+  box.hidden = !queued.length;
+  if (html === queuedHTML) return;
+  queuedHTML = html;
+  box.innerHTML = html;
+}
+
+// restorePrompt puts text back in the composer ahead of any draft.
+function restorePrompt(promptEl, text) {
+  promptEl.value = promptEl.value.trim() ? text + '\n' + promptEl.value : text;
+  promptEl.dispatchEvent(new Event('input', { bubbles: true }));
+  promptEl.focus();
+}
+
+function wireQueuedSends(id, promptEl) {
+  queuedHTML = '';
+  const box = document.getElementById('queued-sends');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.queued-retract');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/queue/' +
+        encodeURIComponent(btn.dataset.qid), { method: 'DELETE' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error?.message || ('HTTP ' + res.status));
+      restorePrompt(promptEl, body.text || '');
+    } catch (err) {
+      btn.disabled = false;
+      appendChatMessage({ role: 'error', content: 'take back failed: ' + err.message, ts: new Date().toISOString() });
+    }
+  });
 }
 
 // Subagents are read-only and intentionally do not stream partial output.
@@ -1253,6 +1316,7 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       }
       liveTurnDirty = true;
     },
+    'queue.changed': (d) => renderQueuedSends(d.queued || []),
     'session.runtime': (d) => renderSessionRuntime({ ...detailRuntime, ...d }),
     'turn.ended': (d) => {
       // Failed/unconfirmed exits follow an explicit error event. Keep that
