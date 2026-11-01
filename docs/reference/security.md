@@ -12,17 +12,24 @@ Set or rotate the web password from a terminal:
 usher set-password
 ```
 
+- The password needs at least 8 characters. A running usher picks up a new one
+  on the next request, without a restart.
 - The password is stored as an Argon2id hash in `<data-dir>/auth.json`, with
   mode `0600`.
 - A separate 32-byte HMAC secret is generated at `<data-dir>/secret` on first
   start and reused across restarts.
-- The HttpOnly, SameSite=Lax login cookie is derived from the secret and current
-  password hash. There is no server-side session table.
+- The HttpOnly, SameSite=Lax login cookie is derived from the secret, current
+  password hash and issue time, and usher stops accepting it after 30 days. It
+  is also Secure when the request arrived over HTTPS, directly or per
+  `X-Forwarded-Proto`. There is no server-side session table, so Sign out only
+  drops the cookie from that browser.
 - Changing the password changes the hash and invalidates every existing login
-  cookie. This is the way to sign out other devices.
-- Login attempts are rate-limited per client IP. After five failures, the delay
-  grows exponentially from one second to a maximum of 60 seconds. A successful
-  login resets the counter.
+  cookie. This is the way to sign out other devices. Streams already open stay
+  open until they reconnect.
+- Login attempts run one at a time and are rate-limited globally. After five
+  failures, the delay grows exponentially from one second to a maximum of 60
+  seconds, so someone guessing can also keep you from signing in, though not
+  sign out a browser that already is. A successful login resets the counter.
 
 usher refuses to bind directly to a non-loopback address unless a password is
 configured. A reverse proxy or tunnel connecting to loopback does not trigger

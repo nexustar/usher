@@ -69,10 +69,10 @@
 </style>
 </head>
 <body>
-<form method="post" action="/login" autocomplete="off">
+<form method="post" action="/login">
   <h1>{{.AppName}}</h1>
   <label for="password">password</label>
-  <input id="password" type="password" name="password" autofocus required>
+  <input id="password" type="password" name="password" autocomplete="current-password" autofocus required>
   <input type="hidden" name="next" value="{{.Next}}">
   <button type="submit">sign in</button>
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}

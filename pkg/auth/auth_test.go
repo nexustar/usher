@@ -1,8 +1,12 @@
 package auth
 
 import (
+	"crypto/tls"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -165,7 +169,7 @@ func TestStore_IssueCookieRequiresConfigured(t *testing.T) {
 
 func TestLimiter_AcquireFreshIP(t *testing.T) {
 	l := NewLimiter()
-	if _, ok := l.Acquire("1.2.3.4"); !ok {
+	if _, ok := l.Acquire(); !ok {
 		t.Fatal("fresh IP must be allowed")
 	}
 }
@@ -173,18 +177,18 @@ func TestLimiter_AcquireFreshIP(t *testing.T) {
 func TestLimiter_GracePeriod(t *testing.T) {
 	l := NewLimiter()
 	for i := 0; i < rateLimitGrace; i++ {
-		if _, ok := l.Acquire("1.2.3.4"); !ok {
+		if _, ok := l.Acquire(); !ok {
 			t.Fatalf("failure %d still inside grace must be allowed", i)
 		}
-		l.OnFailure("1.2.3.4")
+		l.OnFailure()
 	}
 	// 5 failures consumed but no backoff yet; 6th attempt still allowed,
 	// fails, *then* a backoff arms before the 7th attempt.
-	if _, ok := l.Acquire("1.2.3.4"); !ok {
+	if _, ok := l.Acquire(); !ok {
 		t.Fatal("attempt right after grace failures must be allowed")
 	}
-	l.OnFailure("1.2.3.4")
-	if d, ok := l.Acquire("1.2.3.4"); ok || d <= 0 {
+	l.OnFailure()
+	if d, ok := l.Acquire(); ok || d <= 0 {
 		t.Fatalf("attempt after 6th failure must be blocked, got d=%v ok=%v", d, ok)
 	}
 }
@@ -192,11 +196,11 @@ func TestLimiter_GracePeriod(t *testing.T) {
 func TestLimiter_BackoffGrowsExponentially(t *testing.T) {
 	base := time.Unix(0, 0)
 	now := base
-	l := &Limiter{entries: map[string]*limEntry{}, now: func() time.Time { return now }}
+	l := &Limiter{now: func() time.Time { return now }}
 
 	// Burn through grace.
 	for i := 0; i < rateLimitGrace; i++ {
-		l.OnFailure("ip")
+		l.OnFailure()
 	}
 
 	want := []time.Duration{
@@ -210,8 +214,8 @@ func TestLimiter_BackoffGrowsExponentially(t *testing.T) {
 		60 * time.Second,
 	}
 	for i, w := range want {
-		l.OnFailure("ip")
-		d, ok := l.Acquire("ip")
+		l.OnFailure()
+		d, ok := l.Acquire()
 		if ok {
 			t.Fatalf("step %d: must be blocked", i)
 		}
@@ -224,31 +228,155 @@ func TestLimiter_BackoffGrowsExponentially(t *testing.T) {
 func TestLimiter_SuccessResets(t *testing.T) {
 	l := NewLimiter()
 	for i := 0; i < 10; i++ {
-		l.OnFailure("ip")
+		l.OnFailure()
 	}
-	if _, ok := l.Acquire("ip"); ok {
+	if _, ok := l.Acquire(); ok {
 		t.Fatal("expected blocked after 10 failures")
 	}
-	l.OnSuccess("ip")
-	if _, ok := l.Acquire("ip"); !ok {
+	l.OnSuccess()
+	if _, ok := l.Acquire(); !ok {
 		t.Fatal("OnSuccess must clear backoff")
 	}
 }
 
-func TestLimiter_GCDropsStaleEntries(t *testing.T) {
-	base := time.Unix(0, 0)
-	now := base
-	l := &Limiter{entries: map[string]*limEntry{}, now: func() time.Time { return now }}
-	l.OnFailure("ip")
-	now = base.Add(2 * rateLimitEntryStale)
-	if _, ok := l.Acquire("ip"); !ok {
-		t.Fatal("stale entry must be GC'd and attempt allowed")
+func TestLimiter_OneAttemptAtATime(t *testing.T) {
+	l := NewLimiter()
+	if _, ok := l.Acquire(); !ok {
+		t.Fatal("first attempt must be allowed")
 	}
-	l.mu.Lock()
-	_, exists := l.entries["ip"]
-	l.mu.Unlock()
-	if exists {
-		t.Fatal("stale entry must be removed by Acquire's gc")
+	if d, ok := l.Acquire(); ok || d <= 0 {
+		t.Fatalf("second attempt must wait for the first, got d=%v ok=%v", d, ok)
+	}
+	l.OnFailure()
+	if _, ok := l.Acquire(); !ok {
+		t.Fatal("attempt must be allowed once the first finished")
+	}
+}
+
+func TestLimiter_StaleFailuresForgotten(t *testing.T) {
+	base := time.Unix(1000, 0)
+	now := base
+	l := &Limiter{now: func() time.Time { return now }}
+	for i := 0; i < 10; i++ {
+		l.OnFailure()
+	}
+	now = base.Add(2 * rateLimitStale)
+	if _, ok := l.Acquire(); !ok {
+		t.Fatal("stale failures must not block")
+	}
+	if l.failures != 0 {
+		t.Fatalf("failures = %d, want 0", l.failures)
+	}
+}
+
+// A second process is how `usher set-password` reaches a running server.
+func TestStore_PicksUpPasswordFromAnotherProcess(t *testing.T) {
+	dir := t.TempDir()
+	server, _ := Load(dir)
+	if server.IsConfigured() {
+		t.Fatal("fresh store should not be configured")
+	}
+	cli, _ := Load(dir)
+	if err := cli.SetPassword("first-password"); err != nil {
+		t.Fatal(err)
+	}
+	if !server.IsConfigured() || !server.Verify("first-password") {
+		t.Fatal("running store must pick up a first password")
+	}
+	cookie, err := server.IssueCookie()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.SetPassword("second-password"); err != nil {
+		t.Fatal(err)
+	}
+	if server.Verify("first-password") || !server.Verify("second-password") {
+		t.Fatal("running store must pick up a changed password")
+	}
+	if server.VerifyCookie(cookie) {
+		t.Fatal("running store must reject cookies of the old password")
+	}
+}
+
+func TestStore_BadAuthFileKeepsLastHash(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Load(dir)
+	if err := s.SetPassword("hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, authFileName)
+	if err := os.WriteFile(path, []byte("{half a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsConfigured() || !s.Verify("hunter2") {
+		t.Fatal("unparsable auth.json must not change the password")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsConfigured() {
+		t.Fatal("removing auth.json must not turn auth off in a running store")
+	}
+}
+
+func TestStore_CookieExpires(t *testing.T) {
+	s, _ := Load(t.TempDir())
+	if err := s.SetPassword("hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_000_000, 0)
+	s.now = func() time.Time { return now }
+	val, err := s.IssueCookie()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(cookieMaxAge*time.Second - time.Second)
+	if !s.VerifyCookie(val) {
+		t.Fatal("cookie must verify just inside its lifetime")
+	}
+	now = now.Add(time.Second)
+	if s.VerifyCookie(val) {
+		t.Fatal("cookie must not verify past its lifetime")
+	}
+}
+
+func TestStore_CookieIssueTimeIsSigned(t *testing.T) {
+	s, _ := Load(t.TempDir())
+	if err := s.SetPassword("hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	val, _ := s.IssueCookie()
+	_, sig, _ := strings.Cut(val, ".")
+	forged := strconv.FormatInt(time.Now().Unix()+1000, 10) + "." + sig
+	if s.VerifyCookie(forged) {
+		t.Fatal("a changed issue time must not verify")
+	}
+}
+
+func TestSessionCookie_SecureOverHTTPS(t *testing.T) {
+	s, _ := Load(t.TempDir())
+	cases := []struct {
+		proto string
+		tls   bool
+		want  bool
+	}{
+		{want: false},
+		{proto: "http", want: false},
+		{proto: "https", want: true},
+		{proto: "https,http", want: true},
+		{tls: true, want: true},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("POST", "/login", nil)
+		if c.proto != "" {
+			r.Header.Set("X-Forwarded-Proto", c.proto)
+		}
+		if c.tls {
+			r.TLS = &tls.ConnectionState{}
+		}
+		if got := s.NewSessionCookie(r, "v").Secure; got != c.want {
+			t.Errorf("proto=%q tls=%v: Secure=%v, want %v", c.proto, c.tls, got, c.want)
+		}
 	}
 }
 

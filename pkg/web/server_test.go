@@ -571,3 +571,20 @@ func TestLogoutURL(t *testing.T) {
 		t.Errorf("proxy and password = %q, want /logout", got)
 	}
 }
+
+func TestValidateNext(t *testing.T) {
+	for next, want := range map[string]string{
+		"":                  "/",
+		"/s/abc?x=1":        "/s/abc?x=1",
+		"https://evil.test": "/",
+		"//evil.test":       "/",
+		"/\\evil.test":      "/",
+		"/\t/evil.test":     "/",
+		"/\n/evil.test":     "/",
+		"/a\\b":             "/",
+	} {
+		if got := validateNext(next); got != want {
+			t.Errorf("validateNext(%q) = %q, want %q", next, got, want)
+		}
+	}
+}

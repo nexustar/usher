@@ -1,6 +1,6 @@
 // Package auth implements usher's password-based web UI auth: argon2id
 // password hashing, an HMAC-signed stateless cookie tied to the current
-// password hash (so changing password kicks every device), and a per-IP
+// password hash (so changing password kicks every device), and a global
 // exponential-backoff rate limiter for /login.
 //
 // All on-disk artifacts live under the usher data dir with mode 0600:
@@ -8,10 +8,12 @@
 //	auth.json — argon2id parameters + salt + hash (absent ⇒ auth disabled)
 //	secret    — 32-byte random HMAC key, generated on first run
 //
-// Auth is disabled iff auth.json is absent. The cookie value is
-// base64url(HMAC(secret, hash_bytes)); rotating either the password
-// (which rotates the hash) or the secret invalidates every old cookie
-// without any server-side session table.
+// Auth is disabled iff auth.json is absent at startup. The running server
+// picks up a new auth.json on the next request, so `usher set-password` takes
+// effect without a restart; a file removed underneath it keeps the last hash.
+// The cookie value is <unix issue time>.base64url(HMAC(secret, hash_bytes ||
+// issue time)); rotating either the password (which rotates the hash) or the
+// secret invalidates every old cookie without any server-side session table.
 package auth
 
 import (
@@ -20,14 +22,17 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,13 +54,15 @@ const (
 	saltLen             = 16
 	secretLen           = 32
 
-	// 30 days. Cookie has no server-side expiry; this is just how long
-	// browsers keep it without a fresh login.
+	// MinPasswordLen is what `usher set-password` accepts, in characters.
+	MinPasswordLen = 8
+
+	// 30 days, in seconds, enforced by the server as well as the browser.
 	cookieMaxAge = 30 * 24 * 60 * 60
 
 	rateLimitGrace      = 5
 	rateLimitMaxBackoff = 60 * time.Second
-	rateLimitEntryStale = time.Hour
+	rateLimitStale      = time.Hour
 )
 
 // Hash is the on-disk argon2id record.
@@ -73,9 +80,12 @@ type Hash struct {
 type Store struct {
 	dataDir string
 
-	mu     sync.RWMutex
-	hash   *Hash  // nil ⇒ auth disabled
-	secret []byte // HMAC key, always non-nil after Load
+	now func() time.Time
+
+	mu       sync.RWMutex
+	hash     *Hash       // nil ⇒ auth disabled
+	hashFile os.FileInfo // auth.json as last read; nil ⇒ absent
+	secret   []byte      // HMAC key, always non-nil after Load
 
 	// Limiter gates /login attempts. Callers acquire before verifying and
 	// report success/failure after.
@@ -89,9 +99,11 @@ func Load(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-	s := &Store{dataDir: dataDir, Limiter: NewLimiter()}
+	s := &Store{dataDir: dataDir, Limiter: NewLimiter(), now: time.Now}
 
-	h, err := readHash(filepath.Join(dataDir, authFileName))
+	path := filepath.Join(dataDir, authFileName)
+	s.hashFile, _ = os.Stat(path) // before the read: a later write re-reads
+	h, err := readHash(path)
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +119,7 @@ func Load(dataDir string) (*Store, error) {
 
 // IsConfigured reports whether a password has been set.
 func (s *Store) IsConfigured() bool {
+	s.refresh()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.hash != nil
@@ -133,18 +146,50 @@ func (s *Store) SetPassword(plaintext string) error {
 		Salt:    base64.StdEncoding.EncodeToString(salt),
 		Hash:    base64.StdEncoding.EncodeToString(key),
 	}
-	if err := writeHash(filepath.Join(s.dataDir, authFileName), h); err != nil {
+	path := filepath.Join(s.dataDir, authFileName)
+	if err := writeHash(path, h); err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.hash = h
+	s.hashFile = info
 	s.mu.Unlock()
 	return nil
+}
+
+// refresh picks up `usher set-password`; a vanished or bad file keeps the last hash.
+func (s *Store) refresh() {
+	path := filepath.Join(s.dataDir, authFileName)
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	s.mu.RLock()
+	seen := s.hashFile
+	s.mu.RUnlock()
+	if seen != nil && seen.Size() == info.Size() && seen.ModTime().Equal(info.ModTime()) {
+		return
+	}
+	h, err := readHash(path)
+	if err != nil {
+		slog.Warn("ignoring unreadable auth file", "err", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hashFile = info // a bad file is retried when it next changes, not per request
+	if h != nil {
+		s.hash = h
+	}
 }
 
 // Verify reports whether plaintext matches the stored hash. Returns false
 // (without error) when auth is not configured. Constant-time compare.
 func (s *Store) Verify(plaintext string) bool {
+	s.refresh()
 	s.mu.RLock()
 	h := s.hash
 	s.mu.RUnlock()
@@ -163,33 +208,39 @@ func (s *Store) Verify(plaintext string) bool {
 	return subtle.ConstantTimeCompare(expected, got) == 1
 }
 
-// IssueCookie returns the cookie value for the current password hash.
+// IssueCookie returns a cookie value for the current password hash, issued now.
 func (s *Store) IssueCookie() (string, error) {
-	mac, err := s.macForHash()
+	issued := s.now().Unix()
+	mac, err := s.mac(issued)
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(mac), nil
+	return strconv.FormatInt(issued, 10) + "." + base64.RawURLEncoding.EncodeToString(mac), nil
 }
 
-// VerifyCookie reports whether value is a valid cookie for the current
-// password hash. Constant-time compare.
+// VerifyCookie reports whether value is an unexpired cookie for the current password hash.
 func (s *Store) VerifyCookie(value string) bool {
-	if value == "" {
+	stamp, sig, ok := strings.Cut(value, ".")
+	if !ok {
 		return false
 	}
-	want, err := s.macForHash()
+	issued, err := strconv.ParseInt(stamp, 10, 64)
 	if err != nil {
 		return false
 	}
-	got, err := base64.RawURLEncoding.DecodeString(value)
+	want, err := s.mac(issued)
 	if err != nil {
 		return false
 	}
-	return subtle.ConstantTimeCompare(want, got) == 1
+	got, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(want, got) == 1 && s.now().Unix()-issued < cookieMaxAge
 }
 
-func (s *Store) macForHash() ([]byte, error) {
+func (s *Store) mac(issued int64) ([]byte, error) {
+	s.refresh()
 	s.mu.RLock()
 	h := s.hash
 	secret := s.secret
@@ -203,16 +254,18 @@ func (s *Store) macForHash() ([]byte, error) {
 	}
 	mac := hmac.New(sha256.New, secret)
 	mac.Write(hashBytes)
+	mac.Write(binary.BigEndian.AppendUint64(nil, uint64(issued)))
 	return mac.Sum(nil), nil
 }
 
 // NewSessionCookie builds a Set-Cookie payload for issuing a fresh session.
-func (s *Store) NewSessionCookie(value string) *http.Cookie {
+func (s *Store) NewSessionCookie(r *http.Request, value string) *http.Cookie {
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   overHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   cookieMaxAge,
 	}
@@ -220,15 +273,25 @@ func (s *Store) NewSessionCookie(value string) *http.Cookie {
 
 // ClearCookie builds a Set-Cookie payload that deletes the session cookie
 // on the client side.
-func (s *Store) ClearCookie() *http.Cookie {
+func (s *Store) ClearCookie(r *http.Request) *http.Cookie {
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   overHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	}
+}
+
+// overHTTPS is not unconditional because of plain-HTTP LAN access; forging it only hurts the forger.
+func overHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	proto, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
 // --- secret + hash persistence -------------------------------------------
@@ -279,65 +342,70 @@ func writeHash(path string, h *Hash) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o600)
+	// Atomic, so a running server never reads half a file. CreateTemp is 0600.
+	f, err := os.CreateTemp(dir, authFileName+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // --- rate limiter --------------------------------------------------------
 
-// Limiter is a per-IP exponential-backoff limiter for /login. The first 5
-// failures incur no delay; failure #6 waits 1s before the next attempt,
-// #7 waits 2s, #8 waits 4s, capped at 60s. A successful Acquire+OnSuccess
-// pair resets the IP's counter.
+// Limiter admits one /login attempt at a time, with global backoff.
+// The first 5 failures are free, then 1s, 2s, 4s up to 60s; a success or a quiet hour resets it.
 type Limiter struct {
-	mu      sync.Mutex
-	entries map[string]*limEntry
-	now     func() time.Time
-}
-
-type limEntry struct {
+	mu          sync.Mutex
+	inFlight    bool
 	failures    int
 	nextAllowed time.Time
-	lastUpdated time.Time
+	lastFailure time.Time
+	now         func() time.Time
 }
 
 func NewLimiter() *Limiter {
-	return &Limiter{entries: map[string]*limEntry{}, now: time.Now}
+	return &Limiter{now: time.Now}
 }
 
-// Acquire returns (retryAfter, true) if the IP may attempt now and
-// (retryAfter, false) if it is still in backoff. The caller must invoke
-// OnSuccess or OnFailure after performing the verification.
-func (l *Limiter) Acquire(ip string) (time.Duration, bool) {
+// Acquire reserves an attempt, to be ended by OnSuccess or OnFailure, or returns how long to wait.
+func (l *Limiter) Acquire() (time.Duration, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.gcLocked()
-	e, ok := l.entries[ip]
-	if !ok {
-		return 0, true
+	if l.now().Sub(l.lastFailure) > rateLimitStale {
+		l.failures = 0
+		l.nextAllowed = time.Time{}
 	}
-	if d := e.nextAllowed.Sub(l.now()); d > 0 {
+	if l.inFlight {
+		return time.Second, false
+	}
+	if d := l.nextAllowed.Sub(l.now()); d > 0 {
 		return d, false
 	}
+	l.inFlight = true
 	return 0, true
 }
 
-// OnFailure records a failed attempt and arms a backoff once past the grace
-// window.
-func (l *Limiter) OnFailure(ip string) {
+// OnFailure records a failed attempt and arms a backoff once past the grace window.
+func (l *Limiter) OnFailure() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := l.entries[ip]
-	if e == nil {
-		e = &limEntry{}
-		l.entries[ip] = e
-	}
-	e.failures++
-	e.lastUpdated = l.now()
-	if e.failures > rateLimitGrace {
-		shift := e.failures - rateLimitGrace - 1
+	l.inFlight = false
+	l.failures++
+	l.lastFailure = l.now()
+	if l.failures > rateLimitGrace {
+		shift := l.failures - rateLimitGrace - 1
 		if shift > 6 {
 			shift = 6
 		}
@@ -345,29 +413,20 @@ func (l *Limiter) OnFailure(ip string) {
 		if d > rateLimitMaxBackoff {
 			d = rateLimitMaxBackoff
 		}
-		e.nextAllowed = l.now().Add(d)
+		l.nextAllowed = l.now().Add(d)
 	}
 }
 
-// OnSuccess clears the IP's counter.
-func (l *Limiter) OnSuccess(ip string) {
+// OnSuccess clears the counter.
+func (l *Limiter) OnSuccess() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.entries, ip)
+	l.inFlight = false
+	l.failures = 0
+	l.nextAllowed = time.Time{}
 }
 
-func (l *Limiter) gcLocked() {
-	cutoff := l.now().Add(-rateLimitEntryStale)
-	for ip, e := range l.entries {
-		if e.lastUpdated.Before(cutoff) {
-			delete(l.entries, ip)
-		}
-	}
-}
-
-// ClientIP extracts an IP from req.RemoteAddr. Usher does not run behind a
-// trusted reverse proxy in v0.1, so we deliberately ignore X-Forwarded-For
-// et al. to avoid header-injection bypasses.
+// ClientIP is req.RemoteAddr's IP, for the log; clients can forge X-Forwarded-For.
 func ClientIP(r *http.Request) string {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

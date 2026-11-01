@@ -409,13 +409,12 @@ func safeNextEscape(p string) string {
 	return r.Replace(p)
 }
 
-// validateNext rejects open redirects: anything other than a same-origin
-// absolute path collapses to "/".
+// validateNext collapses all but same-origin paths to "/"; browsers read \ as / and drop tabs and newlines.
 func validateNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") {
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
 		return "/"
 	}
-	if strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
+	if strings.ContainsFunc(next, func(c rune) bool { return c < 0x20 || c == 0x7f || c == '\\' }) {
 		return "/"
 	}
 	return next
@@ -437,34 +436,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// POST
-	ip := auth.ClientIP(r)
-	if delay, ok := s.auth.Limiter.Acquire(ip); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(int(delay.Seconds())+1))
-		s.renderLogin(w, r,
-			fmt.Sprintf("too many attempts; try again in %ds", int(delay.Seconds())+1),
-			http.StatusTooManyRequests,
-			r.FormValue("next"))
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		s.renderLogin(w, r, "invalid form submission", http.StatusBadRequest, "")
 		return
 	}
 	pw := r.PostForm.Get("password")
 	next := r.PostForm.Get("next")
+	if delay, ok := s.auth.Limiter.Acquire(); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(delay.Seconds())+1))
+		s.renderLogin(w, r,
+			fmt.Sprintf("too many attempts; try again in %ds", int(delay.Seconds())+1),
+			http.StatusTooManyRequests,
+			next)
+		return
+	}
+	ip := auth.ClientIP(r)
 	if !s.auth.Verify(pw) {
-		s.auth.Limiter.OnFailure(ip)
+		s.auth.Limiter.OnFailure()
 		s.logger.Info("login failed", "ip", ip)
 		s.renderLogin(w, r, "invalid password", http.StatusUnauthorized, next)
 		return
 	}
-	s.auth.Limiter.OnSuccess(ip)
+	s.auth.Limiter.OnSuccess()
+	s.logger.Info("login succeeded", "ip", ip)
 	cookieVal, err := s.auth.IssueCookie()
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	http.SetCookie(w, s.auth.NewSessionCookie(cookieVal))
+	http.SetCookie(w, s.auth.NewSessionCookie(r, cookieVal))
 	http.Redirect(w, r, validateNext(next), http.StatusSeeOther)
 }
 
@@ -487,7 +487,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, errMsg stri
 // when it has a logout address.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.auth != nil {
-		http.SetCookie(w, s.auth.ClearCookie())
+		http.SetCookie(w, s.auth.ClearCookie(r))
 	}
 	target := "/login"
 	switch {

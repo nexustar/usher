@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -56,6 +57,9 @@ func SetPassword(args []string) error {
 		}
 	}
 
+	if utf8.RuneCountInString(pw) < auth.MinPasswordLen {
+		return fmt.Errorf("password must be at least %d characters", auth.MinPasswordLen)
+	}
 	if err := store.SetPassword(pw); err != nil {
 		return err
 	}
