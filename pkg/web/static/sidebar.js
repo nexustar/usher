@@ -14,6 +14,16 @@ import { icon } from './widgets.js';
 import { loadList } from './list.js';
 import { showSessionDetails } from './details.js';
 
+// Classic scrollbars take layout width (overlay ones take none); publish it so
+// the sidebar can fold the bar into its right padding.
+{
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;visibility:hidden;width:100px;height:100px;overflow:scroll';
+  document.body.appendChild(probe);
+  document.documentElement.style.setProperty('--scrollbar-w', `${probe.offsetWidth - probe.clientWidth}px`);
+  probe.remove();
+}
+
 // --- sidebar-private state ---
 // Last sidebar HTML written to the DOM. The sidebar re-polls every 5s; skipping
 // the innerHTML rewrite when nothing changed keeps the live-dot CSS animation
