@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -503,4 +504,60 @@ func TestListenUnixSocketRefusesALiveSocket(t *testing.T) {
 		t.Fatalf("listen over a leftover socket: %v", err)
 	}
 	ln2.Close()
+}
+
+// Binding must leave what the process creates meanwhile alone: a umask would not.
+func TestListenUnixSocketLeavesOtherFilesAlone(t *testing.T) {
+	dir, err := os.MkdirTemp("", "usher-sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s.sock")
+	stop, done := make(chan struct{}), make(chan error, 1)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			if err := os.MkdirAll(filepath.Join(dir, "other", strconv.Itoa(i), "child"), 0o755); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	for range 300 {
+		ln, err := pluginapi.ListenUnixSocket(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("socket: %v, %v", info, err)
+		}
+		ln.Close()
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 2 { // other, s.sock
+		t.Fatalf("left behind: %v", entries)
+	}
+}
+
+func TestListenUnixSocketRefusesAFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.sock")
+	if err := os.WriteFile(path, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pluginapi.ListenUnixSocket(path); err == nil {
+		t.Fatal("bound over a file")
+	}
+	if got, _ := os.ReadFile(path); string(got) != "mine" {
+		t.Fatalf("file now %q", got)
+	}
 }

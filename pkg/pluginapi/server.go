@@ -17,8 +17,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/nexustar/usher/pkg/api"
@@ -171,40 +169,47 @@ func HookSocketPath(dataDir string) string {
 	return filepath.Join(dataDir, "hook.sock")
 }
 
-// listenMu serializes the umask window in ListenUnixSocket: umask is
-// process-wide, so two concurrent listeners (hook + plugin socket) must not
-// interleave their set/restore.
-var listenMu sync.Mutex
-
 // ErrSocketInUse is a socket another process still listens on.
 var ErrSocketInUse = errors.New("socket in use")
 
 // ListenUnixSocket binds a Unix domain socket at path with mode 0600,
-// replacing a leftover socket file but not a live one (ErrSocketInUse).
+// replacing a leftover socket but not a live one (ErrSocketInUse) or a file.
 // Shared with the web package's hook listener.
 //
-// The socket is born 0600, not chmod'd down after bind: a chmod-after-listen
-// leaves a window where another local user could connect under the umask
-// default and keep the connection across the chmod. The umask flip is
-// process-wide for the bind's duration; any file created concurrently only
-// gets stricter permissions, never looser.
+// bind takes no mode, and the umask is process-wide, so the socket is bound in
+// a private directory and moved into place once it is 0600. The caller removes
+// path when done.
 func ListenUnixSocket(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if info, err := os.Stat(path); err == nil && info.Mode()&os.ModeSocket != 0 {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("%s: exists and is not a socket", path)
+		}
 		if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
 			c.Close()
 			return nil, fmt.Errorf("%s: %w", path, ErrSocketInUse)
 		}
-		_ = os.Remove(path)
 	}
-	listenMu.Lock()
-	old := syscall.Umask(0o177)
-	ln, err := net.Listen("unix", path)
-	syscall.Umask(old)
-	listenMu.Unlock()
+	private, err := os.MkdirTemp(dir, ".s")
 	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(private)
+	bound := filepath.Join(private, "s")
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: bound, Net: "unix"})
+	if err != nil {
+		return nil, err
+	}
+	ln.SetUnlinkOnClose(false) // bound moves away
+	if err := os.Chmod(bound, 0o600); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	if err := os.Rename(bound, path); err != nil {
+		ln.Close()
 		return nil, err
 	}
 	return ln, nil
