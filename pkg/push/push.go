@@ -25,6 +25,7 @@ import (
 
 	"github.com/nexustar/usher/pkg/backend"
 	"github.com/nexustar/usher/pkg/broker"
+	"github.com/nexustar/usher/pkg/core"
 	"github.com/nexustar/usher/pkg/interaction"
 	"github.com/nexustar/usher/pkg/textutil"
 )
@@ -49,6 +50,8 @@ type Subscription struct {
 type SessionInfo struct {
 	Title string
 	Cwd   string
+	// Limit is the session's core.Limit* state, "" when no usage limit holds it.
+	Limit string
 }
 
 // Lookup resolves a session id to display metadata; ok is false when the
@@ -208,16 +211,32 @@ func (m *Manager) notifyTurnDone(sessionID string) {
 		return // a browser is watching this session live
 	}
 	label := m.sessionLabel(sessionID)
+	info, _ := m.lookup(sessionID)
+	body, kind, urgency := turnEndNotice(info.Limit)
 	// One tag per session so a session's latest turn-done collapses the prior
 	// one instead of stacking; turn-end is low-priority, so the client renders
 	// it silently.
 	m.fanout(notification{
-		Kind:  "turn-done",
+		Kind:  kind,
 		Title: label,
-		Body:  "Responded",
+		Body:  body,
 		Tag:   "turn-" + sessionID,
 		URL:   "/#/s/" + sessionID,
-	}, urgencyNormal)
+	}, urgency)
+}
+
+// turnEndNotice words a turn's end. One the usage limit stopped for good asks
+// for attention; the client renders it with sound.
+func turnEndNotice(limit string) (body, kind, urgency string) {
+	switch limit {
+	case "":
+		return "Responded", "turn-done", urgencyNormal
+	case core.LimitWaiting, core.LimitResuming:
+		return "Usage limit reached · will continue at reset", "turn-done", urgencyNormal
+	case core.LimitGaveUp:
+		return "Usage limit reached · stopped after retries", "attention", urgencyHigh
+	}
+	return "Usage limit reached · not continuing", "attention", urgencyHigh
 }
 
 func (m *Manager) notifyPermission(p interaction.Pending) {

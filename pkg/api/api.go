@@ -57,6 +57,7 @@ type Router interface {
 	IsPinned(id string) bool
 	Approval(id string) string
 	SetApproval(ctx context.Context, id, approval string) error
+	SetLimitResume(id string, on bool) error
 	Approvals(backendName string) []string
 	HasTerminal(id string) bool
 	TerminalAvailable() bool
@@ -203,7 +204,7 @@ func ErrStatus(err error) int {
 	switch {
 	case errors.Is(err, core.ErrSessionNotFound), errors.Is(err, core.ErrQueuedSendNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, core.ErrSendQueueFull), errors.Is(err, core.ErrRouterSession):
+	case errors.Is(err, core.ErrSendQueueFull), errors.Is(err, core.ErrRouterSession), errors.Is(err, core.ErrNoUsageLimit), errors.Is(err, core.ErrLimitTooFar):
 		return http.StatusConflict
 	case errors.Is(err, core.ErrReadOnlySession), errors.Is(err, core.ErrCLINotFound):
 		return http.StatusForbidden

@@ -443,6 +443,21 @@ func (m *Manager) SetGoal(ctx context.Context, id, cwd, objective string) error 
 	return w.client.SetGoal(ctx, id, objective)
 }
 
+// ResumeGoal restarts a goal the usage limit stopped, resuming a cold thread if
+// needed. It reports false when the thread has no such goal.
+func (m *Manager) ResumeGoal(ctx context.Context, id, cwd string) (bool, error) {
+	w, err := m.leaseWorker(ctx, id, cwd)
+	if err != nil {
+		return false, err
+	}
+	defer m.releaseWorker(w)
+	status, err := w.client.GoalStatus(ctx, id)
+	if err != nil || status != "usageLimited" {
+		return false, err
+	}
+	return true, w.client.ResumeGoal(ctx, id)
+}
+
 // Rename runs Codex's /rename RPC, resuming a cold thread if needed.
 func (m *Manager) Rename(ctx context.Context, id, cwd, title string) error {
 	w, err := m.leaseWorker(ctx, id, cwd)

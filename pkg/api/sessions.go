@@ -174,6 +174,8 @@ type PatchRequest struct {
 	Model     string    `json:"model,omitempty"`
 	Effort    string    `json:"effort,omitempty"`
 	ExtraArgs *[]string `json:"extra_args,omitempty"`
+	// LimitResume arms or disarms continuing after a usage limit resets.
+	LimitResume *bool `json:"limit_resume,omitempty"`
 }
 
 func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
@@ -226,6 +228,12 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Approval != "" {
 		if err := s.Router.SetApproval(r.Context(), id, req.Approval); err != nil {
+			WriteError(w, ErrStatus(err), err.Error())
+			return
+		}
+	}
+	if req.LimitResume != nil {
+		if err := s.Router.SetLimitResume(id, *req.LimitResume); err != nil {
 			WriteError(w, ErrStatus(err), err.Error())
 			return
 		}

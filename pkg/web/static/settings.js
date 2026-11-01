@@ -159,7 +159,28 @@ function renderUsagePane(host) {
         </div>
         <button id="usage-refresh" class="settings-row-action" type="button">Refresh</button>
       </div>
+      <label class="settings-row">
+        <div class="settings-row-text">
+          <span class="settings-row-label">Continue at reset</span>
+          <p class="settings-row-hint">Resume sessions when a usage limit resets.</p>
+        </div>
+        <input id="continue-at-reset" class="settings-row-action" type="checkbox" disabled>
+      </label>
     </div>`;
+  const toggle = document.getElementById('continue-at-reset');
+  fetch('/internal/config').then(r => r.json()).then(cfg => {
+    toggle.checked = cfg.continue_at_reset;
+    toggle.disabled = cfg.read_only;
+  }).catch(() => {});
+  toggle.addEventListener('change', async () => {
+    const on = toggle.checked;
+    const res = await fetch('/internal/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({continue_at_reset: on}),
+    }).catch(() => null);
+    if (!res?.ok) toggle.checked = !on;
+  });
   const button = document.getElementById('usage-refresh');
   button.addEventListener('click', () => loadUsage(button, true));
   loadUsage(button, false);

@@ -443,6 +443,7 @@ func (f *FakeRouter) QueuedSends(string) []core.QueuedSend                     {
 func (f *FakeRouter) RetractSend(string, string) (string, error) {
 	return "", core.ErrQueuedSendNotFound
 }
+func (f *FakeRouter) SetLimitResume(string, bool) error { return core.ErrNoUsageLimit }
 func (f *FakeRouter) Rename(_ context.Context, _, title string) error {
 	if title == "" {
 		return core.ErrInvalidTitle

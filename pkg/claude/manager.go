@@ -31,6 +31,9 @@ type Result struct {
 	Error         string
 	Model         string
 	ContextWindow int64
+	// LimitResetsAt is set when the usage limit refused the turn: when it
+	// resets, in Unix seconds.
+	LimitResetsAt int64
 }
 
 // Delta is ephemeral protocol output used for live preview. Session JSONL
@@ -48,6 +51,7 @@ type turnRequest struct {
 	started bool
 	foreign bool    // Claude's own command (cron, /loop); nothing waits on it
 	runtime *Result // metadata from result; lifecycle still owns completion
+	limit   int64   // usage-limit reset that refused this turn, Unix seconds
 }
 
 // finish closes deltas before done, so a receiver of done may safely abandon
@@ -83,6 +87,7 @@ type process struct {
 	tasks         map[string]struct{} // delegated agent tasks in flight, by task_id
 	shells        map[string]struct{} // every other background task, by task_id
 	idleSince     time.Time           // when the reaper first found nothing held
+	rejectedUntil int64               // resetsAt of the last rejected rate_limit_event
 }
 
 // With mu.
@@ -817,6 +822,16 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			OriginalModel  string `json:"original_model"`
 			FallbackModel  string `json:"fallback_model"`
 			RefusalKind    string `json:"api_refusal_category"`
+			RateLimitInfo  struct {
+				Status   string  `json:"status"`
+				ResetsAt float64 `json:"resetsAt"`
+			} `json:"rate_limit_info"`
+			APIError       string `json:"api_error"`
+			APIErrorParams struct {
+				RateLimitInfo struct {
+					ResetsAt float64 `json:"resetsAt"`
+				} `json:"rate_limit_info"`
+			} `json:"api_error_params"`
 		}
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
@@ -827,6 +842,14 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		}
 		if e.Type == "rate_limit_event" {
 			m.observeRateLimit(s.Bytes())
+			p.mu.Lock()
+			switch e.RateLimitInfo.Status {
+			case "rejected":
+				p.rejectedUntil = int64(e.RateLimitInfo.ResetsAt)
+			case "allowed":
+				p.rejectedUntil = 0
+			}
+			p.mu.Unlock()
 			continue
 		}
 		if e.Type == "system" {
@@ -878,6 +901,17 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 		if e.Type == "command_lifecycle" {
 			m.finishLifecycle(p, e.CommandUUID, e.State)
 			continue
+		}
+		if e.Type == "assistant" && (e.APIError == "usage_limit_reached" || (e.APIError == "" && e.Error == "rate_limit")) {
+			p.mu.Lock()
+			reset := int64(e.APIErrorParams.RateLimitInfo.ResetsAt)
+			if reset == 0 {
+				reset = p.rejectedUntil
+			}
+			if reset > 0 && len(p.turns) > 0 && p.turns[0].started && !p.turns[0].foreign {
+				p.turns[0].limit = reset
+			}
+			p.mu.Unlock()
 		}
 		if e.Type == "result" {
 			// Result carries metadata; lifecycle owns completion.
@@ -1040,6 +1074,7 @@ func terminalResult(req *turnRequest, state string) Result {
 	if req.runtime != nil {
 		result = *req.runtime
 	}
+	result.LimitResetsAt = req.limit
 	if state != "completed" {
 		result.IsError = true
 		result.Subtype = state

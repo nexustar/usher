@@ -39,6 +39,9 @@ const (
 	EventTurnPrompt  = "turn.prompt"
 	EventTurnPart    = "turn.part"
 	EventTurnNotice  = "turn.notice"
+	// EventTurnLimited precedes the end of a turn the subscription usage
+	// limit refused; its payload is UsageLimitPayload.
+	EventTurnLimited = "turn.limited"
 )
 
 // AbortedTurnMessage is the live wording for a turn that ended without
@@ -57,6 +60,12 @@ type ProcessStartedPayload struct {
 
 type ErrorPayload struct {
 	Message string `json:"message"`
+}
+
+// UsageLimitPayload: ResetsAt is when the exhausted window resets, in Unix
+// seconds.
+type UsageLimitPayload struct {
+	ResetsAt int64 `json:"resets_at"`
 }
 
 type PartDeltaPayload struct {
@@ -83,7 +92,7 @@ func RetryDetail(attempt, max int, reason string) string {
 func IsControlEvent(t string) bool {
 	switch t {
 	case EventTurnStarted, EventTurnEnded, EventTurnFailed, EventTurnDelta,
-		EventTurnStatus, EventRuntime:
+		EventTurnStatus, EventRuntime, EventTurnLimited:
 		return true
 	default:
 		return false
@@ -246,6 +255,12 @@ type ExtraArgser interface {
 // tools attached to usher's router session across cold worker rebuilds.
 type RouterDesignator interface {
 	SetRouterSession(sessionID string)
+}
+
+// GoalResumer is an optional runtime capability: restarting a goal the usage
+// limit stopped. It reports false when the session has no such goal.
+type GoalResumer interface {
+	ResumeGoal(ctx context.Context, sessionID, cwd string) (bool, error)
 }
 
 // RuntimeSetter is an optional runtime capability: switching a session's model

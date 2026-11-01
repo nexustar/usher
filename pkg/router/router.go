@@ -71,6 +71,11 @@ type Router struct {
 	errMu      sync.Mutex
 	turnErrors map[string]turnError // sessionID -> latest turn error
 
+	limitMu     sync.Mutex
+	limits      map[string]*usageLimit // sessionID -> usage limit that refused its last turn
+	limitJitter func() time.Duration   // test seam
+	limitClock  func() time.Time       // test seam
+
 	askMu sync.Mutex
 	asks  map[string]map[*askToken]struct{} // sessionID -> open in-place questions (questions.go)
 
@@ -648,6 +653,7 @@ func (r *Router) listSessions(includeSubagents bool) []core.Session {
 		r.applySwitchLocked(sess)
 		if !sess.IsSubagent {
 			r.applyCustomTitle(sess)
+			r.applyUsageLimit(sess)
 		}
 		out = append(out, *sess)
 	}
@@ -681,6 +687,7 @@ func (r *Router) GetSession(id string) (core.Session, bool) {
 	r.sendMu.Unlock()
 	applyLiveStatus(&sess, running, r.liveSet())
 	r.applyCustomTitle(&sess)
+	r.applyUsageLimit(&sess)
 	return sess, true
 }
 
@@ -946,6 +953,7 @@ func (r *Router) DeleteSession(id string) error {
 	r.discovery.Remove(id)
 	r.meta.Forget(id)
 	r.clearTurnError(id)
+	r.forgetUsageLimit(id)
 	slog.Info("session deleted", "session", id)
 	return nil
 }
@@ -998,6 +1006,7 @@ func (r *Router) PauseSession(id string) error {
 	} else if sess.IsSubagent {
 		return ErrReadOnlySession
 	}
+	r.cancelLimitWait(id)
 	r.stopLive(id)
 	return nil
 }
@@ -1047,6 +1056,7 @@ func (r *Router) stopLive(id string) {
 // spoke — see queueRelay.
 func (r *Router) SendToSession(id, text string) error {
 	r.withdrawQuestions(id)
+	r.cancelLimitWait(id)
 	return r.enqueueSend(id, pendingSend{text: text, typed: true})
 }
 
@@ -1348,6 +1358,10 @@ func (r *Router) publishStream(sessionID string, asm backendpkg.Assembler, ev se
 			r.discovery.Upsert(path)
 		}
 		ev.Raw = r.enrichExitWithTurnTimestamps(sessionID, ev.Raw, started)
+		r.endUsageLimit(sessionID, started)
+	}
+	if ev.Type == backendpkg.EventTurnLimited {
+		r.noteUsageLimit(sessionID, ev.Raw)
 	}
 	if ev.Type == backendpkg.EventTurnFailed {
 		r.noteTurnError(sessionID, extractErrorMessage(ev.Raw), started)
@@ -2083,6 +2097,7 @@ func (r *Router) RouteToSession(id, text string) (bool, error) {
 // noise, and the reply, if any, is in the transcript.
 func (r *Router) SendToSessionRelayed(id, text string, onDone func(sessionID, reply string, err error)) error {
 	r.withdrawQuestions(id)
+	r.cancelLimitWait(id)
 	return r.enqueueSend(id, pendingSend{text: text,
 		pre: func() {
 			ch, cancel := r.broker.Subscribe(id)

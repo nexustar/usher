@@ -883,6 +883,30 @@ td.id { color: var(--text-faint); }
   border-radius: var(--radius-card);
   background: var(--bg-raised);
 }
+.limit-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  color: var(--warning-text);
+}
+.settings-row input[type="checkbox"].settings-row-action { flex: none; width: auto; min-width: 0; margin-left: auto; }
+.limit-banner[hidden] { display: none; }
+.limit-banner button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
+  padding: 0.2rem 0.55rem;
+  font: inherit;
+  cursor: pointer;
+}
+.limit-banner button:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); }
 .command-preview {
   position: absolute;
   z-index: 20;

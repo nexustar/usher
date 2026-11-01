@@ -78,7 +78,7 @@ self.addEventListener('push', (e) => {
       { action: 'allow', title: 'Allow' },
       { action: 'deny', title: 'Deny' },
     ];
-  } else {
+  } else if (d.kind !== 'attention') {
     opts.silent = true; // turn-done is low-priority
   }
   e.waitUntil(self.registration.showNotification(d.title || 'usher', opts));

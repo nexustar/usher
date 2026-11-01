@@ -149,6 +149,7 @@ func (s *Server) buildHandler() {
 	s.api.Register(webMux)
 	webMux.HandleFunc("GET /internal/config", s.handleConfig)
 	webMux.HandleFunc("POST /internal/router", s.handleStartRouter)
+	webMux.HandleFunc("POST /internal/settings", s.handleSettings)
 	webMux.HandleFunc("GET /internal/sessions/{id}/routed", s.handleRouted)
 	webMux.HandleFunc("POST /internal/sessions/{id}/terminal", s.handleOpenTerminal)
 	webMux.HandleFunc("DELETE /internal/sessions/{id}/terminal", s.handleCloseTerminal)
@@ -504,11 +505,28 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // optional UI.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, struct {
-		EditorURL string       `json:"editor_url"`
-		LogoutURL string       `json:"logout_url"`
-		ReadOnly  bool         `json:"read_only"`
-		Router    routerConfig `json:"router"`
-	}{s.editorURL, s.logoutURL(), s.readOnly, s.routerConfig()})
+		EditorURL       string       `json:"editor_url"`
+		LogoutURL       string       `json:"logout_url"`
+		ReadOnly        bool         `json:"read_only"`
+		Router          routerConfig `json:"router"`
+		ContinueAtReset bool         `json:"continue_at_reset"`
+	}{s.editorURL, s.logoutURL(), s.readOnly, s.routerConfig(), s.router.ContinueAtReset()})
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ContinueAtReset *bool `json:"continue_at_reset"`
+	}
+	if !api.Decode(w, r, &req) {
+		return
+	}
+	if req.ContinueAtReset != nil {
+		if err := s.router.SetContinueAtReset(*req.ContinueAtReset); err != nil {
+			api.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // logoutURL is where Sign out leads; "" hides the entry.

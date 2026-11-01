@@ -45,6 +45,9 @@ type response struct {
 type TurnResult struct {
 	Status string
 	Error  string
+	// LimitResetsAt is set when the usage limit refused the turn: when it
+	// resets, in Unix seconds.
+	LimitResetsAt int64
 }
 
 // Delta is ephemeral protocol output used for live preview. The rollout file
@@ -63,9 +66,10 @@ type Skill struct {
 }
 
 type turnStream struct {
-	done   chan TurnResult
-	deltas chan Delta
-	errMsg string
+	done    chan TurnResult
+	deltas  chan Delta
+	errMsg  string
+	limited bool
 }
 
 // finish closes deltas before done, so a receiver of done may safely abandon
@@ -99,6 +103,7 @@ type Client struct {
 	goals        map[string]core.Goal
 	commands     map[string]struct{}       // item ids of commands still running, turn or no turn
 	patches      map[string]*core.TurnPart // file-change item id -> its diff, until it completes
+	exhausted    map[string]int64          // rate-limit id -> latest reset of its exhausted windows
 	next         atomic.Uint64
 	init         *initState
 	waitDone     chan struct{}
@@ -317,6 +322,20 @@ func (c *Client) dispatch(m rpcMessage) {
 		if c.onRateLimits != nil {
 			c.onRateLimits(m.Params)
 		}
+		var p struct {
+			RateLimits rateLimitSnapshot `json:"rateLimits"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		var limit string
+		if p.RateLimits.LimitID != nil {
+			limit = *p.RateLimits.LimitID
+		}
+		c.mu.Lock()
+		if c.exhausted == nil {
+			c.exhausted = map[string]int64{}
+		}
+		c.exhausted[limit] = p.RateLimits.exhaustedUntil()
+		c.mu.Unlock()
 		return
 	}
 	if m.Method == "turn/started" {
@@ -435,8 +454,9 @@ func (c *Client) dispatch(m rpcMessage) {
 			ThreadID  string `json:"threadId"`
 			WillRetry bool   `json:"willRetry"`
 			Error     struct {
-				Message           string `json:"message"`
-				AdditionalDetails string `json:"additionalDetails"`
+				Message           string          `json:"message"`
+				AdditionalDetails string          `json:"additionalDetails"`
+				CodexErrorInfo    json.RawMessage `json:"codexErrorInfo"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
@@ -450,6 +470,7 @@ func (c *Client) dispatch(m rpcMessage) {
 			} else if p.Error.Message != "" {
 				stream.errMsg = p.Error.Message
 			}
+			stream.limited = stream.limited || (!p.WillRetry && isUsageLimit(p.Error.CodexErrorInfo))
 		}
 		c.mu.Unlock()
 		return
@@ -459,20 +480,35 @@ func (c *Client) dispatch(m rpcMessage) {
 			ThreadID string `json:"threadId"`
 			Turn     struct {
 				Status string `json:"status"`
+				Error  *struct {
+					Message        string          `json:"message"`
+					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
+				} `json:"error"`
 			} `json:"turn"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
 		c.mu.Lock()
 		stream := c.turns[p.ThreadID]
 		errMsg := ""
+		var limit int64
 		if stream != nil {
 			errMsg = stream.errMsg
+			limited := stream.limited
+			if e := p.Turn.Error; e != nil && isUsageLimit(e.CodexErrorInfo) {
+				limited = true
+				if errMsg == "" {
+					errMsg = e.Message
+				}
+			}
+			if limited {
+				limit = c.limitResetLocked(errMsg, time.Now())
+			}
 		}
 		delete(c.turns, p.ThreadID)
 		delete(c.active, p.ThreadID)
 		c.mu.Unlock()
 		if stream != nil {
-			stream.finish(TurnResult{Status: p.Turn.Status, Error: errMsg})
+			stream.finish(TurnResult{Status: p.Turn.Status, Error: errMsg, LimitResetsAt: limit})
 		}
 	}
 }
@@ -1070,6 +1106,30 @@ func (c *Client) SetGoal(ctx context.Context, id, objective string) error {
 	}
 	return c.call(ctx, "thread/goal/set", map[string]any{"threadId": id, "objective": objective}, nil)
 }
+
+// GoalStatus asks app-server for the thread's goal status, "" when it has none:
+// a worker just resumed may not have heard the goal yet.
+func (c *Client) GoalStatus(ctx context.Context, id string) (string, error) {
+	var res struct {
+		Goal *struct {
+			Status string `json:"status"`
+		} `json:"goal"`
+	}
+	if err := c.call(ctx, "thread/goal/get", map[string]any{"threadId": id}, &res); err != nil {
+		return "", err
+	}
+	if res.Goal == nil {
+		return "", nil
+	}
+	return res.Goal.Status, nil
+}
+
+// ResumeGoal sets the thread's goal active again. On an idle thread Codex then
+// starts a turn toward it.
+func (c *Client) ResumeGoal(ctx context.Context, id string) error {
+	return c.call(ctx, "thread/goal/set", map[string]any{"threadId": id, "origin": "user", "status": "active"}, nil)
+}
+
 func (c *Client) LiveSessions() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

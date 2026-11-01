@@ -628,6 +628,16 @@ func (s *Sender) Steer(ctx context.Context, sessionID, text string) error {
 	return s.app.Steer(ctx, sessionID, text)
 }
 
+var _ backend.GoalResumer = (*Sender)(nil)
+
+// ResumeGoal restarts a goal the usage limit stopped; only Codex has them.
+func (s *Sender) ResumeGoal(ctx context.Context, sessionID, cwd string) (bool, error) {
+	if s.app == nil {
+		return false, nil
+	}
+	return s.app.ResumeGoal(ctx, sessionID, cwd)
+}
+
 // Interrupt stops the in-flight turn for sessionID without killing its worker.
 func (s *Sender) Interrupt(sessionID string) error {
 	if s.app != nil {
@@ -691,6 +701,7 @@ func (s *Sender) claudeTurn(ctx context.Context, id, prompt, cwd, model, appendS
 			return "text", d.Text, true
 		},
 		result: func(ctx context.Context, out chan<- StreamEvent, result claude.Result) {
+			emitLimited(ctx, out, result.LimitResetsAt)
 			if result.Subtype != "cancelled" {
 				if result.Error != "" {
 					emitError(ctx, out, result.Error)
@@ -768,6 +779,7 @@ func (s *Sender) appLoggedTurn(ctx context.Context, id, cwd string, fresh bool, 
 			return d.Kind, d.Text, true
 		},
 		result: func(ctx context.Context, out chan<- StreamEvent, result codex.TurnResult) {
+			emitLimited(ctx, out, result.LimitResetsAt)
 			if msg := codexTurnError(result); msg != "" {
 				emitError(ctx, out, msg)
 			}
@@ -892,6 +904,14 @@ func sendEvent(ctx context.Context, ch chan<- StreamEvent, ev StreamEvent) bool 
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func emitLimited(ctx context.Context, out chan<- StreamEvent, resetsAt int64) {
+	if resetsAt <= 0 {
+		return
+	}
+	raw, _ := json.Marshal(backend.UsageLimitPayload{ResetsAt: resetsAt})
+	sendEvent(ctx, out, StreamEvent{Type: backend.EventTurnLimited, Raw: raw})
 }
 
 func emitError(ctx context.Context, out chan<- StreamEvent, msg string) {

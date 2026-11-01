@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/nexustar/usher/pkg/core"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,4 +160,18 @@ func (randReader) Read(p []byte) (int, error) {
 		p[i] = byte(i*7 + 1)
 	}
 	return len(p), nil
+}
+
+func TestTurnEndNotice(t *testing.T) {
+	if body, kind, _ := turnEndNotice(""); body != "Responded" || kind != "turn-done" {
+		t.Errorf("plain turn = %q %q", body, kind)
+	}
+	if _, kind, _ := turnEndNotice(core.LimitWaiting); kind != "turn-done" {
+		t.Errorf("waiting kind = %q", kind)
+	}
+	for _, limit := range []string{core.LimitGaveUp, core.LimitTooFar, core.LimitOff} {
+		if _, kind, urgency := turnEndNotice(limit); kind != "attention" || urgency != urgencyHigh {
+			t.Errorf("%s = %q %q", limit, kind, urgency)
+		}
+	}
 }

@@ -48,3 +48,17 @@ func TestImportFileAndSections(t *testing.T) {
 		t.Errorf("agents = %s", got)
 	}
 }
+
+func TestContinueAtResetDefaultsOnAndPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	s := New(path)
+	if !s.ContinueAtReset() {
+		t.Fatal("unset should be on")
+	}
+	if err := s.SetContinueAtReset(false); err != nil {
+		t.Fatal(err)
+	}
+	if New(path).ContinueAtReset() {
+		t.Fatal("off did not persist")
+	}
+}

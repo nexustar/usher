@@ -21,9 +21,11 @@ type Router struct {
 
 // fileFormat keeps agents and schedules raw: their packages own their shape.
 type fileFormat struct {
-	Router    Router          `json:"router,omitzero"`
-	Agents    json.RawMessage `json:"agents,omitempty"`
-	Schedules json.RawMessage `json:"schedules,omitempty"`
+	Router Router `json:"router,omitzero"`
+	// ContinueAtReset unset is on.
+	ContinueAtReset *bool           `json:"continue_at_reset,omitempty"`
+	Agents          json.RawMessage `json:"agents,omitempty"`
+	Schedules       json.RawMessage `json:"schedules,omitempty"`
 }
 
 type Store struct {
@@ -64,6 +66,26 @@ func (s *Store) SetRouterSession(id string) {
 	if err := s.persistLocked(); err != nil {
 		slog.Warn("settings: save", "err", err)
 	}
+}
+
+// ContinueAtReset reports whether a session stopped by a usage limit continues
+// once the limit resets.
+func (s *Store) ContinueAtReset() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.f.ContinueAtReset == nil || *s.f.ContinueAtReset
+}
+
+func (s *Store) SetContinueAtReset(on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := s.f.ContinueAtReset
+	s.f.ContinueAtReset = &on
+	if err := s.persistLocked(); err != nil {
+		s.f.ContinueAtReset = prev
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Agents() json.RawMessage {

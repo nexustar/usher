@@ -44,6 +44,7 @@ let runtimeOwner = null;
 let runtimeBackend = '';
 let runtimeModels = null;
 let lastRuntimeHTML = '';
+let lastLimitHTML = '';
 let runtimeRerendering = false;
 let runtimeFold = ''; // the usage popover's open submenu: 'model' | 'effort' | ''
 
@@ -728,6 +729,7 @@ export async function showDetail(id) {
             <button type="button" data-control="ctrl-u">^U</button>
           </div>
         </div>
+        <div id="limit-banner" class="limit-banner" hidden></div>
         <div class="composer">
           <div id="command-preview" class="command-preview" role="listbox" hidden></div>
           <textarea id="prompt" rows="1" placeholder="message…"></textarea>
@@ -811,6 +813,19 @@ export async function showDetail(id) {
     });
   }
   noteActivity(sess);
+  lastLimitHTML = '';
+  renderLimitBanner(sess.usage_limit);
+  document.getElementById('limit-banner')?.addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-resume]');
+    if (!b) return;
+    b.disabled = true;
+    try {
+      const res = await patchSession(id, { limit_resume: b.dataset.resume === 'on' });
+      if (res.ok && id === currentDetailId) renderLimitBanner((await res.json()).usage_limit);
+    } finally {
+      b.disabled = false;
+    }
+  });
   detailRuntime = {};
   lastRuntimeHTML = '';
   runtimeModels = null;
@@ -1263,7 +1278,10 @@ function openEventStream(id, chatEl, renderAction, observeSendLifecycle) {
       loadTranscript(id);
       refreshSubtitle(id); // recover metadata when turn.ended was missed
     },
-    'turn.started': () => beginTurn(),
+    'turn.started': () => {
+      beginTurn();
+      if (lastLimitHTML) refreshSubtitle(id);
+    },
     // One server-grouped TurnPart (assistant text or a rendered tool result)
     // appended to the in-progress turn. turn.started / turn.active
     // normally create the bubble, but if both were missed stand it up now —
@@ -1563,11 +1581,39 @@ async function refreshSubtitle(id) {
     if (id !== currentDetailId) return;
     renderSessionSubtitle(sess);
     noteActivity(sess);
+    renderLimitBanner(sess.usage_limit);
     renderSessionRuntime(sess.runtime);
     // An approval the agent switched itself.
     const approvalWrap = root.querySelector('.composer .approval-wrap');
     if (approvalWrap && !sess.router && sess.approval) setApprovalToggle(approvalWrap, sess.approval);
   } catch {/* ignore */}
+}
+
+// renderLimitBanner says what happens to a session the usage limit stopped;
+// the transcript's own error keeps the limit's wording.
+function renderLimitBanner(limit) {
+  const el = document.getElementById('limit-banner');
+  if (!el) return;
+  let html = '';
+  if (limit && limit.resets_at) {
+    const at = new Date(limit.resets_at);
+    let when = at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (at.toDateString() !== new Date().toDateString()) {
+      when = at.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + when;
+    }
+    const [text, button] = {
+      waiting: [`Limit hit · continuing at ${when}`, ['off', 'Cancel']],
+      resuming: ['Limit reset · continuing…'],
+      too_far: [`Limit hit · resets ${when} · too far to wait`],
+      gave_up: ['Limit hit · stopped after 2 retries', ['on', 'Continue at reset']],
+    }[limit.state] || [`Limit hit · resets ${when}`, ['on', 'Continue at reset']];
+    html = `<span class="limit-text">${esc(text)}</span>` + (button
+      ? `<button type="button" data-resume="${button[0]}">${button[1]}</button>` : '');
+  }
+  el.hidden = !html;
+  if (html === lastLimitHTML) return;
+  lastLimitHTML = html;
+  el.innerHTML = html;
 }
 
 function noteActivity(sess) {

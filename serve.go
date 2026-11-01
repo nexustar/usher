@@ -422,7 +422,11 @@ func assemble(ctx context.Context, o Options) (*Server, error) {
 			StorePath: filepath.Join(o.DataDir, "push-subscriptions.json"),
 			Lookup: func(id string) (push.SessionInfo, bool) {
 				sess, ok := r.GetSession(id)
-				return push.SessionInfo{Title: sess.Title, Cwd: sess.Cwd}, ok
+				info := push.SessionInfo{Title: sess.Title, Cwd: sess.Cwd}
+				if sess.UsageLimit != nil {
+					info.Limit = sess.UsageLimit.State
+				}
+				return info, ok
 			},
 			Events:  b,
 			Pending: h,

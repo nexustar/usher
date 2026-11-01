@@ -90,7 +90,27 @@ type Session struct {
 	// discovery from the Source that found the session's log.
 	Backend string         `json:"backend"`
 	Runtime SessionRuntime `json:"runtime"`
+
+	// UsageLimit is set while the session's last turn was refused by the
+	// subscription usage limit.
+	UsageLimit *UsageLimit `json:"usage_limit,omitempty"`
 }
+
+// UsageLimit is held in memory only; a restart forgets it.
+type UsageLimit struct {
+	ResetsAt time.Time `json:"resets_at"`
+	// State is one of the Limit* constants.
+	State string `json:"state"`
+}
+
+// What usher will do about a session's usage limit.
+const (
+	LimitWaiting  = "waiting"  // continue once it resets
+	LimitResuming = "resuming" // the resume was sent
+	LimitOff      = "off"      // nothing: turned off, cancelled or replaced by a prompt
+	LimitTooFar   = "too_far"  // nothing: it resets more than a day away
+	LimitGaveUp   = "gave_up"  // nothing: resumes kept hitting the limit
+)
 
 // SessionRuntime is the latest model configuration and active context recorded
 // for a session. Account-wide limits deliberately do not belong here.
@@ -170,6 +190,8 @@ var (
 	ErrInvalidTitle       = errors.New("session title must not be empty")
 	ErrRouterSession      = errors.New("the router session's flags are usher's")
 	ErrQueuedSendNotFound = errors.New("queued message not found (already sent?)")
+	ErrNoUsageLimit       = errors.New("session is not held by a usage limit")
+	ErrLimitTooFar        = errors.New("usage limit resets more than a day from now")
 )
 
 // EventQueueChanged is published when a session's queued sends change; its
