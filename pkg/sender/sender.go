@@ -620,6 +620,16 @@ func (s *Sender) ComposerItems(ctx context.Context, sessionID, cwd string) (back
 	return backend.ComposerCatalog{Items: out, Available: available}, nil
 }
 
+func (s *Sender) Extensions(ctx context.Context, sessionID, cwd string) (backend.Extensions, error) {
+	if s.claude != nil {
+		return s.claude.Extensions(ctx, sessionID)
+	}
+	if s.app == nil {
+		return backend.Extensions{}, nil
+	}
+	return s.app.ExtensionsIfLive(ctx, sessionID, cwd)
+}
+
 // Steer adds text to the session's running turn; only Codex can.
 func (s *Sender) Steer(ctx context.Context, sessionID, text string) error {
 	if s.app == nil {

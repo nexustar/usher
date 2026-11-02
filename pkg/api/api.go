@@ -62,6 +62,7 @@ type Router interface {
 	HasTerminal(id string) bool
 	TerminalAvailable() bool
 	ComposerItems(ctx context.Context, id, cwd string) (backend.ComposerCatalog, error)
+	Extensions(ctx context.Context, id, cwd string) (backend.Extensions, error)
 	Backends() []string
 	Writable(backendName string) bool
 	Models(ctx context.Context, backendName string) ([]backend.Model, error)
@@ -116,6 +117,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	handle("GET /sessions/{id}/transcript", s.handleTranscript)
 	handle("GET /sessions/{id}/events", s.handleSessionEvents)
 	handle("GET /sessions/{id}/commands", s.handleCommands)
+	handle("GET /sessions/{id}/extensions", s.handleExtensions)
 	handle("GET /sessions/{id}/image", s.handleImage)
 	handle("POST /uploads", s.handleUpload)
 	handle("GET /search", s.handleSearch)

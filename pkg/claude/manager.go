@@ -78,6 +78,9 @@ type process struct {
 	controlWait   map[string]chan controlResult
 	commands      []Command
 	commandsReady bool
+	initSeen      bool // system/init arrived; plugins and pluginErrors are set
+	plugins       []backend.Plugin
+	pluginErrors  []string
 	initDone      chan struct{}
 	initErr       error
 	leases        int
@@ -767,6 +770,40 @@ func (m *Manager) CommandsIfLive(id string) ([]Command, bool) {
 	return append([]Command(nil), p.commands...), p.commandsReady
 }
 
+// Extensions is unavailable until the first turn's system/init carries plugins.
+func (m *Manager) Extensions(ctx context.Context, id string) (backend.Extensions, error) {
+	m.mu.Lock()
+	p := m.processes[id]
+	m.mu.Unlock()
+	if p == nil {
+		return backend.Extensions{}, nil
+	}
+	p.mu.Lock()
+	ready := p.initSeen
+	plugins := append([]backend.Plugin{}, p.plugins...)
+	pluginErrors := append([]string{}, p.pluginErrors...)
+	p.mu.Unlock()
+	if !ready {
+		return backend.Extensions{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	raw, err := m.controlRequest(ctx, p, map[string]any{"subtype": "mcp_status"})
+	if err != nil {
+		return backend.Extensions{}, err
+	}
+	var payload struct {
+		MCPServers []backend.MCPServer `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return backend.Extensions{}, fmt.Errorf("decode mcp_status: %w", err)
+	}
+	if payload.MCPServers == nil {
+		payload.MCPServers = []backend.MCPServer{}
+	}
+	return backend.Extensions{Available: true, MCP: payload.MCPServers, Plugins: plugins, PluginErrors: pluginErrors}, nil
+}
+
 func write(p *process, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -798,9 +835,17 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 			} `json:"modelUsage"`
 			SlashCommands []string `json:"slash_commands"`
 			Skills        []string `json:"skills"`
-			TaskID        string   `json:"task_id"`
-			TaskType      string   `json:"task_type"`
-			Patch         struct {
+			Plugins       []struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"plugins"`
+			PluginErrors []struct {
+				Plugin  string `json:"plugin"`
+				Message string `json:"message"`
+			} `json:"plugin_errors"`
+			TaskID   string `json:"task_id"`
+			TaskType string `json:"task_type"`
+			Patch    struct {
 				Status string `json:"status"`
 			} `json:"patch"`
 			Event struct {
@@ -885,9 +930,20 @@ func (m *Manager) readLoop(p *process, r io.Reader) {
 				}
 				commands = append(commands, Command{Name: name, Kind: kind})
 			}
+			plugins := make([]backend.Plugin, 0, len(e.Plugins))
+			for _, plugin := range e.Plugins {
+				plugins = append(plugins, backend.Plugin{Name: plugin.Name, Version: plugin.Version})
+			}
+			pluginErrors := make([]string, 0, len(e.PluginErrors))
+			for _, failure := range e.PluginErrors {
+				pluginErrors = append(pluginErrors, failure.Plugin+": "+failure.Message)
+			}
 			p.mu.Lock()
 			p.commands = commands
 			p.commandsReady = true
+			p.initSeen = true
+			p.plugins = plugins
+			p.pluginErrors = pluginErrors
 			p.mu.Unlock()
 		}
 		if e.Type == "control_request" {

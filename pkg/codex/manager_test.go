@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nexustar/usher/pkg/backend"
 )
 
 func fakeAppServer(t *testing.T) (string, string) {
@@ -42,6 +44,13 @@ while IFS= read -r line; do
       printf '%s\n' "$line" >> "$FAKE_LOG"
       if [ -n "$FAKE_SKILLS_DELAY" ]; then sleep "$FAKE_SKILLS_DELAY"; fi
       printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"cwd":"/tmp","skills":[{"name":"imagegen","description":"make images","path":"/skills/imagegen/SKILL.md","scope":"user","enabled":true}],"errors":[]}]}}\n' "$id" ;;
+    *'"method":"mcpServerStatus/list"'*)
+      case "$line" in
+        *'"cursor"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"name":"docs","runtimeStatus":"connected","authStatus":"oAuth"}]}}\n' "$id" ;;
+        *) printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"name":"sentry","runtimeStatus":"authenticationRequired","authStatus":"notLoggedIn"}],"nextCursor":"2"}}\n' "$id" ;;
+      esac ;;
+    *'"method":"plugin/installed"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"marketplaces":[{"name":"m","plugins":[{"name":"fmt","localVersion":"1.0","installed":true,"enabled":false},{"name":"other","installed":false,"enabled":false}]}],"marketplaceLoadErrors":[{"marketplacePath":"/m","message":"bad marketplace"}]}}\n' "$id" ;;
     *'"method":"thread/name/set"'*)
       printf '%s\n' "$line" >> "$FAKE_LOG"
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
@@ -58,6 +67,53 @@ done
 		t.Fatal(err)
 	}
 	return script, logPath
+}
+
+func TestExtensionsIfLiveDoesNotStartWorker(t *testing.T) {
+	script, logPath := fakeAppServer(t)
+	m := NewManager(script, nil, nil, nil, []string{"FAKE_LOG=" + logPath}, 1, nil)
+	defer m.Shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if ext, err := m.ExtensionsIfLive(ctx, "thread-1", "/tmp"); err != nil || ext.Available {
+		t.Fatalf("cold session = (%#v, %v), want unavailable", ext, err)
+	}
+	if len(m.workers) != 0 {
+		t.Fatalf("registered %d worker(s) for a cold session", len(m.workers))
+	}
+	if err := m.Resume(ctx, "thread-1", "/tmp"); err != nil {
+		t.Fatal(err)
+	}
+	ext, err := m.ExtensionsIfLive(ctx, "thread-1", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := backend.Extensions{
+		Available:    true,
+		MCP:          []backend.MCPServer{{Name: "sentry", Status: "needs-auth"}, {Name: "docs", Status: "connected"}},
+		Plugins:      []backend.Plugin{{Name: "fmt", Version: "1.0", Disabled: true}},
+		PluginErrors: []string{"bad marketplace"},
+	}
+	if !reflect.DeepEqual(ext, want) {
+		t.Fatalf("Extensions = %#v, want %#v", ext, want)
+	}
+}
+
+func TestMCPStatus(t *testing.T) {
+	for _, tt := range []struct{ runtime, auth, want string }{
+		{"connected", "oAuth", "connected"},
+		{"authenticationRequired", "unknown", "needs-auth"},
+		{"", "notLoggedIn", "needs-auth"},
+		{"notStarted", "notLoggedIn", "needs-auth"},
+		{"starting", "oAuth", "pending"},
+		{"cancelled", "oAuth", "failed"},
+		{"", "unknown", ""},
+	} {
+		if got := mcpStatus(tt.runtime, tt.auth); got != tt.want {
+			t.Errorf("mcpStatus(%q, %q) = %q, want %q", tt.runtime, tt.auth, got, tt.want)
+		}
+	}
 }
 
 func TestRenameIfLiveUsesExistingWorkerWithoutColdResume(t *testing.T) {

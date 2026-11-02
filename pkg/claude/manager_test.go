@@ -38,6 +38,11 @@ while IFS= read -r line; do
       request_id=$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
       printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$request_id"
       ;;
+    *'"subtype":"mcp_status"'*)
+      request_id=$(printf '%s\n' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+      printf '{"type":"system","subtype":"init","plugins":[{"name":"fmt","version":"1.2.0"}],"plugin_errors":[{"plugin":"bad","type":"load","message":"no manifest"}]}\n'
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"mcpServers":[{"name":"sentry","status":"needs-auth","scope":"user"}]}}}\n' "$request_id"
+      ;;
     *control_request*) ;;
     *)
       uuid=$(printf '%s\n' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
@@ -552,6 +557,51 @@ func TestOutputWithoutATurnIsIgnored(t *testing.T) {
 	<-done
 	if n := queuedTurns(p); n != 0 {
 		t.Fatalf("turn queue = %d, want none", n)
+	}
+}
+
+func TestExtensionsCombineInitAndMCPStatus(t *testing.T) {
+	bin, log := fakeClaude(t)
+	m := New(bin, `{"hooks":{}}`, "/tmp/h.sock", nil, 4, nil, nil)
+	m.processes = map[string]*process{}
+	t.Setenv("FAKE_CLAUDE_LOG", log)
+	t.Cleanup(m.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if ext, err := m.Extensions(ctx, "sid"); err != nil || ext.Available {
+		t.Fatalf("cold session = (%#v, %v), want unavailable", ext, err)
+	}
+	ch, _, _, _, err := m.Send(ctx, "sid", "hello", "/tmp", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ch
+	if ext, err := m.Extensions(ctx, "sid"); err != nil || ext.Available {
+		t.Fatalf("before system/init = (%#v, %v), want unavailable", ext, err)
+	}
+
+	m.mu.Lock()
+	p := m.processes["sid"]
+	m.mu.Unlock()
+	p.mu.Lock()
+	p.initSeen = true
+	p.mu.Unlock()
+	if _, err := m.Extensions(ctx, "sid"); err != nil { // the fake emits init here
+		t.Fatal(err)
+	}
+	ext, err := m.Extensions(ctx, "sid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := backend.Extensions{
+		Available:    true,
+		MCP:          []backend.MCPServer{{Name: "sentry", Status: "needs-auth"}},
+		Plugins:      []backend.Plugin{{Name: "fmt", Version: "1.2.0"}},
+		PluginErrors: []string{"bad: no manifest"},
+	}
+	if !reflect.DeepEqual(ext, want) {
+		t.Fatalf("Extensions = %#v, want %#v", ext, want)
 	}
 }
 

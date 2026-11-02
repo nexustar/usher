@@ -11,6 +11,7 @@ import { loadList } from './list.js';
 const dialog = document.getElementById('details-dialog');
 const body = document.getElementById('details-body');
 let dirty = false;
+let extensionsEpoch = 0; // discards a fetch outlived by a reopened dialog
 
 function confirmDiscard() {
   return !dirty || confirm('Discard unsaved changes?');
@@ -43,6 +44,48 @@ export async function showSessionDetails(id) {
   }
   render(sess);
   if (!dialog.open) dialog.showModal();
+}
+
+async function loadExtensions(id) {
+  const epoch = ++extensionsEpoch;
+  let ext = { supported: true, available: false };
+  try {
+    const res = await fetch('/api/v1/sessions/' + encodeURIComponent(id) + '/extensions');
+    if (res.ok) ext = await res.json();
+  } catch (e) {
+    console.warn('extensions failed', e);
+  }
+  if (epoch !== extensionsEpoch || !ext.supported) return;
+  fillExtensionRow('mcp', ext.available ? mcpLines(ext.mcp || []) : null);
+  fillExtensionRow('plugins', ext.available ? pluginLines(ext.plugins || [], ext.plugin_errors || []) : null);
+}
+
+// rows are [name, note], or [text] spanning both columns; null means Unavailable.
+function fillExtensionRow(name, rows) {
+  const dt = body.querySelector(`[data-ext-label="${name}"]`);
+  const dd = body.querySelector(`[data-ext="${name}"]`);
+  if (!dt || !dd) return;
+  const empty = !rows || !rows.length;
+  dd.className = empty ? 'details-none' : 'details-list';
+  dd.innerHTML = empty ? (rows ? 'None' : 'Unavailable') : rows.map(extensionRowHTML).join('');
+  dt.hidden = dd.hidden = false;
+}
+
+function extensionRowHTML([name, note]) {
+  if (note === undefined) return `<span class="details-none details-list-wide">${esc(name)}</span>`;
+  return `<span>${esc(name)}</span><span class="details-none">${esc(note)}</span>`;
+}
+
+function mcpLines(servers) {
+  const notes = { 'needs-auth': 'needs auth' };
+  return servers.map(s => [s.name, notes[s.status] || s.status || '']);
+}
+
+function pluginLines(plugins, failures) {
+  return [
+    ...plugins.map(p => [p.name, [p.version, p.disabled && 'disabled'].filter(Boolean).join(' · ')]),
+    ...failures.map(f => [f]),
+  ];
 }
 
 const busy = status => status === 'running' || status === 'awaiting_permission';
@@ -80,6 +123,8 @@ function render(sess) {
             ${v ? `<dd>${esc(v)}</dd>` : '<dd class="details-none">Unavailable</dd>'}`).join('')}
           <dt>Prompt</dt>
           ${prompt ? `<dd class="details-prompt">${esc(prompt)}</dd>` : '<dd class="details-none">None</dd>'}
+          <dt data-ext-label="mcp" hidden>MCP</dt><dd data-ext="mcp" hidden></dd>
+          <dt data-ext-label="plugins" hidden>Plugins</dt><dd data-ext="plugins" hidden></dd>
         </dl>
         <label><span>Extra CLI flags</span>
           <input name="extra_args" class="mono" value="${esc(args)}"${editable ? '' : ' readonly'}
@@ -95,6 +140,7 @@ function render(sess) {
       </div>` : ''}
     </form>`;
   dirty = false;
+  if (!sess.router && !sess.subagent) loadExtensions(sess.id);
   if (!editable) return;
 
   const form = body.querySelector('form');

@@ -221,6 +221,32 @@ type ComposerProvider interface {
 	ComposerItems(ctx context.Context, sessionID, cwd string) (ComposerCatalog, error)
 }
 
+// MCPServer's Status is connected, needs-auth, failed, pending, disabled or empty.
+type MCPServer struct {
+	Name   string `json:"name"`
+	Status string `json:"status,omitempty"`
+}
+
+type Plugin struct {
+	Name     string `json:"name"`
+	Version  string `json:"version,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+}
+
+// Extensions is what a session has loaded: Available needs a live process, Supported a capable backend.
+type Extensions struct {
+	Supported    bool        `json:"supported"`
+	Available    bool        `json:"available"`
+	MCP          []MCPServer `json:"mcp"`
+	Plugins      []Plugin    `json:"plugins"`
+	PluginErrors []string    `json:"plugin_errors"`
+}
+
+// ExtensionProvider must not start a cold backend.
+type ExtensionProvider interface {
+	Extensions(ctx context.Context, sessionID, cwd string) (Extensions, error)
+}
+
 // Forker is an optional capability because backends use materially different
 // branching mechanisms and some may not support it at all. It copies the
 // session at path up to and including the turn afterID into a new session,

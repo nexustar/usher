@@ -920,6 +920,90 @@ func (c *Client) Skills(ctx context.Context, cwd string) ([]Skill, error) {
 	return skills, nil
 }
 
+func (c *Client) MCPServers(ctx context.Context, threadID string) ([]backend.MCPServer, error) {
+	if err := c.ensure(ctx); err != nil {
+		return nil, err
+	}
+	servers := []backend.MCPServer{}
+	params := map[string]any{"threadId": threadID, "detail": "toolsAndAuthOnly"}
+	for {
+		var out struct {
+			Data []struct {
+				Name          string `json:"name"`
+				RuntimeStatus string `json:"runtimeStatus"`
+				AuthStatus    string `json:"authStatus"`
+			} `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := c.call(ctx, "mcpServerStatus/list", params, &out); err != nil {
+			return nil, err
+		}
+		for _, server := range out.Data {
+			servers = append(servers, backend.MCPServer{
+				Name:   server.Name,
+				Status: mcpStatus(server.RuntimeStatus, server.AuthStatus),
+			})
+		}
+		if out.NextCursor == "" {
+			return servers, nil
+		}
+		params["cursor"] = out.NextCursor
+	}
+}
+
+func mcpStatus(runtime, auth string) string {
+	switch runtime {
+	case "connected", "failed", "disabled":
+		return runtime
+	case "authenticationRequired":
+		return "needs-auth"
+	case "cancelled":
+		return "failed"
+	}
+	if auth == "notLoggedIn" {
+		return "needs-auth"
+	}
+	if runtime == "starting" || runtime == "notStarted" {
+		return "pending"
+	}
+	return ""
+}
+
+func (c *Client) Plugins(ctx context.Context, cwd string) ([]backend.Plugin, []string, error) {
+	if err := c.ensure(ctx); err != nil {
+		return nil, nil, err
+	}
+	var out struct {
+		Marketplaces []struct {
+			Plugins []struct {
+				Name         string `json:"name"`
+				LocalVersion string `json:"localVersion"`
+				Installed    bool   `json:"installed"`
+				Enabled      bool   `json:"enabled"`
+			} `json:"plugins"`
+		} `json:"marketplaces"`
+		LoadErrors []struct {
+			Message string `json:"message"`
+		} `json:"marketplaceLoadErrors"`
+	}
+	if err := c.call(ctx, "plugin/installed", map[string]any{"cwds": []string{cwd}}, &out); err != nil {
+		return nil, nil, err
+	}
+	plugins := []backend.Plugin{}
+	for _, marketplace := range out.Marketplaces {
+		for _, plugin := range marketplace.Plugins {
+			if plugin.Installed {
+				plugins = append(plugins, backend.Plugin{Name: plugin.Name, Version: plugin.LocalVersion, Disabled: !plugin.Enabled})
+			}
+		}
+	}
+	failures := []string{}
+	for _, failure := range out.LoadErrors {
+		failures = append(failures, failure.Message)
+	}
+	return plugins, failures, nil
+}
+
 // StartTurn starts a turn; a non-empty model, effort or approval switches the
 // thread to it from this turn on.
 func (c *Client) StartTurn(ctx context.Context, id, prompt, cwd, model, effort, approval string) (<-chan TurnResult, <-chan Delta, error) {

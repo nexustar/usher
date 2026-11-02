@@ -2492,6 +2492,15 @@ pre.raw-markdown {
   line-height: 1.5;
 }
 .details-none { color: var(--text-faint); }
+.details-list {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 0 1rem;
+  max-height: 10em;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.details-list-wide { grid-column: 1 / -1; }
 .details-form .cfg-form-actions button.primary:disabled {
   background: var(--border-strong);
   border-color: var(--border-strong);

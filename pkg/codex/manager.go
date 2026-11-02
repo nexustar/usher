@@ -548,6 +548,31 @@ func (m *Manager) SkillsIfLive(ctx context.Context, id, cwd string) ([]Skill, bo
 	return skills, err == nil, err
 }
 
+// ExtensionsIfLive reports a failed plugin listing as a plugin error, keeping MCP status.
+func (m *Manager) ExtensionsIfLive(ctx context.Context, id, cwd string) (backend.Extensions, error) {
+	m.mu.Lock()
+	w := m.workers[id]
+	if w == nil || w.ready != nil {
+		m.mu.Unlock()
+		return backend.Extensions{}, nil
+	}
+	w.leases++
+	w.lastUsed = time.Now()
+	m.mu.Unlock()
+	defer m.releaseWorker(w)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	servers, err := w.client.MCPServers(ctx, id)
+	if err != nil {
+		return backend.Extensions{}, err
+	}
+	plugins, failures, err := w.client.Plugins(ctx, cwd)
+	if err != nil {
+		failures = []string{"plugin list failed: " + err.Error()}
+	}
+	return backend.Extensions{Available: true, MCP: servers, Plugins: plugins, PluginErrors: failures}, nil
+}
+
 // RenameIfLive renames through an existing worker without entering the LRU.
 func (m *Manager) RenameIfLive(ctx context.Context, id, title string) (bool, error) {
 	m.mu.Lock()

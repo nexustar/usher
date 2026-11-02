@@ -415,3 +415,18 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteJSON(w, http.StatusOK, Commands{Source: sess.Backend, Available: catalog.Available, Commands: catalog.Items})
 }
+
+func (s *Server) handleExtensions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess, ok := s.Router.GetSession(id)
+	if !ok {
+		WriteError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	ext, err := s.Router.Extensions(r.Context(), id, sess.Cwd)
+	if err != nil {
+		WriteError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, ext)
+}

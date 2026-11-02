@@ -273,6 +273,19 @@ func (r *Router) ComposerItems(ctx context.Context, id, cwd string) (backendpkg.
 	return catalog, nil
 }
 
+func (r *Router) Extensions(ctx context.Context, id, cwd string) (backendpkg.Extensions, error) {
+	provider, ok := r.senderFor(id).(backendpkg.ExtensionProvider)
+	if !ok {
+		return backendpkg.Extensions{}, nil
+	}
+	ext, err := provider.Extensions(ctx, id, cwd)
+	if err != nil {
+		return backendpkg.Extensions{}, err
+	}
+	ext.Supported = true
+	return ext, nil
+}
+
 func composerKindRank(kind string) int {
 	switch kind {
 	case "command":
