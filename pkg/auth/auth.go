@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -159,6 +160,16 @@ func (s *Store) SetPassword(plaintext string) error {
 	s.hashFile = info
 	s.mu.Unlock()
 	return nil
+}
+
+// ClearPassword removes auth.json, reporting whether one existed. A running
+// server keeps the last hash (see refresh) until it restarts.
+func ClearPassword(dataDir string) (bool, error) {
+	err := os.Remove(filepath.Join(dataDir, authFileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // refresh picks up `usher set-password`; a vanished or bad file keeps the last hash.

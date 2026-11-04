@@ -31,11 +31,27 @@ func SetPassword(args []string) error {
 	fs := flag.NewFlagSet("set-password", flag.ExitOnError)
 	dataDir := fs.String("data-dir", pluginapi.DefaultDataDir(), "usher data directory (XDG_DATA_HOME/usher)")
 	stdinMode := fs.Bool("password-stdin", false, "read password from stdin (single line, no confirmation)")
+	clearPw := fs.Bool("clear", false, "remove the password; takes effect when usher restarts")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *dataDir == "" {
 		return fmt.Errorf("could not resolve data dir; pass --data-dir")
+	}
+	if *clearPw {
+		if *stdinMode {
+			return fmt.Errorf("--clear and --password-stdin are exclusive")
+		}
+		removed, err := auth.ClearPassword(*dataDir)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			fmt.Fprintln(os.Stderr, "no password set")
+			return nil
+		}
+		fmt.Fprintln(os.Stderr, "password removed; restart usher to apply (a running one keeps the old password)")
+		return nil
 	}
 
 	store, err := auth.Load(*dataDir)

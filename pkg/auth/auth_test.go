@@ -37,6 +37,33 @@ func TestStore_SetPasswordRoundtrip(t *testing.T) {
 	}
 }
 
+func TestClearPassword(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPassword("correct horse"); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := ClearPassword(dir); err != nil || !removed {
+		t.Fatalf("ClearPassword = %v, %v; want true, nil", removed, err)
+	}
+	if !s.IsConfigured() {
+		t.Error("running store dropped its hash; want it kept until restart")
+	}
+	s2, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.IsConfigured() {
+		t.Error("reloaded store still configured after clear")
+	}
+	if removed, err := ClearPassword(dir); err != nil || removed {
+		t.Fatalf("second ClearPassword = %v, %v; want false, nil", removed, err)
+	}
+}
+
 func TestStore_SetPasswordPersists(t *testing.T) {
 	dir := t.TempDir()
 	s1, err := Load(dir)

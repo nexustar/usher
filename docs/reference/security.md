@@ -14,6 +14,9 @@ usher set-password
 
 - The password needs at least 8 characters. A running usher picks up a new one
   on the next request, without a restart.
+- `usher set-password --clear` removes the password. That needs a restart: a
+  running usher keeps the old one. Without a password, a non-loopback address
+  needs `--insecure` or a trusted proxy header.
 - The password is stored as an Argon2id hash in `<data-dir>/auth.json`, with
   mode `0600`.
 - A separate 32-byte HMAC secret is generated at `<data-dir>/secret` on first
