@@ -6,9 +6,16 @@
 // Wrap fetch so any 401 from the API navigates to /login. SSE can't see
 // HTTP status, so we rely on the polling fetches (session list, etc.) to
 // trip this path within a few seconds of a cookie going bad.
+// API calls ask for JSON: auth proxies such as oauth2-proxy answer 401 to
+// those instead of redirecting to a sign-in page fetch can't follow.
 const _origFetch = window.fetch.bind(window);
-window.fetch = async (...args) => {
-  const res = await _origFetch(...args);
+window.fetch = async (input, init = {}) => {
+  if (typeof input === 'string' && /^\/(api|internal)\//.test(input)) {
+    const headers = new Headers(init.headers);
+    if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+    init = { ...init, headers };
+  }
+  const res = await _origFetch(input, init);
   if (res.status === 401) {
     const next = encodeURIComponent(location.pathname + location.search + location.hash);
     location.href = '/login?next=' + next;
