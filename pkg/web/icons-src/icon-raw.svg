@@ -17,22 +17,23 @@
     <stop offset="90%" stop-color="#222120"/>
     <stop offset="100%" stop-color="#1F1F20" stop-opacity="0"/>
   </radialGradient>
-  <linearGradient id="arrow-grad" x1="548" y1="896" x2="896" y2="594" gradientUnits="userSpaceOnUse">
+  <linearGradient id="arrow-grad" x1="548" y1="920" x2="920" y2="594" gradientUnits="userSpaceOnUse">
     <stop offset="0%" stop-color="#F2E0C0"/>
-    <stop offset="25%" stop-color="#EADCCC"/>
-    <stop offset="60%" stop-color="#E0E0DF"/>
-    <stop offset="100%" stop-color="#E0E0DF"/>
+    <stop offset="35%" stop-color="#C9BFB2"/>
+    <stop offset="100%" stop-color="#9A958F"/>
   </linearGradient>
 </defs>
 <rect x="0" y="0" width="1280" height="1280" fill="#1F1F20"/>
 <circle cx="384" cy="896" r="264" fill="url(#orb)"/>
-<circle cx="384" cy="384" r="64" fill="#8F8C87"/>
-<circle cx="640" cy="384" r="64" fill="#8A8987"/>
-<circle cx="384" cy="640" r="64" fill="#A49786"/>
-<circle cx="640" cy="640" r="64" fill="#9B9286"/>
+<circle cx="384" cy="384" r="64" fill="#75716D"/>
+<circle cx="640" cy="384" r="64" fill="#716F6D"/>
+<circle cx="384" cy="640" r="64" fill="#857969"/>
+<circle cx="640" cy="640" r="64" fill="#7E756B"/>
+<g transform="translate(24 0)">
 <path d="M858.55 264.00 L933.45 264.00 C957.22 264.00 969.11 264.00 981.90 268.05 C995.87 273.13 1006.87 284.13 1011.95 298.10 C1016.00 310.89 1016.00 322.78 1016.00 346.55 L1016.00 421.45 C1016.00 445.22 1016.00 457.11 1011.95 469.90 C1006.87 483.87 995.87 494.87 981.90 499.95 C969.11 504.00 957.22 504.00 933.45 504.00 L858.55 504.00 C834.78 504.00 822.89 504.00 810.10 499.95 C796.13 494.87 785.13 483.87 780.05 469.90 C776.00 457.11 776.00 445.22 776.00 421.45 L776.00 346.55 C776.00 322.78 776.00 310.89 780.05 298.10 C785.13 284.13 796.13 273.13 810.10 268.05 C822.89 264.00 834.78 264.00 858.55 264.00 Z" fill="#D97757"/>
 <path d="M 832 339 L 888 384 L 832 429" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 <path d="M 917 427 L 962 427" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" fill="none"/>
-<path d="M 829 689 L 896 594 L 963 689" stroke="#E0E0DF" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-<path d="M 896 594 L 896 776 C 896 842 842 896 776 896 L 548 896" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</g>
+<path d="M 853 689 L 920 594 L 987 689" stroke="#9A958F" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M 920 594 L 920 800 C 920 866 866 920 800 920 L 548 920" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>

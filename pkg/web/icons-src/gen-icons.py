@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Generate all icon variants from icon-raw.svg (1280x1280 canvas, content in center 1024x1024).
+"""Generate the icons from icon-raw.svg (1280 canvas, dark plate, content in the center 1024).
 
-Source: icon-raw.svg (1280x1280, coordinates offset +128)
-Outputs:
-  static/icons/icon.svg              — Apple corners, 0-1024 coordinates (shifted -128)
-  static/icons/icon-192.png          — 192x192 RGBA, Apple corners + padding
-  static/icons/icon-512.png          — 512x512 RGBA, Apple corners + padding
-  static/icons/icon-maskable-512.png — 512x512 RGB full bleed
-  static/icons/apple-touch-icon.png  — 180x180 RGB, no clip (iOS masks)
+  icon.svg, icon-192/512.png — no plate, see-through halo, cropped
+  icon-maskable-512.png      — raw as-is
+  apple-touch-icon.png       — center 1024, no clip (iOS masks)
 """
 
 import os, io, re
@@ -22,37 +18,9 @@ CANVAS = 1280
 CONTENT = 1024
 OFFSET = (CANVAS - CONTENT) // 2  # 128
 
-C1, C2, C3, C4 = 1.52866498, 1.08849296, 0.86840694, 0.63149379
-C5, C6, C7 = 0.37282383, 0.16905956, 0.07491139
-
-
-def apple_rect_path(x, y, w, h, r):
-    r = min(r, min(w, h) / 2 / C1)
-    ext = r * C1
-    p = []
-    p.append(f"M{x+ext:.2f} {y:.2f}")
-    p.append(f"L{x+w-ext:.2f} {y:.2f}")
-    ox, oy = x + w, y
-    p.append(f"C{ox-r*C2:.2f} {oy:.2f} {ox-r*C3:.2f} {oy:.2f} {ox-r*C4:.2f} {oy+r*C7:.2f}")
-    p.append(f"C{ox-r*C5:.2f} {oy+r*C6:.2f} {ox-r*C6:.2f} {oy+r*C5:.2f} {ox-r*C7:.2f} {oy+r*C4:.2f}")
-    p.append(f"C{ox:.2f} {oy+r*C3:.2f} {ox:.2f} {oy+r*C2:.2f} {ox:.2f} {oy+r*C1:.2f}")
-    p.append(f"L{x+w:.2f} {y+h-ext:.2f}")
-    ox, oy = x + w, y + h
-    p.append(f"C{ox:.2f} {oy-r*C2:.2f} {ox:.2f} {oy-r*C3:.2f} {ox-r*C7:.2f} {oy-r*C4:.2f}")
-    p.append(f"C{ox-r*C6:.2f} {oy-r*C5:.2f} {ox-r*C5:.2f} {oy-r*C6:.2f} {ox-r*C4:.2f} {oy-r*C7:.2f}")
-    p.append(f"C{ox-r*C3:.2f} {oy:.2f} {ox-r*C2:.2f} {oy:.2f} {ox-r*C1:.2f} {oy:.2f}")
-    p.append(f"L{x+ext:.2f} {y+h:.2f}")
-    ox, oy = x, y + h
-    p.append(f"C{ox+r*C2:.2f} {oy:.2f} {ox+r*C3:.2f} {oy:.2f} {ox+r*C4:.2f} {oy-r*C7:.2f}")
-    p.append(f"C{ox+r*C5:.2f} {oy-r*C6:.2f} {ox+r*C6:.2f} {oy-r*C5:.2f} {ox+r*C7:.2f} {oy-r*C4:.2f}")
-    p.append(f"C{ox:.2f} {oy-r*C3:.2f} {ox:.2f} {oy-r*C2:.2f} {ox:.2f} {oy-r*C1:.2f}")
-    p.append(f"L{x:.2f} {y+ext:.2f}")
-    ox, oy = x, y
-    p.append(f"C{ox:.2f} {oy+r*C2:.2f} {ox:.2f} {oy+r*C3:.2f} {ox+r*C7:.2f} {oy+r*C4:.2f}")
-    p.append(f"C{ox+r*C6:.2f} {oy+r*C5:.2f} {ox+r*C5:.2f} {oy+r*C6:.2f} {ox+r*C4:.2f} {oy+r*C7:.2f}")
-    p.append(f"C{ox+r*C3:.2f} {oy:.2f} {ox+r*C2:.2f} {oy:.2f} {ox+r*C1:.2f} {oy:.2f}")
-    p.append("Z")
-    return " ".join(p)
+PLATE = (0x1F, 0x1F, 0x20)  # raw background
+CORE_END = 28               # orb offset (%) where the core ends
+CROP = 840                  # icon.svg view, centered
 
 
 def shift_path_d(d, dx):
@@ -100,20 +68,54 @@ def build_shifted_body(raw_svg_text):
     return defs_inner, body
 
 
-def build_icon_svg(raw_svg_text):
-    clip_path = apple_rect_path(0, 0, CONTENT, CONTENT, CONTENT * 0.225)
-    defs_inner, body = build_shifted_body(raw_svg_text)
+def hex_rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
 
-    clip_block = f'  <clipPath id="shape">\n    <path d="{clip_path}"/>\n  </clipPath>'
+
+def see_through_halo(defs, body, view):
+    """Turn halo stops into colors that composite to the same over PLATE,
+    and squeeze the glow to fade out at the crop edge."""
+    m = re.search(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)" fill="url\(#orb\)"/>', body)
+    cx, cy, r0 = (float(v) for v in m.groups())
+    x0, y0, size = view
+    r1 = min(cx - x0, x0 + size - cx, cy - y0, y0 + size - cy)
+    core = r0 * CORE_END / 100
+    k = (r1 - core) / (r0 - core)
+
+    def stop(sm):
+        off, color, rest = float(sm.group(1)), sm.group(2), sm.group(3)
+        px = r0 * off / 100
+        px = px if px <= core else core + (px - core) * k
+        attrs = f'stop-color="{color}"{rest}'
+        if off > CORE_END and "stop-opacity" not in rest:
+            c = hex_rgb(color)
+            a = max((v - p) / (255 - p) for v, p in zip(c, PLATE))
+            lit = tuple(min(255, round(p + (v - p) / a)) for v, p in zip(c, PLATE))
+            attrs = f'stop-color="#{lit[0]:02X}{lit[1]:02X}{lit[2]:02X}" stop-opacity="{a:.3f}"'
+        elif "stop-opacity" in rest:  # final fade-out
+            attrs = None
+        return f'<stop offset="{px / r1 * 100:.3g}%" ' + (attrs or "{LAST}") + "/>"
+
+    grad = re.search(r'<radialGradient id="orb".*?</radialGradient>', defs, re.DOTALL).group(0)
+    new = re.sub(r'<stop offset="([\d.]+)%" stop-color="(#[0-9A-Fa-f]{6})"([^/]*)/>', stop, grad)
+    last = re.findall(r'stop-color="(#[0-9A-F]{6})" stop-opacity', new)[-1]
+    new = new.replace("{LAST}", f'stop-color="{last}" stop-opacity="0"')
+    defs = defs.replace(grad, new)
+    body = body.replace(m.group(0), m.group(0).replace(f'r="{m.group(3)}"', f'r="{r1:g}"'))
+    return defs, body
+
+
+def build_icon_svg(raw_svg_text):
+    defs_inner, body = build_shifted_body(raw_svg_text)
+    body = body.replace('<rect x="0" y="0" width="1024" height="1024" fill="#1F1F20"/>', "")
+    view = ((CONTENT - CROP) / 2, (CONTENT - CROP) / 2, CROP)
+    defs_inner, body = see_through_halo(defs_inner, body, view)
 
     return (
         f'<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{CONTENT}" height="{CONTENT}" viewBox="0 0 {CONTENT} {CONTENT}">\n'
-        f'<defs>{defs_inner}{clip_block}\n'
-        f'</defs>\n'
-        f'<g clip-path="url(#shape)">\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{CONTENT}" height="{CONTENT}" viewBox="{view[0]:g} {view[1]:g} {CROP} {CROP}">\n'
+        f'<defs>{defs_inner}</defs>\n'
         f'{body.strip()}\n'
-        f'</g>\n'
         f'</svg>\n'
     )
 
@@ -152,12 +154,7 @@ def main():
 
     for size in [192, 512]:
         name = f"icon-{size}.png"
-        inner = int(size * CONTENT / CANVAS)  # 80% of target
-        pad = (size - inner) // 2
-        icon_img = render_png(icon_bytes, inner, "RGBA")
-        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        canvas.paste(icon_img, (pad, pad))
-        canvas.save(os.path.join(ICONS_DIR, name))
+        render_png(icon_bytes, size, "RGBA").save(os.path.join(ICONS_DIR, name))
         print(f"  {name}")
 
     render_png(raw_bytes, 512, "RGB").save(os.path.join(ICONS_DIR, "icon-maskable-512.png"))

@@ -1,43 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="92 92 840 840">
 <defs>
   <radialGradient id="orb" cx="50%" cy="50%" r="50%">
     <stop offset="0%" stop-color="#FEE8B0"/>
-    <stop offset="8%" stop-color="#FDDD97"/>
-    <stop offset="16%" stop-color="#FDD48D"/>
-    <stop offset="24%" stop-color="#FCCB80"/>
-    <stop offset="28%" stop-color="#FCC576"/>
-    <stop offset="30%" stop-color="#A06A2C"/>
-    <stop offset="34%" stop-color="#8A5A26"/>
-    <stop offset="40%" stop-color="#6E4A24"/>
-    <stop offset="48%" stop-color="#553C22"/>
-    <stop offset="56%" stop-color="#443220"/>
-    <stop offset="65%" stop-color="#352A20"/>
-    <stop offset="76%" stop-color="#2A2520"/>
-    <stop offset="90%" stop-color="#222120"/>
-    <stop offset="100%" stop-color="#1F1F20" stop-opacity="0"/>
+    <stop offset="12.9%" stop-color="#FDDD97"/>
+    <stop offset="25.8%" stop-color="#FDD48D"/>
+    <stop offset="38.6%" stop-color="#FCCB80"/>
+    <stop offset="45.1%" stop-color="#FCC576"/>
+    <stop offset="46.6%" stop-color="#FFA135" stop-opacity="0.576"/>
+    <stop offset="49.7%" stop-color="#FF9B2D" stop-opacity="0.478"/>
+    <stop offset="54.2%" stop-color="#FF992B" stop-opacity="0.353"/>
+    <stop offset="60.3%" stop-color="#FF9728" stop-opacity="0.241"/>
+    <stop offset="66.4%" stop-color="#FF9220" stop-opacity="0.165"/>
+    <stop offset="73.3%" stop-color="#FF8F20" stop-opacity="0.098"/>
+    <stop offset="81.7%" stop-color="#FF9920" stop-opacity="0.049"/>
+    <stop offset="92.4%" stop-color="#FFB420" stop-opacity="0.013"/>
+    <stop offset="100%" stop-color="#FFB420" stop-opacity="0"/>
   </radialGradient>
-  <linearGradient id="arrow-grad" x1="420" y1="768" x2="768" y2="466" gradientUnits="userSpaceOnUse">
+  <linearGradient id="arrow-grad" x1="420" y1="792" x2="792" y2="466" gradientUnits="userSpaceOnUse">
     <stop offset="0%" stop-color="#F2E0C0"/>
-    <stop offset="25%" stop-color="#EADCCC"/>
-    <stop offset="60%" stop-color="#E0E0DF"/>
-    <stop offset="100%" stop-color="#E0E0DF"/>
+    <stop offset="35%" stop-color="#C9BFB2"/>
+    <stop offset="100%" stop-color="#9A958F"/>
   </linearGradient>
-  <clipPath id="shape">
-    <path d="M352.20 0.00 L671.80 0.00 C773.21 0.00 823.92 0.00 878.50 17.26 C938.10 38.95 985.05 85.90 1006.74 145.50 C1024.00 200.08 1024.00 250.79 1024.00 352.20 L1024.00 671.80 C1024.00 773.21 1024.00 823.92 1006.74 878.50 C985.05 938.10 938.10 985.05 878.50 1006.74 C823.92 1024.00 773.21 1024.00 671.80 1024.00 L352.20 1024.00 C250.79 1024.00 200.08 1024.00 145.50 1006.74 C85.90 985.05 38.95 938.10 17.26 878.50 C0.00 823.92 0.00 773.21 0.00 671.80 L0.00 352.20 C0.00 250.79 0.00 200.08 17.26 145.50 C38.95 85.90 85.90 38.95 145.50 17.26 C200.08 0.00 250.79 0.00 352.20 0.00 Z"/>
-  </clipPath>
 </defs>
-<g clip-path="url(#shape)">
-<rect x="0" y="0" width="1024" height="1024" fill="#1F1F20"/>
-<circle cx="256" cy="768" r="264" fill="url(#orb)"/>
-<circle cx="256" cy="256" r="64" fill="#8F8C87"/>
-<circle cx="512" cy="256" r="64" fill="#8A8987"/>
-<circle cx="256" cy="512" r="64" fill="#A49786"/>
-<circle cx="512" cy="512" r="64" fill="#9B9286"/>
+<circle cx="256" cy="768" r="164" fill="url(#orb)"/>
+<circle cx="256" cy="256" r="64" fill="#75716D"/>
+<circle cx="512" cy="256" r="64" fill="#716F6D"/>
+<circle cx="256" cy="512" r="64" fill="#857969"/>
+<circle cx="512" cy="512" r="64" fill="#7E756B"/>
+<g transform="translate(24 0)">
 <path d="M730.55 136.00 L805.45 136.00 C829.22 136.00 841.11 136.00 853.90 140.05 C867.87 145.13 878.87 156.13 883.95 170.10 C888.00 182.89 888.00 194.78 888.00 218.55 L888.00 293.45 C888.00 317.22 888.00 329.11 883.95 341.90 C878.87 355.87 867.87 366.87 853.90 371.95 C841.11 376.00 829.22 376.00 805.45 376.00 L730.55 376.00 C706.78 376.00 694.89 376.00 682.10 371.95 C668.13 366.87 657.13 355.87 652.05 341.90 C648.00 329.11 648.00 317.22 648.00 293.45 L648.00 218.55 C648.00 194.78 648.00 182.89 652.05 170.10 C657.13 156.13 668.13 145.13 682.10 140.05 C694.89 136.00 706.78 136.00 730.55 136.00 Z" fill="#D97757"/>
 <path d="M 704 211 L 760 256 L 704 301" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 <path d="M 789 299 L 834 299" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" fill="none"/>
-<path d="M 701 561 L 768 466 L 835 561" stroke="#E0E0DF" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-<path d="M 768 466 L 768 648 C 768 714 714 768 648 768 L 420 768" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </g>
+<path d="M 725 561 L 792 466 L 859 561" stroke="#9A958F" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M 792 466 L 792 672 C 792 738 738 792 672 792 L 420 792" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>
