@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate the icons from icon-raw.svg (1280 canvas, dark plate, content in the center 1024).
 
-  icon.svg, icon-192/512.png — no plate, see-through halo, cropped
-  icon-maskable-512.png      — raw as-is
-  apple-touch-icon.png       — center 1024, no clip (iOS masks)
+  icon.svg              — no plate, see-through halo, cropped; LIGHT colors unless dark mode
+  icon-192/512.png      — center 1024 on a rounded plate with a transparent margin
+  icon-maskable-512.png — raw as-is
+  apple-touch-icon.png  — center 1024, no clip (iOS masks)
 """
 
 import os, io, re
@@ -20,7 +21,57 @@ OFFSET = (CANVAS - CONTENT) // 2  # 128
 
 PLATE = (0x1F, 0x1F, 0x20)  # raw background
 CORE_END = 28               # orb offset (%) where the core ends
-CROP = 840                  # icon.svg view, centered
+CROP = 840                  # icon.svg view size
+FOCUS = (512, 512)          # icon.svg view center
+RADIUS = 0.16               # icon-192/512 plate corner (continuous), of the plate side
+MARGIN = 0.10               # icon-192/512 transparent margin, of the canvas
+EDGE = (12, 0.08)           # icon-192/512 inner hairline: width, white opacity
+
+# Raw colors are tuned for the dark plate; icon.svg swaps these in on light backgrounds.
+LIGHT = {
+    ("fill", "#8F8C87"): "#75716D",
+    ("fill", "#8A8987"): "#716F6D",
+    ("fill", "#A49786"): "#857969",
+    ("fill", "#9B9286"): "#7E756B",
+    ("stop-color", "#F2E0C0"): "#5E4C3A",
+    ("stop-color", "#EADCCC"): "#3A342E",
+    ("stop-color", "#E0E0DF"): "#2A2826",
+    ("stroke", "#E0E0DF"): "#2A2826",
+}
+
+
+# Apple continuous-corner (squircle) bezier constants.
+C1, C2, C3, C4 = 1.52866498, 1.08849296, 0.86840694, 0.63149379
+C5, C6, C7 = 0.37282383, 0.16905956, 0.07491139
+
+
+def apple_rect_path(x, y, w, h, r):
+    r = min(r, min(w, h) / 2 / C1)
+    ext = r * C1
+    p = []
+    p.append(f"M{x+ext:.2f} {y:.2f}")
+    p.append(f"L{x+w-ext:.2f} {y:.2f}")
+    ox, oy = x + w, y
+    p.append(f"C{ox-r*C2:.2f} {oy:.2f} {ox-r*C3:.2f} {oy:.2f} {ox-r*C4:.2f} {oy+r*C7:.2f}")
+    p.append(f"C{ox-r*C5:.2f} {oy+r*C6:.2f} {ox-r*C6:.2f} {oy+r*C5:.2f} {ox-r*C7:.2f} {oy+r*C4:.2f}")
+    p.append(f"C{ox:.2f} {oy+r*C3:.2f} {ox:.2f} {oy+r*C2:.2f} {ox:.2f} {oy+r*C1:.2f}")
+    p.append(f"L{x+w:.2f} {y+h-ext:.2f}")
+    ox, oy = x + w, y + h
+    p.append(f"C{ox:.2f} {oy-r*C2:.2f} {ox:.2f} {oy-r*C3:.2f} {ox-r*C7:.2f} {oy-r*C4:.2f}")
+    p.append(f"C{ox-r*C6:.2f} {oy-r*C5:.2f} {ox-r*C5:.2f} {oy-r*C6:.2f} {ox-r*C4:.2f} {oy-r*C7:.2f}")
+    p.append(f"C{ox-r*C3:.2f} {oy:.2f} {ox-r*C2:.2f} {oy:.2f} {ox-r*C1:.2f} {oy:.2f}")
+    p.append(f"L{x+ext:.2f} {y+h:.2f}")
+    ox, oy = x, y + h
+    p.append(f"C{ox+r*C2:.2f} {oy:.2f} {ox+r*C3:.2f} {oy:.2f} {ox+r*C4:.2f} {oy-r*C7:.2f}")
+    p.append(f"C{ox+r*C5:.2f} {oy-r*C6:.2f} {ox+r*C6:.2f} {oy-r*C5:.2f} {ox+r*C7:.2f} {oy-r*C4:.2f}")
+    p.append(f"C{ox:.2f} {oy-r*C3:.2f} {ox:.2f} {oy-r*C2:.2f} {ox:.2f} {oy-r*C1:.2f}")
+    p.append(f"L{x:.2f} {y+ext:.2f}")
+    ox, oy = x, y
+    p.append(f"C{ox:.2f} {oy+r*C2:.2f} {ox:.2f} {oy+r*C3:.2f} {ox+r*C7:.2f} {oy+r*C4:.2f}")
+    p.append(f"C{ox+r*C6:.2f} {oy+r*C5:.2f} {ox+r*C5:.2f} {oy+r*C6:.2f} {ox+r*C4:.2f} {oy+r*C7:.2f}")
+    p.append(f"C{ox+r*C3:.2f} {oy:.2f} {ox+r*C2:.2f} {oy:.2f} {ox+r*C1:.2f} {oy:.2f}")
+    p.append("Z")
+    return " ".join(p)
 
 
 def shift_path_d(d, dx):
@@ -105,11 +156,29 @@ def see_through_halo(defs, body, view):
     return defs, body
 
 
+def light_palette(defs, body):
+    """Use LIGHT colors, keeping the raw ones under prefers-color-scheme: dark."""
+    rules = {}
+
+    def swap(m):
+        key = (m.group(1), m.group(2).upper())
+        if key not in LIGHT:
+            return m.group(0)
+        cls = rules.setdefault(key, f"c{len(rules)}")
+        return f'{key[0]}="{LIGHT[key]}" class="{cls}"'
+
+    pat = r'\b(fill|stroke|stop-color)="(#[0-9A-Fa-f]{6})"'
+    defs, body = re.sub(pat, swap, defs), re.sub(pat, swap, body)
+    css = "".join(f".{c}{{{a}:{v}}}" for (a, v), c in rules.items())
+    return defs + f"  <style>@media (prefers-color-scheme:dark){{{css}}}</style>\n", body
+
+
 def build_icon_svg(raw_svg_text):
     defs_inner, body = build_shifted_body(raw_svg_text)
     body = body.replace('<rect x="0" y="0" width="1024" height="1024" fill="#1F1F20"/>', "")
-    view = ((CONTENT - CROP) / 2, (CONTENT - CROP) / 2, CROP)
+    view = (FOCUS[0] - CROP / 2, FOCUS[1] - CROP / 2, CROP)
     defs_inner, body = see_through_halo(defs_inner, body, view)
+    defs_inner, body = light_palette(defs_inner, body)
 
     return (
         f'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -134,6 +203,26 @@ def build_fullbleed_svg(raw_svg_text):
     )
 
 
+def build_plate_svg(raw_svg_text):
+    """Center 1024 clipped to a continuous-corner rect, inset by MARGIN — for icon-192/512."""
+    defs_inner, body = build_shifted_body(raw_svg_text)
+    inset, scale = CONTENT * MARGIN, 1 - 2 * MARGIN
+    plate = apple_rect_path(0, 0, CONTENT, CONTENT, CONTENT * RADIUS)
+    width, opacity = EDGE
+
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{CONTENT}" height="{CONTENT}" viewBox="0 0 {CONTENT} {CONTENT}">\n'
+        f'<defs>{defs_inner}<clipPath id="plate"><path d="{plate}"/></clipPath>\n'
+        f'</defs>\n'
+        f'<g transform="translate({inset:g} {inset:g}) scale({scale:g})" clip-path="url(#plate)">\n'
+        f'{body.strip()}\n'
+        f'<path d="{plate}" fill="none" stroke="#FFFFFF" stroke-opacity="{opacity}" stroke-width="{width * 2}"/>\n'
+        f'</g>\n'
+        f'</svg>\n'
+    )
+
+
 def render_png(svg_bytes, size, mode="RGBA"):
     png = cairosvg.svg2png(bytestring=svg_bytes, output_width=size, output_height=size)
     return Image.open(io.BytesIO(png)).convert(mode)
@@ -145,8 +234,8 @@ def main():
     raw_bytes = raw_svg.encode()
 
     icon_svg = build_icon_svg(raw_svg)
-    icon_bytes = icon_svg.encode()
     fullbleed_bytes = build_fullbleed_svg(raw_svg).encode()
+    plate_bytes = build_plate_svg(raw_svg).encode()
 
     with open(os.path.join(ICONS_DIR, "icon.svg"), "w") as f:
         f.write(icon_svg)
@@ -154,7 +243,7 @@ def main():
 
     for size in [192, 512]:
         name = f"icon-{size}.png"
-        render_png(icon_bytes, size, "RGBA").save(os.path.join(ICONS_DIR, name))
+        render_png(plate_bytes, size, "RGBA").save(os.path.join(ICONS_DIR, name))
         print(f"  {name}")
 
     render_png(raw_bytes, 512, "RGB").save(os.path.join(ICONS_DIR, "icon-maskable-512.png"))

@@ -17,23 +17,22 @@
     <stop offset="90%" stop-color="#222120"/>
     <stop offset="100%" stop-color="#1F1F20" stop-opacity="0"/>
   </radialGradient>
-  <linearGradient id="arrow-grad" x1="548" y1="920" x2="920" y2="594" gradientUnits="userSpaceOnUse">
+  <linearGradient id="arrow-grad" x1="548" y1="920" x2="908" y2="594" gradientUnits="userSpaceOnUse">
     <stop offset="0%" stop-color="#F2E0C0"/>
-    <stop offset="35%" stop-color="#C9BFB2"/>
-    <stop offset="100%" stop-color="#9A958F"/>
+    <stop offset="25%" stop-color="#EADCCC"/>
+    <stop offset="60%" stop-color="#E0E0DF"/>
+    <stop offset="100%" stop-color="#E0E0DF"/>
   </linearGradient>
 </defs>
 <rect x="0" y="0" width="1280" height="1280" fill="#1F1F20"/>
 <circle cx="384" cy="896" r="264" fill="url(#orb)"/>
-<circle cx="384" cy="384" r="64" fill="#75716D"/>
-<circle cx="640" cy="384" r="64" fill="#716F6D"/>
-<circle cx="384" cy="640" r="64" fill="#857969"/>
-<circle cx="640" cy="640" r="64" fill="#7E756B"/>
-<g transform="translate(24 0)">
-<path d="M858.55 264.00 L933.45 264.00 C957.22 264.00 969.11 264.00 981.90 268.05 C995.87 273.13 1006.87 284.13 1011.95 298.10 C1016.00 310.89 1016.00 322.78 1016.00 346.55 L1016.00 421.45 C1016.00 445.22 1016.00 457.11 1011.95 469.90 C1006.87 483.87 995.87 494.87 981.90 499.95 C969.11 504.00 957.22 504.00 933.45 504.00 L858.55 504.00 C834.78 504.00 822.89 504.00 810.10 499.95 C796.13 494.87 785.13 483.87 780.05 469.90 C776.00 457.11 776.00 445.22 776.00 421.45 L776.00 346.55 C776.00 322.78 776.00 310.89 780.05 298.10 C785.13 284.13 796.13 273.13 810.10 268.05 C822.89 264.00 834.78 264.00 858.55 264.00 Z" fill="#D97757"/>
-<path d="M 832 339 L 888 384 L 832 429" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-<path d="M 917 427 L 962 427" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" fill="none"/>
-</g>
-<path d="M 853 689 L 920 594 L 987 689" stroke="#9A958F" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-<path d="M 920 594 L 920 800 C 920 866 866 920 800 920 L 548 920" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<circle cx="384" cy="384" r="64" fill="#8F8C87"/>
+<circle cx="640" cy="384" r="64" fill="#8A8987"/>
+<circle cx="384" cy="640" r="64" fill="#A49786"/>
+<circle cx="640" cy="640" r="64" fill="#9B9286"/>
+<path d="M866.04 288 L925.96 288 C944.98 288 954.49 288 964.72 291.24 C975.90 295.30 984.70 304.10 988.76 315.28 C992 325.51 992 335.02 992 354.04 L992 413.96 C992 432.98 992 442.49 988.76 452.72 C984.70 463.90 975.90 472.70 964.72 476.76 C954.49 480 944.98 480 925.96 480 L866.04 480 C847.02 480 837.51 480 827.28 476.76 C816.10 472.70 807.30 463.90 803.24 452.72 C800 442.49 800 432.98 800 413.96 L800 354.04 C800 335.02 800 325.51 803.24 315.28 C807.30 304.10 816.10 295.30 827.28 291.24 C837.51 288 847.02 288 866.04 288 Z" fill="#D97757"/>
+<path d="M844.80 348 L889.60 384 L844.80 420" stroke="#FCF8F5" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M912.80 418.40 L948.80 418.40" stroke="#FCF8F5" stroke-width="16" stroke-linecap="round" fill="none"/>
+<path d="M 841 689 L 908 594 L 975 689" stroke="#E0E0DF" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M 908 594 L 908 800 C 908 866 854 920 788 920 L 548 920" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>

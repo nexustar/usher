@@ -17,22 +17,22 @@
     <stop offset="92.4%" stop-color="#FFB420" stop-opacity="0.013"/>
     <stop offset="100%" stop-color="#FFB420" stop-opacity="0"/>
   </radialGradient>
-  <linearGradient id="arrow-grad" x1="420" y1="792" x2="792" y2="466" gradientUnits="userSpaceOnUse">
-    <stop offset="0%" stop-color="#F2E0C0"/>
-    <stop offset="35%" stop-color="#C9BFB2"/>
-    <stop offset="100%" stop-color="#9A958F"/>
+  <linearGradient id="arrow-grad" x1="420" y1="792" x2="780" y2="466" gradientUnits="userSpaceOnUse">
+    <stop offset="0%" stop-color="#5E4C3A" class="c0"/>
+    <stop offset="25%" stop-color="#3A342E" class="c1"/>
+    <stop offset="60%" stop-color="#2A2826" class="c2"/>
+    <stop offset="100%" stop-color="#2A2826" class="c2"/>
   </linearGradient>
+  <style>@media (prefers-color-scheme:dark){.c0{stop-color:#F2E0C0}.c1{stop-color:#EADCCC}.c2{stop-color:#E0E0DF}.c3{fill:#8F8C87}.c4{fill:#8A8987}.c5{fill:#A49786}.c6{fill:#9B9286}.c7{stroke:#E0E0DF}}</style>
 </defs>
 <circle cx="256" cy="768" r="164" fill="url(#orb)"/>
-<circle cx="256" cy="256" r="64" fill="#75716D"/>
-<circle cx="512" cy="256" r="64" fill="#716F6D"/>
-<circle cx="256" cy="512" r="64" fill="#857969"/>
-<circle cx="512" cy="512" r="64" fill="#7E756B"/>
-<g transform="translate(24 0)">
-<path d="M730.55 136.00 L805.45 136.00 C829.22 136.00 841.11 136.00 853.90 140.05 C867.87 145.13 878.87 156.13 883.95 170.10 C888.00 182.89 888.00 194.78 888.00 218.55 L888.00 293.45 C888.00 317.22 888.00 329.11 883.95 341.90 C878.87 355.87 867.87 366.87 853.90 371.95 C841.11 376.00 829.22 376.00 805.45 376.00 L730.55 376.00 C706.78 376.00 694.89 376.00 682.10 371.95 C668.13 366.87 657.13 355.87 652.05 341.90 C648.00 329.11 648.00 317.22 648.00 293.45 L648.00 218.55 C648.00 194.78 648.00 182.89 652.05 170.10 C657.13 156.13 668.13 145.13 682.10 140.05 C694.89 136.00 706.78 136.00 730.55 136.00 Z" fill="#D97757"/>
-<path d="M 704 211 L 760 256 L 704 301" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-<path d="M 789 299 L 834 299" stroke="#FCF8F5" stroke-width="20" stroke-linecap="round" fill="none"/>
-</g>
-<path d="M 725 561 L 792 466 L 859 561" stroke="#9A958F" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-<path d="M 792 466 L 792 672 C 792 738 738 792 672 792 L 420 792" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<circle cx="256" cy="256" r="64" fill="#75716D" class="c3"/>
+<circle cx="512" cy="256" r="64" fill="#716F6D" class="c4"/>
+<circle cx="256" cy="512" r="64" fill="#857969" class="c5"/>
+<circle cx="512" cy="512" r="64" fill="#7E756B" class="c6"/>
+<path d="M738.04 160 L797.96 160 C816.98 160 826.49 160 836.72 163.24 C847.90 167.30 856.70 176.10 860.76 187.28 C864 197.51 864 207.02 864 226.04 L864 285.96 C864 304.98 864 314.49 860.76 324.72 C856.70 335.90 847.90 344.70 836.72 348.76 C826.49 352 816.98 352 797.96 352 L738.04 352 C719.02 352 709.51 352 699.28 348.76 C688.10 344.70 679.30 335.90 675.24 324.72 C672 314.49 672 304.98 672 285.96 L672 226.04 C672 207.02 672 197.51 675.24 187.28 C679.30 176.10 688.10 167.30 699.28 163.24 C709.51 160 719.02 160 738.04 160 Z" fill="#D97757"/>
+<path d="M716.80 220 L761.60 256 L716.80 292" stroke="#FCF8F5" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M784.80 290.40 L820.80 290.40" stroke="#FCF8F5" stroke-width="16" stroke-linecap="round" fill="none"/>
+<path d="M 713 561 L 780 466 L 847 561" stroke="#2A2826" class="c7" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M 780 466 L 780 672 C 780 738 726 792 660 792 L 420 792" stroke="url(#arrow-grad)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>
