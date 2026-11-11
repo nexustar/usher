@@ -154,13 +154,11 @@ function renderGeneralPane(host) {
 function renderUsagePane(host) {
   host.innerHTML = `
     <div class="settings-section">
-      <div id="usage-body"><p class="muted">Loading…</p></div>
-      <div class="settings-row">
-        <div class="settings-row-text">
-          <span class="settings-row-label">Usage limits</span>
-        </div>
-        <button id="usage-refresh" class="settings-row-action" type="button">Refresh</button>
+      <div class="usage-toolbar">
+        <h2>Accounts</h2>
+        <button id="usage-refresh" class="usage-icon-btn" type="button" title="Refresh all" aria-label="Refresh all">${icon('refresh')}</button>
       </div>
+      <div id="usage-body"><p class="muted">Loading…</p></div>
       <label class="settings-row">
         <div class="settings-row-text">
           <span class="settings-row-label">Continue at reset</span>
@@ -227,14 +225,16 @@ let usageTimer = 0;
 // only, with refresh, probes that one backend.
 async function loadUsage(button, refresh, only) {
   clearTimeout(usageTimer);
-  button.disabled = true;
+  // Only a refresh of all spins the icon; reads and polls are instant.
+  const all = refresh && !only;
+  if (all) button.disabled = true;
   let list = null;
   const query = refresh ? '?refresh=1' + (only ? '&backend=' + encodeURIComponent(only) : '') : '';
   try {
     const res = await fetch('/api/v1/usage' + query);
     if (res.ok) list = (await res.json()).backends || [];
   } catch { /* shown below */ }
-  button.disabled = false;
+  if (all) button.disabled = false;
   const body = document.getElementById('usage-body');
   if (!body) return; // the pane was left meanwhile
   // A finished sign-in is cleared and its new account's limits fetched.
@@ -346,7 +346,7 @@ function loginHTML(b) {
     ? `<p class="settings-row-hint">Open ${link} and enter this code:</p>
        <span class="usage-login-code-row">
          <code class="usage-login-code">${esc(l.user_code)}</code>
-         <button type="button" class="usage-copy" data-copy="${esc(l.user_code)}" aria-label="Copy code">${icon('copy')}${icon('check')}</button>
+         <button type="button" class="usage-icon-btn usage-copy" data-copy="${esc(l.user_code)}" aria-label="Copy code">${icon('copy')}${icon('check')}</button>
        </span>
        <p class="settings-row-hint">Waiting for you to finish in the browser…</p>`
     : `<p class="settings-row-hint">Open ${link}, sign in, then paste the code it shows.</p>`;

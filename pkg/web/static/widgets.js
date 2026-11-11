@@ -18,6 +18,7 @@ const ICONS = {
   'arrow-up-right': '<path d="M4.5 11.5l7-7M6 4.5h5.5V10"/>',
   copy: '<rect x="6" y="6" width="8" height="8" rx="1.5"/><path d="M4.5 10.5h-1a1.5 1.5 0 0 1-1.5-1.5V3.5A1.5 1.5 0 0 1 3.5 2h5.5A1.5 1.5 0 0 1 10.5 3.5v1"/>',
   plus: '<path d="M8 3v10M3 8h10" stroke-width="1.6"/>', // bare lines read lighter
+  refresh: '<path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.5v3h-3"/>',
 };
 
 export function icon(name, cls = '') {

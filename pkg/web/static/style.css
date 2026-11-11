@@ -2191,8 +2191,11 @@ pre.raw-markdown {
   font-size: var(--font-meta);
 }
 .usage-meter { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+/* width, not flex-basis: Firefox leaves a basis out of the meter's own
+ * content width, so the bar would overflow the card. Grows when stacked. */
 .usage-bar {
-  flex: 1 0 9rem;
+  flex-grow: 1;
+  width: 9rem;
   height: 0.4rem;
   border-radius: 999px;
   background: var(--border-muted);
@@ -2214,7 +2217,9 @@ pre.raw-markdown {
 }
 .usage-login-code-row { display: flex; align-items: center; gap: 0.25rem; margin-top: 0.5rem; }
 .usage-login-code-row .usage-login-code { margin-top: 0; }
-.usage-copy {
+.usage-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+.usage-toolbar h2 { margin: 0; }
+.usage-icon-btn {
   display: inline-flex;
   padding: 0.35rem; /* doubles as the touch target */
   border: 0;
@@ -2223,8 +2228,11 @@ pre.raw-markdown {
   color: var(--text-faint);
   cursor: pointer;
 }
-.usage-copy:hover { color: var(--text); background: var(--bg-hover); }
-.usage-copy .icon { width: 1rem; height: 1rem; }
+.usage-icon-btn:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.usage-icon-btn .icon { width: 1rem; height: 1rem; }
+/* Refresh is disabled while the CLIs are asked; the turn says so. */
+.usage-icon-btn:disabled { cursor: default; }
+.usage-icon-btn:disabled .icon-refresh { animation: upload-spin 0.9s linear infinite; }
 .usage-copy .icon-check,
 .usage-copy.copied .icon-copy { display: none; }
 .usage-copy.copied .icon-check { display: block; }
