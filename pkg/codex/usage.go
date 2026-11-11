@@ -47,7 +47,8 @@ func (s rateLimitSnapshot) accountLimit() bool {
 	return s.LimitID == nil || *s.LimitID == "codex"
 }
 
-// Usage probes with a throwaway app-server that starts no thread.
+// Usage probes the sign-in and limits with a throwaway app-server that starts
+// no thread.
 func (m *Manager) Usage(ctx context.Context, refresh bool) (backend.Usage, error) {
 	if _, err := exec.LookPath(m.bin); err != nil {
 		return backend.Usage{}, backend.ErrNoUsage
@@ -63,16 +64,39 @@ func (m *Manager) probeUsage(ctx context.Context) (backend.Usage, error) {
 	if err := c.ensure(ctx); err != nil {
 		return backend.Usage{}, err
 	}
+	var read struct {
+		Account *struct {
+			Type     string `json:"type"`
+			Email    string `json:"email"`
+			PlanType string `json:"planType"`
+		} `json:"account"`
+	}
+	if err := c.call(ctx, "account/read", map[string]any{}, &read); err != nil {
+		return backend.Usage{}, err
+	}
+	acct := &backend.Account{}
+	if a := read.Account; a != nil {
+		acct = &backend.Account{SignedIn: true, Method: a.Type, Email: a.Email, Plan: a.PlanType}
+	}
+	// Signed out or on an API key: no subscription limits to ask for.
+	if acct.Method != "chatgpt" {
+		return backend.Usage{Account: acct, Windows: []backend.UsageWindow{}}, nil
+	}
 	var res struct {
 		RateLimits rateLimitSnapshot `json:"rateLimits"`
 	}
 	if err := c.call(ctx, "account/rateLimits/read", nil, &res); err != nil {
-		return backend.Usage{}, err
+		return backend.Usage{Account: acct}, err
 	}
-	return res.RateLimits.usage(), nil
+	u := res.RateLimits.usage()
+	u.Account = acct
+	return u, nil
 }
 
-func (m *Manager) observeRateLimits(params json.RawMessage) {
+func (m *Manager) observeAccount(method string, params json.RawMessage) {
+	if method != "account/rateLimits/updated" {
+		return
+	}
 	var p struct {
 		RateLimits rateLimitSnapshot `json:"rateLimits"`
 	}

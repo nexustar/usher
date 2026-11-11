@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nexustar/usher/pkg/backend"
@@ -19,8 +21,8 @@ const usageProbeTimeout = 20 * time.Second
 
 var usageWindows = map[string]int{"five_hour": 300, "seven_day": 10080}
 
-// Usage probes with a throwaway process asked get_usage before any turn: no
-// tokens, no transcript.
+// Usage probes the sign-in, then the limits with a throwaway process asked
+// get_usage before any turn: no tokens, no transcript.
 func (m *Manager) Usage(ctx context.Context, refresh bool) (backend.Usage, error) {
 	if _, err := exec.LookPath(m.bin); err != nil {
 		return backend.Usage{}, backend.ErrNoUsage
@@ -31,6 +33,44 @@ func (m *Manager) Usage(ctx context.Context, refresh bool) (backend.Usage, error
 func (m *Manager) probeUsage(ctx context.Context) (backend.Usage, error) {
 	ctx, cancel := context.WithTimeout(ctx, usageProbeTimeout)
 	defer cancel()
+	acct, err := m.account(ctx)
+	if err != nil {
+		return backend.Usage{}, err
+	}
+	// Signed out or on an API key: no subscription limits to ask for.
+	if !acct.SignedIn || acct.Method != "claude.ai" {
+		return backend.Usage{Account: acct, Windows: []backend.UsageWindow{}}, nil
+	}
+	u, err := m.limits(ctx)
+	u.Account = acct
+	return u, err
+}
+
+// account reads `claude auth status`, which answers from local credentials.
+func (m *Manager) account(ctx context.Context) (*backend.Account, error) {
+	cmd := exec.CommandContext(ctx, m.bin, "auth", "status", "--json")
+	cmd.Dir = os.TempDir()
+	cmd.Env = scrubEnv("")
+	out, err := cmd.Output()
+	var s struct {
+		LoggedIn         bool      `json:"loggedIn"`
+		AuthMethod       string    `json:"authMethod"`
+		Email            string    `json:"email"`
+		SubscriptionType string    `json:"subscriptionType"`
+		LoginExpiresAt   time.Time `json:"loginExpiresAt"`
+	}
+	// It exits non-zero when signed out, still printing the JSON.
+	if jerr := json.Unmarshal(out, &s); jerr != nil {
+		if err == nil {
+			err = jerr
+		}
+		return nil, fmt.Errorf("claude auth status: %w", err)
+	}
+	return &backend.Account{SignedIn: s.LoggedIn, Method: s.AuthMethod, Email: s.Email, Plan: s.SubscriptionType, ExpiresAt: s.LoginExpiresAt}, nil
+}
+
+// limits asks a throwaway process get_usage before any turn.
+func (m *Manager) limits(ctx context.Context) (backend.Usage, error) {
 	// No hooks or MCP servers.
 	cmd := exec.CommandContext(context.Background(), m.bin,
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
@@ -116,6 +156,11 @@ func parseUsage(raw json.RawMessage) (backend.Usage, error) {
 		RateLimits       struct {
 			FiveHour *claudeWindow `json:"five_hour"`
 			SevenDay *claudeWindow `json:"seven_day"`
+			// Weekly caps on one model, e.g. Fable, alongside the overall one.
+			ModelScoped []struct {
+				DisplayName string `json:"display_name"`
+				claudeWindow
+			} `json:"model_scoped"`
 		} `json:"rate_limits"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -127,7 +172,14 @@ func parseUsage(raw json.RawMessage) (backend.Usage, error) {
 			u.Windows = append(u.Windows, backend.UsageWindow{Minutes: minutes, UsedPercent: w.Utilization, ResetsAt: w.ResetsAt})
 		}
 	}
-	slices.SortFunc(u.Windows, func(a, b backend.UsageWindow) int { return a.Minutes - b.Minutes })
+	for _, w := range body.RateLimits.ModelScoped {
+		if w.DisplayName != "" {
+			u.Windows = append(u.Windows, backend.UsageWindow{Minutes: 10080, Model: w.DisplayName, UsedPercent: w.Utilization, ResetsAt: w.ResetsAt})
+		}
+	}
+	slices.SortFunc(u.Windows, func(a, b backend.UsageWindow) int {
+		return cmp.Or(a.Minutes-b.Minutes, strings.Compare(a.Model, b.Model))
+	})
 	return u, nil
 }
 

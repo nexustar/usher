@@ -566,6 +566,21 @@ func (s *Sender) Usage(ctx context.Context, refresh bool) (backend.Usage, error)
 	return backend.Usage{}, errors.New("sender has no headless backend")
 }
 
+// login is the headless backend's LoginProvider.
+func (s *Sender) login() backend.LoginProvider {
+	if s.app != nil {
+		return s.app
+	}
+	return s.claude
+}
+
+func (s *Sender) StartLogin(ctx context.Context) (backend.Login, error) {
+	return s.login().StartLogin(ctx)
+}
+func (s *Sender) SubmitLoginCode(code string) error { return s.login().SubmitLoginCode(code) }
+func (s *Sender) LoginStatus() backend.Login        { return s.login().LoginStatus() }
+func (s *Sender) CancelLogin()                      { s.login().CancelLogin() }
+
 // LiveSessions lists the sessions with a live backend worker.
 func (s *Sender) LiveSessions() []backend.LiveSession {
 	if s.app != nil {

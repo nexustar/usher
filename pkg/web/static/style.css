@@ -2108,6 +2108,8 @@ pre.raw-markdown {
 .settings-nav-item:hover { background: var(--bg-hover); }
 .settings-nav-item.active { background: var(--nav-selected-bg); color: var(--text); }
 .settings-pane { overflow-y: auto; min-width: 0; }
+/* Links in pane prose read as in a transcript (.content a). */
+.settings-pane a { color: var(--accent); text-decoration: underline; }
 
 /* ----- Generic pane content --------------------------------------------- */
 .settings-section { padding: 1.25rem 1.5rem; }
@@ -2157,9 +2159,38 @@ pre.raw-markdown {
 .settings-row:has(> .settings-row-action[hidden]) .settings-row-note { display: block; }
 
 /* ----- Usage pane ------------------------------------------------------- */
+/* One card per backend account: identity and sign-in on top, then its limits
+ * or the sign-in in progress. */
+.usage-card {
+  padding: 0 1rem;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  margin-bottom: 0.75rem;
+}
+.usage-name { font-weight: 600; }
+.usage-plan {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--font-meta);
+  font-weight: normal;
+  vertical-align: 0.1em;
+}
+.usage-account { color: var(--text); overflow-wrap: anywhere; }
+.usage-soon { color: var(--danger-text); }
+.usage-card > .usage-error { margin: 0.6rem 0; }
+.usage-updated {
+  margin: 0;
+  padding: 0.5rem 0;
+  color: var(--text-faint);
+  font-size: var(--font-meta);
+}
 .usage-meter { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
 .usage-bar {
-  width: 9rem;
+  flex: 1 0 9rem;
   height: 0.4rem;
   border-radius: 999px;
   background: var(--border-muted);
@@ -2168,7 +2199,36 @@ pre.raw-markdown {
 .usage-bar > span { display: block; height: 100%; background: var(--accent); }
 .usage-meter.high .usage-bar > span { background: var(--danger); }
 .usage-pct { min-width: 2.5rem; text-align: right; font-variant-numeric: tabular-nums; }
-.usage-error { margin: 0.5rem 0 0; color: var(--danger-text); }
+.usage-error { margin: 0.5rem 0 0; color: var(--danger-text); overflow-wrap: anywhere; }
+.usage-login { padding: 0.7rem 0 0.9rem; overflow-wrap: anywhere; }
+.usage-login-code {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--inline-code-bg);
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+.usage-login-code-row { display: flex; align-items: center; gap: 0.25rem; margin-top: 0.5rem; }
+.usage-login-code-row .usage-login-code { margin-top: 0; }
+.usage-copy {
+  display: inline-flex;
+  padding: 0.35rem; /* doubles as the touch target */
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.usage-copy:hover { color: var(--text); background: var(--bg-hover); }
+.usage-copy .icon { width: 1rem; height: 1rem; }
+.usage-copy .icon-check,
+.usage-copy.copied .icon-copy { display: none; }
+.usage-copy.copied .icon-check { display: block; }
+.usage-copy.copied { color: var(--accent); }
+.usage-login-form { display: flex; gap: 0.5rem; max-width: 36rem; margin-top: 0.6rem; }
+.usage-login-form .settings-row-action { width: auto; min-width: 0; }
 
 /* ----- Updates pane ----------------------------------------------------- */
 .update-output {
@@ -2257,7 +2317,8 @@ pre.raw-markdown {
 }
 .cfg-form input,
 .cfg-form select,
-.cfg-form textarea {
+.cfg-form textarea,
+.usage-login-form input {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--border);

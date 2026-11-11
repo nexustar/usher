@@ -15,7 +15,7 @@
 // column is visible is left entirely to CSS — no viewport branching here, so
 // there is nothing to re-run on resize or rotate.
 
-import { esc, getLastSessions, recentCwds, fetchBackends, formatArgs, parseArgs, APPROVALS } from './state.js';
+import { esc, getLastSessions, recentCwds, fetchBackends, formatArgs, parseArgs, APPROVALS, copyText } from './state.js';
 import { bindPushToggle } from './push.js';
 import { attachCwdPicker, icon } from './widgets.js';
 
@@ -28,7 +28,7 @@ const PANES = [
   {id: 'general', label: 'General', render: renderGeneralPane},
   {id: 'agents', label: 'Agents', render: renderAgentsPane},
   {id: 'scheduled', label: 'Scheduled', render: renderScheduledPane},
-  {id: 'usage', label: 'Usage', render: renderUsagePane},
+  {id: 'subscriptions', label: 'Subscriptions', render: renderUsagePane},
   {id: 'updates', label: 'Updates', render: renderUpdatesPane},
 ];
 
@@ -150,12 +150,12 @@ function renderGeneralPane(host) {
 // Opening reads the server's cache; only Refresh starts a CLI process.
 function renderUsagePane(host) {
   host.innerHTML = `
-    <div id="usage-body"><div class="settings-section"><p class="muted">Loading…</p></div></div>
     <div class="settings-section">
+      <div id="usage-body"><p class="muted">Loading…</p></div>
       <div class="settings-row">
         <div class="settings-row-text">
-          <span class="settings-row-label">Subscription limits</span>
-          <p id="usage-updated" class="settings-row-hint">Refresh asks each agent CLI.</p>
+          <span class="settings-row-label">Usage limits</span>
+          <p class="settings-row-hint">Refresh asks each agent CLI.</p>
         </div>
         <button id="usage-refresh" class="settings-row-action" type="button">Refresh</button>
       </div>
@@ -183,44 +183,121 @@ function renderUsagePane(host) {
   });
   const button = document.getElementById('usage-refresh');
   button.addEventListener('click', () => loadUsage(button, true));
+  const body = document.getElementById('usage-body');
+  body.addEventListener('click', e => {
+    const start = e.target.closest('[data-login-start]');
+    const cancel = e.target.closest('[data-login-cancel]');
+    if (start) loginRequest(start.dataset.loginStart, 'POST', '', button);
+    const copy = e.target.closest('[data-copy]');
+    if (copy) copyText(copy.dataset.copy).then(ok => {
+      if (!ok) return;
+      copy.classList.add('copied');
+      setTimeout(() => copy.classList.remove('copied'), 1200);
+    });
+    const check = e.target.closest('[data-usage-check]');
+    if (check) loadUsage(button, true, check.dataset.usageCheck);
+    if (cancel) loginRequest(cancel.dataset.loginCancel, 'DELETE', '', button);
+  });
+  body.addEventListener('submit', e => {
+    const form = e.target.closest('[data-login-code]');
+    if (!form) return;
+    e.preventDefault();
+    loginRequest(form.dataset.loginCode, 'POST', '/code', button, {code: form.elements.code.value});
+  });
+  usageHTML = '';
   loadUsage(button, false);
 }
 
-async function loadUsage(button, refresh) {
+async function loginRequest(name, method, path, button, body) {
+  try {
+    await fetch(`/api/v1/backends/${encodeURIComponent(name)}/login${path}`, {
+      method,
+      headers: body ? {'Content-Type': 'application/json'} : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch { /* the reload below shows what happened */ }
+  loadUsage(button, false);
+}
+
+let usageHTML = '';
+let usageTimer = 0;
+
+// only, with refresh, probes that one backend.
+async function loadUsage(button, refresh, only) {
+  clearTimeout(usageTimer);
   button.disabled = true;
   let list = null;
+  const query = refresh ? '?refresh=1' + (only ? '&backend=' + encodeURIComponent(only) : '') : '';
   try {
-    const res = await fetch('/api/v1/usage' + (refresh ? '?refresh=1' : ''));
+    const res = await fetch('/api/v1/usage' + query);
     if (res.ok) list = (await res.json()).backends || [];
   } catch { /* shown below */ }
   button.disabled = false;
   const body = document.getElementById('usage-body');
   if (!body) return; // the pane was left meanwhile
-  if (!list) {
-    body.innerHTML = `<div class="settings-section"><p class="usage-error">Could not load usage.</p></div>`;
-    return;
+  // A finished sign-in is cleared and its new account's limits fetched.
+  const signedIn = (list || []).filter(b => b.login?.state === 'done');
+  if (signedIn.length) {
+    await Promise.all(signedIn.map(b => fetch(`/api/v1/backends/${encodeURIComponent(b.name)}/login`, {method: 'DELETE'}).catch(() => {})));
+    return loadUsage(button, true, signedIn.length === 1 ? signedIn[0].name : '');
   }
-  if (!list.length) {
-    body.innerHTML = `<div class="settings-section"><p class="muted">No backend reports subscription limits.</p></div>`;
-    return;
+  const html = !list ? `<p class="usage-error">Could not load usage.</p>`
+    : list.length ? list.map(usageCardHTML).join('')
+    : `<p class="muted">No backend reports subscription limits.</p>`;
+  // Polled during a sign-in; an unchanged rewrite would wipe a half-typed code.
+  if (html !== usageHTML) {
+    body.innerHTML = html;
+    usageHTML = html;
   }
-  body.innerHTML = list.map(usageSectionHTML).join('');
-  const times = list.map(b => b.usage && Date.parse(b.usage.updated_at)).filter(Boolean);
-  if (times.length) {
-    document.getElementById('usage-updated').textContent = 'Updated ' + new Date(Math.min(...times))
-      .toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) + '.';
+  if (!list) return;
+  if (list.some(b => b.login?.state === 'pending')) {
+    usageTimer = setTimeout(() => loadUsage(button, false), 2000);
   }
 }
 
-function usageSectionHTML(b) {
+// One card per backend: who is signed in, the way to change that, and either
+// that account's limits or the sign-in in progress.
+function usageCardHTML(b) {
+  const n = esc(b.name);
   const name = b.name.charAt(0).toUpperCase() + b.name.slice(1);
-  const plan = b.usage?.plan ? ` · ${b.usage.plan}` : '';
+  const pending = b.login?.state === 'pending';
+  // Who is signed in comes from the CLI's own status check; without one, limits
+  // a live session reported still show the account works.
+  const acct = b.usage?.account;
+  const known = acct || b.usage;
+  const signedIn = acct ? acct.signed_in : Boolean(b.usage);
+  const subscribed = !acct || ['claude.ai', 'chatgpt'].includes(acct.method);
+  const plan = signedIn && subscribed && !pending ? acct?.plan || b.usage?.plan : '';
+  // The account itself reads as text; a bare state stays a hint.
+  let state = acct?.email || 'Signed in';
+  if (!subscribed) state = 'Signed in without a subscription';
+  if (!signedIn) state = 'Signed out';
+  if (!known) state = b.error ? 'Could not check' : 'Not checked';
+  if (pending) state = 'Signing in…';
+  const identity = state === acct?.email;
+  const errors = b.login?.error ? `<p class="settings-row-hint usage-error">Sign-in failed: ${esc(b.login.error)}</p>` : '';
+  // Each backend is checked on its own, or updated by a live session.
+  const at = Date.parse(b.usage?.updated_at);
+  const until = acct?.signed_in ? Date.parse(acct.expires_at) : NaN;
+  const left = until - Date.now();
+  const soon = left < 7 * 86400000;
+  // A far expiry needs only its day; a near one is a warning with the time.
+  const day = new Date(until).toLocaleDateString(undefined, {dateStyle: 'medium'});
+  const expiry = left <= 0 ? `expired ${day}` : `expires ${soon ? shortTime(until) : day}`;
+  const expires = Number.isNaN(until) || pending ? ''
+    : `<p class="settings-row-hint${soon ? ' usage-soon' : ''}" title="${esc(new Date(until).toLocaleString())}">Sign-in ${esc(expiry)}</p>`;
+  // About the limits below, so it trails them rather than crowd the account.
+  const updated = Number.isNaN(at) || pending ? ''
+    : `<p class="usage-updated" title="${esc(new Date(at).toLocaleString())}">Updated ${esc(shortTime(at))}</p>`;
+  // Unknown until checked: offering to sign in would presume signed out.
+  const unchecked = !pending && !known;
+  const action = pending ? 'Cancel' : b.login?.error ? 'Try again' : signedIn ? 'Switch account' : 'Sign in';
   const windows = b.usage?.windows || [];
   let rows = windows.map(w => {
     const pct = Math.max(0, Math.min(100, Math.round(w.used_percent)));
     return `<div class="settings-row">
       <div class="settings-row-text">
-        <span class="settings-row-label">${esc(windowLabel(w.window_minutes))}</span>
+        <span class="settings-row-label">${esc(windowLabel(w.window_minutes, w.model))}</span>
         <p class="settings-row-hint">${esc(resetText(w.resets_at))}</p>
       </div>
       <div class="usage-meter${pct >= 90 ? ' high' : ''}">
@@ -229,20 +306,62 @@ function usageSectionHTML(b) {
       </div>
     </div>`;
   }).join('');
-  if (!b.usage && !b.error) {
-    rows = `<p class="muted">Not checked yet.</p>`;
-  } else if (b.usage && !windows.length && !b.error) {
-    rows = `<p class="muted">No subscription limits for this login.</p>`;
+  if (signedIn && known && !windows.length && !b.error) {
+    rows = `<div class="settings-row"><span class="muted">No subscription limits for this account.</span></div>`;
   }
-  if (b.error) rows += `<p class="usage-error">${esc(b.error)}</p>`;
-  return `<div class="settings-section"><h2>${esc(name + plan)}</h2>${rows}</div>`;
+  // A failed check concerns the limits, not who is signed in.
+  if (b.error && !pending) rows += `<p class="usage-error">${esc(b.error)}</p>`;
+  return `<div class="usage-card">
+      <div class="settings-row">
+        <div class="settings-row-text">
+          <span class="settings-row-label usage-name">${esc(name)}${plan ? `<span class="usage-plan">${esc(plan.charAt(0).toUpperCase() + plan.slice(1))}</span>` : ''}</span>
+          <p class="settings-row-hint${identity ? ' usage-account' : ''}">${esc(state)}</p>
+          ${expires}
+          ${errors}
+        </div>
+        ${unchecked
+          ? `<button class="settings-row-action" type="button" data-usage-check="${n}">Check</button>`
+          : `<button class="settings-row-action" type="button" data-login-${pending ? 'cancel' : 'start'}="${n}">${action}</button>`}
+      </div>
+      ${pending ? loginHTML(b) : rows}
+      ${updated}
+    </div>`;
 }
 
-function windowLabel(minutes) {
-  if (minutes === 10080) return 'Weekly limit';
-  if (minutes % 1440 === 0) return `${minutes / 1440}-day limit`;
-  if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
-  return `${minutes}-minute limit`;
+// Message timestamps without the seconds, and without the date when it is today.
+function shortTime(at) {
+  const d = new Date(at);
+  const time = {hour: 'numeric', minute: '2-digit'};
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString(undefined, time)
+    : d.toLocaleString(undefined, {weekday: 'short', month: 'short', day: 'numeric', ...time});
+}
+
+function loginHTML(b) {
+  const l = b.login;
+  // Codex's short URL may be typed on another device; Claude's is a long one-off.
+  const link = `<a href="${esc(l.url)}" target="_blank" rel="noopener">${l.user_code ? esc(l.url) : 'the sign-in page'}</a>`;
+  const steps = l.user_code
+    ? `<p class="settings-row-hint">Open ${link} and enter this code:</p>
+       <span class="usage-login-code-row">
+         <code class="usage-login-code">${esc(l.user_code)}</code>
+         <button type="button" class="usage-copy" data-copy="${esc(l.user_code)}" aria-label="Copy code">${icon('copy')}${icon('check')}</button>
+       </span>
+       <p class="settings-row-hint">Waiting for you to finish in the browser…</p>`
+    : `<p class="settings-row-hint">Open ${link}, sign in, then paste the code it shows.</p>`;
+  const form = l.needs_code
+    ? `<form class="usage-login-form" data-login-code="${esc(b.name)}">
+        <input name="code" autocomplete="off" spellcheck="false" placeholder="Code" required>
+        <button class="settings-row-action" type="submit">Submit</button>
+      </form>`
+    : '';
+  return `<div class="usage-login">${steps}${form}</div>`;
+}
+
+function windowLabel(minutes, model) {
+  const length = minutes === 10080 ? 'Weekly'
+    : minutes % 1440 === 0 ? `${minutes / 1440}-day`
+    : minutes % 60 === 0 ? `${minutes / 60}-hour` : `${minutes}-minute`;
+  return `${length} limit${model ? ` (${model})` : ''}`;
 }
 
 function resetText(resetsAt) {

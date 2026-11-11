@@ -1839,6 +1839,46 @@ func (r *Router) Usage(ctx context.Context, backendName string, refresh bool) (u
 	return u, true, err
 }
 
+func (r *Router) loginProvider(backendName string) (backendpkg.LoginProvider, error) {
+	if p, ok := r.backends[backendName].Runtime.(backendpkg.LoginProvider); ok {
+		return p, nil
+	}
+	return nil, fmt.Errorf("%w: backend %q cannot sign in", ErrBackendUnavailable, backendName)
+}
+
+// StartLogin replaces any sign-in already in progress for the backend.
+func (r *Router) StartLogin(ctx context.Context, backendName string) (backendpkg.Login, error) {
+	p, err := r.loginProvider(backendName)
+	if err != nil {
+		return backendpkg.Login{}, err
+	}
+	return p.StartLogin(ctx)
+}
+
+func (r *Router) SubmitLoginCode(backendName, code string) error {
+	p, err := r.loginProvider(backendName)
+	if err != nil {
+		return err
+	}
+	return p.SubmitLoginCode(code)
+}
+
+func (r *Router) LoginStatus(backendName string) backendpkg.Login {
+	if p, err := r.loginProvider(backendName); err == nil {
+		return p.LoginStatus()
+	}
+	return backendpkg.Login{}
+}
+
+func (r *Router) CancelLogin(backendName string) error {
+	p, err := r.loginProvider(backendName)
+	if err != nil {
+		return err
+	}
+	p.CancelLogin()
+	return nil
+}
+
 // checkApproval accepts any known approval on a backend that does not list.
 func (r *Router) checkApproval(backendName, approval string) error {
 	approvals := r.Approvals(backendName)

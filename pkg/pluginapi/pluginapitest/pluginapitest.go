@@ -434,6 +434,13 @@ func (f *FakeRouter) Usage(context.Context, string, bool) (backend.Usage, bool, 
 	return backend.Usage{}, false, nil
 }
 
+func (f *FakeRouter) StartLogin(context.Context, string) (backend.Login, error) {
+	return backend.Login{}, nil
+}
+func (f *FakeRouter) SubmitLoginCode(string, string) error { return nil }
+func (f *FakeRouter) LoginStatus(string) backend.Login     { return backend.Login{} }
+func (f *FakeRouter) CancelLogin(string) error             { return nil }
+
 func (f *FakeRouter) DefaultEffort(context.Context, string, string) string     { return "" }
 func (f *FakeRouter) SetRuntime(context.Context, string, string, string) error { return nil }
 func (f *FakeRouter) DeleteSession(string) error                               { return nil }

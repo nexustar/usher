@@ -67,6 +67,10 @@ type Router interface {
 	Writable(backendName string) bool
 	Models(ctx context.Context, backendName string) ([]backend.Model, error)
 	Usage(ctx context.Context, backendName string, refresh bool) (backend.Usage, bool, error)
+	StartLogin(ctx context.Context, backendName string) (backend.Login, error)
+	SubmitLoginCode(backendName, code string) error
+	LoginStatus(backendName string) backend.Login
+	CancelLogin(backendName string) error
 	SearchSessionTranscript(id, query string, maxHits, contextChars int) ([]core.TranscriptSearchHit, bool, error)
 	SearchAllSessions(query string, maxSessions, contextChars int) ([]core.SessionSearchResult, bool, error)
 	ListPendingInteractions() []interaction.Pending
@@ -101,6 +105,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	handle("GET /info", s.handleInfo)
 	handle("GET /backends", s.handleBackends)
 	handle("GET /usage", s.handleUsage)
+	handle("POST /backends/{name}/login", s.handleStartLogin)
+	handle("POST /backends/{name}/login/code", s.handleLoginCode)
+	handle("DELETE /backends/{name}/login", s.handleCancelLogin)
 
 	handle("GET /sessions", s.handleListSessions)
 	handle("POST /sessions", s.handleCreateSession)

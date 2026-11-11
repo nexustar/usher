@@ -195,6 +195,7 @@ type Manager struct {
 	// under it; effort is not recorded and falls back to the model's default.
 	runtimes map[string]Runtime
 	usage    backend.UsageCache
+	login    backend.LoginRunner
 }
 
 // Runtime is a model and effort switched to after a session started.

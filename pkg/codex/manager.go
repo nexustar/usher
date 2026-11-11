@@ -50,6 +50,7 @@ type Manager struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	usage    backend.UsageCache
+	login    backend.LoginRunner
 }
 
 type runtimeSwitch struct{ model, effort, approval string }
@@ -187,7 +188,7 @@ func (m *Manager) newClient(id, instructions string, extra []string, router bool
 		}
 	}
 	c := New(m.bin, m.interactions, sandbox, config, m.env, args, logger)
-	c.onRateLimits = m.observeRateLimits
+	c.onAccount = m.observeAccount
 	return c
 }
 
