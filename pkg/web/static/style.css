@@ -2038,6 +2038,8 @@ pre.raw-markdown {
   overflow: hidden;
 }
 .settings-dialog::backdrop { background: var(--modal-overlay); }
+/* Opening focuses the dialog itself (tabindex=-1), which needs no ring. */
+.settings-dialog:focus { outline: none; }
 .settings-dialog-header {
   display: flex;
   align-items: center;
@@ -2249,12 +2251,16 @@ pre.raw-markdown {
   gap: 1.5rem;
   padding: 1.25rem 1.5rem;
   align-items: stretch;
-  min-height: 100%;
+  height: 100%;
   box-sizing: border-box;
 }
+/* Side by side, each column scrolls on its own: a long form must not carry
+ * the list away. */
 .cfg-pane-list {
   border-right: 1px solid var(--border-muted);
   padding-right: 1rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 /* Caption for the list column, shown whether or not any rows exist. */
 .cfg-intro {
@@ -2262,7 +2268,7 @@ pre.raw-markdown {
   color: var(--text-faint);
   line-height: 1.5;
 }
-.cfg-pane-editor { display: flex; min-height: 0; }
+.cfg-pane-editor { display: flex; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 /* Caption left, "+ new" hard right. Top-aligned because the caption wraps in
  * this column, and a centred button would drift away from its first line. */
 .cfg-pane-heading {
@@ -2584,15 +2590,20 @@ pre.raw-markdown {
  * keeps ~30rem. Below that the item list stacks above it and the pane is two
  * columns again. */
 @media (max-width: 1100px) {
+  /* Stacked, the pane scrolls as one. */
   .cfg-pane {
     grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
+    height: auto;
+    min-height: 100%;
   }
   .cfg-pane-list {
     border-right: 0;
     border-bottom: 1px solid var(--border-muted);
     padding: 0 0 1rem;
+    overflow-y: visible;
   }
+  .cfg-pane-editor { overflow-y: visible; }
 }
 
 @media (max-width: 720px) {

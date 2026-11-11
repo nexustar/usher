@@ -43,7 +43,10 @@ export async function showSessionDetails(id) {
     return;
   }
   render(sess);
-  if (!dialog.open) dialog.showModal();
+  if (!dialog.open) {
+    dialog.showModal();
+    dialog.focus(); // not the close button, which would show a focus ring unasked
+  }
 }
 
 async function loadExtensions(id) {

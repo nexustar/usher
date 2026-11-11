@@ -59,7 +59,10 @@ export function showSettings(pane, requestClose) {
     </a>`
   ).join('');
   titlePane.textContent = active.label;
-  if (!dialog.open) dialog.showModal();
+  if (!dialog.open) {
+    dialog.showModal();
+    dialog.focus(); // not the close button, which would show a focus ring unasked
+  }
   // The pane is rendered even while the narrow layout is showing the list, so
   // drilling in is instant and never refetches. Backing out to the list keeps
   // the current pane rather than resetting to General, so open edits survive.
@@ -155,7 +158,6 @@ function renderUsagePane(host) {
       <div class="settings-row">
         <div class="settings-row-text">
           <span class="settings-row-label">Usage limits</span>
-          <p class="settings-row-hint">Refresh asks each agent CLI.</p>
         </div>
         <button id="usage-refresh" class="settings-row-action" type="button">Refresh</button>
       </div>
@@ -713,7 +715,7 @@ async function renderAgentsPane(host) {
     <div class="cfg-pane">
       <div class="cfg-pane-list">
         <div class="cfg-pane-heading">
-          <p class="cfg-intro">Reusable defaults for new sessions. <code>default</code> is used when nothing else is asked for.</p>
+          <p class="cfg-intro">Presets for new sessions.</p>
           <button id="agent-new" type="button">+ new</button>
         </div>
         <div id="agent-list"></div>
