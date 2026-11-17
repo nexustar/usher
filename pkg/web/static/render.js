@@ -28,6 +28,17 @@ window.marked.use({
   gfm: true,
   breaks: true,
   silent: true,
+  tokenizer: {
+    // GFM autolinks only trim ASCII punctuation at the very end, so prose
+    // glued to a URL became part of it: `https://x.com/a，然后` and
+    // `https://x.com/a,然后`. End a bare URL at full-width or general
+    // punctuation, or at ASCII punctuation followed by a non-ASCII char.
+    url(src) {
+      const i = src.search(/[\u2000-\u206f\u3000-\u303f\uff00-\uffef]|[,.;:!?)'"](?=[^\x00-\x7f])/);
+      if (i <= 0) return false;
+      return window.marked.Tokenizer.prototype.url.call(this, src.slice(0, i)) || false;
+    },
+  },
   renderer: {
     code(token) {
       if (/^diff\b/.test(token.lang)) return '<pre><code>' + diffHTML(token.text) + '</code></pre>';
