@@ -11,7 +11,7 @@ import (
 	"github.com/nexustar/usher/pkg/core"
 )
 
-// StartLogin uses ChatGPT's device-code flow, which any browser can finish.
+// StartLogin uses the device-code flow, which any browser can finish.
 func (m *Manager) StartLogin(ctx context.Context) (backend.Login, error) {
 	if _, err := exec.LookPath(m.bin); err != nil {
 		return backend.Login{}, core.ErrCLINotFound

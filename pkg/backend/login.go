@@ -7,16 +7,15 @@ import (
 	"time"
 )
 
-// Login is a sign-in in progress, shown to the user to finish in any browser.
+// Login is a sign-in in progress.
 type Login struct {
 	URL       string `json:"url,omitempty"`
 	UserCode  string `json:"user_code,omitempty"`  // to enter at URL
 	NeedsCode bool   `json:"needs_code,omitempty"` // the page shows a code to paste back
-	State     string `json:"state,omitempty"`      // pending, done or failed; empty when none
+	State     string `json:"state,omitempty"`      // starting, pending, done or failed; empty when none
 	Error     string `json:"error,omitempty"`
 }
 
-// LoginProvider signs the backend's CLI in to a subscription.
 type LoginProvider interface {
 	StartLogin(ctx context.Context) (Login, error)
 	SubmitLoginCode(code string) error
@@ -24,8 +23,7 @@ type LoginProvider interface {
 	CancelLogin()
 }
 
-// LoginFlow is one attempt: Begin returns the prompt, Wait blocks until the
-// CLI reports the outcome, Close stops it.
+// LoginFlow is one attempt: Begin returns the prompt, Wait the outcome.
 type LoginFlow interface {
 	Begin(ctx context.Context) (Login, error)
 	Submit(code string) error
@@ -36,7 +34,7 @@ type LoginFlow interface {
 // LoginTimeout matches the device code's lifetime.
 const LoginTimeout = 15 * time.Minute
 
-// LoginRunner keeps at most one attempt per backend; a new one replaces it.
+// LoginRunner holds one attempt; a new one replaces it.
 type LoginRunner struct {
 	mu     sync.Mutex
 	cur    Login
@@ -44,17 +42,32 @@ type LoginRunner struct {
 	cancel context.CancelFunc
 }
 
+var ErrLoginCanceled = errors.New("sign-in canceled")
+
 func (r *LoginRunner) Start(ctx context.Context, f LoginFlow) (Login, error) {
 	r.Cancel()
-	l, err := f.Begin(ctx)
+	// Registered before Begin, so canceling while the CLI starts stops it too.
+	bctx, bcancel := context.WithCancel(ctx)
+	r.mu.Lock()
+	r.cur, r.flow, r.cancel = Login{State: "starting"}, f, bcancel
+	r.mu.Unlock()
+	l, err := f.Begin(bctx)
+	bcancel()
+	r.mu.Lock()
+	if r.flow != f {
+		r.mu.Unlock()
+		f.Close()
+		return Login{}, ErrLoginCanceled
+	}
 	if err != nil {
+		r.cur, r.flow, r.cancel = Login{State: "failed", Error: err.Error()}, nil, nil
+		r.mu.Unlock()
 		f.Close()
 		return Login{}, err
 	}
 	l.State = "pending"
 	wctx, cancel := context.WithTimeout(context.Background(), LoginTimeout)
-	r.mu.Lock()
-	r.cur, r.flow, r.cancel = l, f, cancel
+	r.cur, r.cancel = l, cancel
 	r.mu.Unlock()
 	go func() {
 		err := f.Wait(wctx)
@@ -79,10 +92,10 @@ func (r *LoginRunner) Start(ctx context.Context, f LoginFlow) (Login, error) {
 
 func (r *LoginRunner) Submit(code string) error {
 	r.mu.Lock()
-	f := r.flow
+	f, state := r.flow, r.cur.State
 	r.mu.Unlock()
-	if f == nil {
-		return errors.New("no sign-in in progress")
+	if f == nil || state != "pending" {
+		return errors.New("no sign-in waiting for a code")
 	}
 	return f.Submit(code)
 }

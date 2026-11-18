@@ -2237,6 +2237,8 @@ pre.raw-markdown {
 .usage-copy.copied .icon-copy { display: none; }
 .usage-copy.copied .icon-check { display: block; }
 .usage-copy.copied { color: var(--accent); }
+/* In a line of text: no taller than the line, just after the link. */
+.usage-copy-inline { padding: 0.1rem; margin-left: 0.15rem; vertical-align: -0.15em; }
 .usage-login-form { display: flex; gap: 0.5rem; max-width: 36rem; margin-top: 0.6rem; }
 .usage-login-form .settings-row-action { width: auto; min-width: 0; }
 

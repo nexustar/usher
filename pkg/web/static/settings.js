@@ -187,7 +187,7 @@ function renderUsagePane(host) {
   body.addEventListener('click', e => {
     const start = e.target.closest('[data-login-start]');
     const cancel = e.target.closest('[data-login-cancel]');
-    if (start) loginRequest(start.dataset.loginStart, 'POST', '', button);
+    if (start) startLogin(start.dataset.loginStart, button);
     const copy = e.target.closest('[data-copy]');
     if (copy) copyText(copy.dataset.copy).then(ok => {
       if (!ok) return;
@@ -208,6 +208,17 @@ function renderUsagePane(host) {
   loadUsage(button, false);
 }
 
+// The CLI takes seconds to start; offer Cancel meanwhile.
+async function startLogin(name, button) {
+  startingLogins.add(name);
+  renderUsage();
+  try {
+    await fetch(`/api/v1/backends/${encodeURIComponent(name)}/login`, {method: 'POST'});
+  } catch { /* the reload below shows what happened */ }
+  startingLogins.delete(name);
+  loadUsage(button, false);
+}
+
 async function loginRequest(name, method, path, button, body) {
   try {
     await fetch(`/api/v1/backends/${encodeURIComponent(name)}/login${path}`, {
@@ -221,6 +232,8 @@ async function loginRequest(name, method, path, button, body) {
 
 let usageHTML = '';
 let usageTimer = 0;
+let usageList = null;
+const startingLogins = new Set(); // clicked Sign in, CLI not up yet
 
 // only, with refresh, probes that one backend.
 async function loadUsage(button, refresh, only) {
@@ -243,6 +256,17 @@ async function loadUsage(button, refresh, only) {
     await Promise.all(signedIn.map(b => fetch(`/api/v1/backends/${encodeURIComponent(b.name)}/login`, {method: 'DELETE'}).catch(() => {})));
     return loadUsage(button, true, signedIn.length === 1 ? signedIn[0].name : '');
   }
+  usageList = list;
+  renderUsage();
+  if (list?.some(b => ['starting', 'pending'].includes(b.login?.state))) {
+    usageTimer = setTimeout(() => loadUsage(button, false), 2000);
+  }
+}
+
+function renderUsage() {
+  const body = document.getElementById('usage-body');
+  if (!body) return;
+  const list = usageList;
   const html = !list ? `<p class="usage-error">Could not load usage.</p>`
     : list.length ? list.map(usageCardHTML).join('')
     : `<p class="muted">No backend reports subscription limits.</p>`;
@@ -251,10 +275,6 @@ async function loadUsage(button, refresh, only) {
     body.innerHTML = html;
     usageHTML = html;
   }
-  if (!list) return;
-  if (list.some(b => b.login?.state === 'pending')) {
-    usageTimer = setTimeout(() => loadUsage(button, false), 2000);
-  }
 }
 
 // One card per backend: who is signed in, the way to change that, and either
@@ -262,7 +282,8 @@ async function loadUsage(button, refresh, only) {
 function usageCardHTML(b) {
   const n = esc(b.name);
   const name = b.name.charAt(0).toUpperCase() + b.name.slice(1);
-  const pending = b.login?.state === 'pending';
+  const starting = startingLogins.has(b.name) || b.login?.state === 'starting';
+  const pending = starting || b.login?.state === 'pending';
   // Who is signed in comes from the CLI's own status check; without one, limits
   // a live session reported still show the account works.
   const acct = b.usage?.account;
@@ -275,7 +296,7 @@ function usageCardHTML(b) {
   if (!subscribed) state = 'Signed in without a subscription';
   if (!signedIn) state = 'Signed out';
   if (!known) state = b.error ? 'Could not check' : 'Not checked';
-  if (pending) state = 'Signing in…';
+  if (pending) state = starting ? 'Starting sign-in…' : 'Signing in…';
   const identity = state === acct?.email;
   const errors = b.login?.error ? `<p class="settings-row-hint usage-error">Sign-in failed: ${esc(b.login.error)}</p>` : '';
   // Each backend is checked on its own, or updated by a live session.
@@ -293,7 +314,7 @@ function usageCardHTML(b) {
     : `<p class="usage-updated" title="${esc(new Date(at).toLocaleString())}">Updated ${esc(shortTime(at))}</p>`;
   // Unknown until checked: offering to sign in would presume signed out.
   const unchecked = !pending && !known;
-  const action = pending ? 'Cancel' : b.login?.error ? 'Try again' : signedIn ? 'Switch account' : 'Sign in';
+  const action = pending ? 'Cancel' : 'Sign in';
   const windows = b.usage?.windows || [];
   let rows = windows.map(w => {
     const pct = Math.max(0, Math.min(100, Math.round(w.used_percent)));
@@ -325,7 +346,7 @@ function usageCardHTML(b) {
           ? `<button class="settings-row-action" type="button" data-usage-check="${n}">Check</button>`
           : `<button class="settings-row-action" type="button" data-login-${pending ? 'cancel' : 'start'}="${n}">${action}</button>`}
       </div>
-      ${pending ? loginHTML(b) : rows}
+      ${starting ? '' : pending ? loginHTML(b) : rows}
       ${updated}
     </div>`;
 }
@@ -338,15 +359,20 @@ function shortTime(at) {
     : d.toLocaleString(undefined, {weekday: 'short', month: 'short', day: 'numeric', ...time});
 }
 
+function copyButtonHTML(text, label, cls = '') {
+  return `<button type="button" class="usage-icon-btn usage-copy${cls}" data-copy="${esc(text)}" aria-label="${label}" title="${label}">${icon('copy')}${icon('check')}</button>`;
+}
+
 function loginHTML(b) {
   const l = b.login;
   // Codex's short URL may be typed on another device; Claude's is a long one-off.
-  const link = `<a href="${esc(l.url)}" target="_blank" rel="noopener">${l.user_code ? esc(l.url) : 'the sign-in page'}</a>`;
+  const link = `<a href="${esc(l.url)}" target="_blank" rel="noopener">${l.user_code ? esc(l.url) : 'the sign-in page'}</a>`
+    + copyButtonHTML(l.url, 'Copy link', ' usage-copy-inline');
   const steps = l.user_code
     ? `<p class="settings-row-hint">Open ${link} and enter this code:</p>
        <span class="usage-login-code-row">
          <code class="usage-login-code">${esc(l.user_code)}</code>
-         <button type="button" class="usage-icon-btn usage-copy" data-copy="${esc(l.user_code)}" aria-label="Copy code">${icon('copy')}${icon('check')}</button>
+         ${copyButtonHTML(l.user_code, 'Copy code')}
        </span>
        <p class="settings-row-hint">Waiting for you to finish in the browser…</p>`
     : `<p class="settings-row-hint">Open ${link}, sign in, then paste the code it shows.</p>`;

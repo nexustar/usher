@@ -19,8 +19,8 @@ import (
 	"github.com/nexustar/usher/pkg/procutil"
 )
 
-// The URL `claude auth login` prints redirects to a page showing a code to
-// paste back, so it works from a browser on any machine.
+// The printed URL ends on a page showing a code to paste back, so any
+// browser can finish it.
 var loginURL = regexp.MustCompile(`https://\S*oauth/authorize\S*`)
 
 func (m *Manager) StartLogin(ctx context.Context) (backend.Login, error) {
@@ -41,9 +41,9 @@ type loginFlow struct {
 	cmd    *exec.Cmd
 	in     io.WriteCloser
 	exited chan struct{}
-	err    error // cmd.Wait's, once exited closes
+	err    error // set before exited closes
 	mu     sync.Mutex
-	tail   []string // last output lines, for the failure message
+	tail   []string // last output lines
 }
 
 func (f *loginFlow) Begin(ctx context.Context) (backend.Login, error) {
