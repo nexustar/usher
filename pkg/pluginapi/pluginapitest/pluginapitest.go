@@ -434,6 +434,12 @@ func (f *FakeRouter) Usage(context.Context, string, bool) (backend.Usage, bool, 
 	return backend.Usage{}, false, nil
 }
 
+func (f *FakeRouter) StartMCPLogin(context.Context, string, string) (string, error) {
+	return "", nil
+}
+func (f *FakeRouter) FinishMCPLogin(context.Context, string, string, string) error { return nil }
+func (f *FakeRouter) ReconnectMCP(context.Context, string, string) error           { return nil }
+
 func (f *FakeRouter) StartLogin(context.Context, string) (backend.Login, error) {
 	return backend.Login{}, nil
 }

@@ -645,6 +645,27 @@ func (s *Sender) Extensions(ctx context.Context, sessionID, cwd string) (backend
 	return s.app.ExtensionsIfLive(ctx, sessionID, cwd)
 }
 
+func (s *Sender) StartMCPLogin(ctx context.Context, sessionID, server string) (string, error) {
+	if s.claude != nil {
+		return s.claude.StartMCPLogin(ctx, sessionID, server)
+	}
+	return s.app.StartMCPLogin(ctx, sessionID, server)
+}
+
+func (s *Sender) FinishMCPLogin(ctx context.Context, sessionID, server, callbackURL string) error {
+	if s.claude != nil {
+		return s.claude.FinishMCPLogin(ctx, sessionID, server, callbackURL)
+	}
+	return s.app.FinishMCPLogin(ctx, sessionID, server, callbackURL)
+}
+
+func (s *Sender) ReconnectMCP(ctx context.Context, sessionID, server string) error {
+	if s.claude != nil {
+		return s.claude.ReconnectMCP(ctx, sessionID, server)
+	}
+	return s.app.ReconnectMCP(ctx, sessionID, server)
+}
+
 // Steer adds text to the session's running turn; only Codex can.
 func (s *Sender) Steer(ctx context.Context, sessionID, text string) error {
 	if s.app == nil {

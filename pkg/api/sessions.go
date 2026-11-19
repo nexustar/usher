@@ -416,6 +416,49 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Commands{Source: sess.Backend, Available: catalog.Available, Commands: catalog.Items})
 }
 
+// handleStartMCPLogin answers {url}, the server's sign-in page.
+func (s *Server) handleStartMCPLogin(w http.ResponseWriter, r *http.Request) {
+	url, err := s.Router.StartMCPLogin(r.Context(), r.PathValue("id"), r.PathValue("server"))
+	if err != nil {
+		WriteError(w, mcpLoginStatus(err), err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, struct {
+		URL string `json:"url"`
+	}{url})
+}
+
+// handleFinishMCPLogin takes {callback_url}, empty when the browser reached
+// the CLI's callback itself.
+func (s *Server) handleFinishMCPLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CallbackURL string `json:"callback_url"`
+	}
+	if !Decode(w, r, &body) {
+		return
+	}
+	if err := s.Router.FinishMCPLogin(r.Context(), r.PathValue("id"), r.PathValue("server"), body.CallbackURL); err != nil {
+		WriteError(w, mcpLoginStatus(err), err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleReconnectMCP(w http.ResponseWriter, r *http.Request) {
+	if err := s.Router.ReconnectMCP(r.Context(), r.PathValue("id"), r.PathValue("server")); err != nil {
+		WriteError(w, mcpLoginStatus(err), err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func mcpLoginStatus(err error) int {
+	if errors.Is(err, backend.ErrNotLive) {
+		return http.StatusConflict
+	}
+	return ErrStatus(err)
+}
+
 func (s *Server) handleExtensions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, ok := s.Router.GetSession(id)

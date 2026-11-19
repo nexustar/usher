@@ -286,6 +286,40 @@ func (r *Router) Extensions(ctx context.Context, id, cwd string) (backendpkg.Ext
 	return ext, nil
 }
 
+func (r *Router) mcpAuthenticator(id string) (backendpkg.MCPAuthenticator, error) {
+	if a, ok := r.senderFor(id).(backendpkg.MCPAuthenticator); ok {
+		return a, nil
+	}
+	return nil, fmt.Errorf("%w: this backend cannot sign MCP servers in", ErrBackendUnavailable)
+}
+
+// StartMCPLogin returns the sign-in page for one of a live session's MCP servers.
+func (r *Router) StartMCPLogin(ctx context.Context, id, server string) (string, error) {
+	a, err := r.mcpAuthenticator(id)
+	if err != nil {
+		return "", err
+	}
+	return a.StartMCPLogin(ctx, id, server)
+}
+
+// FinishMCPLogin completes it with the address the browser landed on.
+func (r *Router) FinishMCPLogin(ctx context.Context, id, server, callbackURL string) error {
+	a, err := r.mcpAuthenticator(id)
+	if err != nil {
+		return err
+	}
+	return a.FinishMCPLogin(ctx, id, server, callbackURL)
+}
+
+// ReconnectMCP redials one of a live session's MCP servers.
+func (r *Router) ReconnectMCP(ctx context.Context, id, server string) error {
+	a, err := r.mcpAuthenticator(id)
+	if err != nil {
+		return err
+	}
+	return a.ReconnectMCP(ctx, id, server)
+}
+
 func composerKindRank(kind string) int {
 	switch kind {
 	case "command":

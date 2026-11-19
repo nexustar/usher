@@ -2578,6 +2578,19 @@ pre.raw-markdown {
   line-height: 1.5;
 }
 .details-list-wide { grid-column: 1 / -1; }
+.details-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.mcp-login-body { padding: 1.25rem 1.5rem; overflow-wrap: anywhere; }
+.mcp-login-body p { margin: 0; }
+.mcp-login-body a { color: var(--accent); }
+.mcp-login-body .err { padding: 0; }
 .details-form .cfg-form-actions button.primary:disabled {
   background: var(--border-strong);
   border-color: var(--border-strong);
