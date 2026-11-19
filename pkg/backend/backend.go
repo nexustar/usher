@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 
@@ -246,6 +247,18 @@ type Extensions struct {
 type ExtensionProvider interface {
 	Extensions(ctx context.Context, sessionID, cwd string) (Extensions, error)
 }
+
+// MCPAuthenticator signs a live session's MCP server in with OAuth. The
+// browser may be on another machine, so its final redirect to the CLI's
+// loopback callback can fail to load: the user pastes that address back, and
+// an empty one means the browser reached the callback itself.
+type MCPAuthenticator interface {
+	StartMCPLogin(ctx context.Context, sessionID, server string) (url string, err error)
+	FinishMCPLogin(ctx context.Context, sessionID, server, callbackURL string) error
+}
+
+// ErrNotLive is returned for work that needs the session's running process.
+var ErrNotLive = errors.New("session is not running")
 
 // Forker is an optional capability because backends use materially different
 // branching mechanisms and some may not support it at all. It copies the

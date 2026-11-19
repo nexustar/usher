@@ -112,6 +112,7 @@ type Client struct {
 	env          []string
 	args         []string
 	onAccount    func(method string, params json.RawMessage) // account/* notifications
+	mcpLogins    map[string]chan error                       // MCP server -> its sign-in's outcome
 }
 
 // New builds a client for one codex app-server process. args are extra binary
@@ -316,6 +317,10 @@ func (c *Client) dispatch(m rpcMessage) {
 	}
 	if len(m.ID) > 0 && m.Method != "" {
 		go c.handleServerRequest(m)
+		return
+	}
+	if m.Method == "mcpServer/oauthLogin/completed" {
+		c.finishMCPLogin(m.Params)
 		return
 	}
 	if strings.HasPrefix(m.Method, "account/") && c.onAccount != nil {

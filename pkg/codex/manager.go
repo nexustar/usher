@@ -51,6 +51,9 @@ type Manager struct {
 	stopOnce sync.Once
 	usage    backend.UsageCache
 	login    backend.LoginRunner
+	// mcpRedirects holds, per session and MCP server, the loopback
+	// callback a sign-in waits on; FinishMCPLogin fetches no other.
+	mcpRedirects map[string]string
 }
 
 type runtimeSwitch struct{ model, effort, approval string }

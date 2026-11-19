@@ -74,15 +74,96 @@ function fillExtensionRow(name, rows) {
   dt.hidden = dd.hidden = false;
 }
 
-function extensionRowHTML([name, note]) {
+// A third element is a server that can be signed in from here: its "auth"
+// starts the sign-in.
+function extensionRowHTML([name, note, login]) {
   if (note === undefined) return `<span class="details-none details-list-wide">${esc(name)}</span>`;
-  return `<span>${esc(name)}</span><span class="details-none">${esc(note)}</span>`;
+  const text = login
+    ? `needs <button type="button" class="details-link" data-mcp-login="${esc(login)}">auth</button>`
+    : esc(note);
+  return `<span>${esc(name)}</span><span class="details-none">${text}</span>`;
 }
 
 function mcpLines(servers) {
   const notes = { 'needs-auth': 'needs auth' };
-  return servers.map(s => [s.name, notes[s.status] || s.status || '']);
+  return servers.map(s => [s.name, notes[s.status] || s.status || '', s.status === 'needs-auth' ? s.name : '']);
 }
+
+// ----- MCP sign-in ----------------------------------------------------------
+
+// A dialog over Details. The browser may be on another machine, where its
+// final redirect to the CLI's localhost callback fails to load: its address is
+// pasted back here.
+const loginDialog = document.getElementById('mcp-login-dialog');
+const loginForm = document.getElementById('mcp-login-form');
+let loginServer = '';
+
+document.getElementById('mcp-login-close').addEventListener('click', () => loginDialog.close());
+
+async function mcpLoginRequest(path, payload) {
+  const res = await fetch('/api/v1/sessions/' + encodeURIComponent(body.dataset.session) +
+    '/mcp/' + encodeURIComponent(loginServer) + path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload || {}),
+  });
+  const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error?.message || 'HTTP ' + res.status);
+  return data;
+}
+
+function showLoginError(message) {
+  const el = loginForm.querySelector('.err');
+  el.textContent = message;
+  el.hidden = !message;
+}
+
+async function startMcpLogin(server) {
+  loginServer = server;
+  document.getElementById('mcp-login-title').textContent = 'Sign in to ' + server;
+  loginForm.innerHTML = '<p class="details-none">Opening sign-in…</p><p class="err" hidden></p>';
+  loginDialog.showModal();
+  loginDialog.focus();
+  let url;
+  try {
+    ({ url } = await mcpLoginRequest('/login'));
+  } catch (e) {
+    showLoginError(e.message);
+    return;
+  }
+  loginForm.innerHTML = `
+    <p>Open <a href="${esc(url)}" target="_blank" rel="noopener">the sign-in page</a> and approve.</p>
+    <label><span>If the browser then shows a page that won’t load, paste its address here.
+      If it says you’re signed in, leave this empty.</span>
+      <input name="callback" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="http://localhost:…/callback?code=…">
+    </label>
+    <p class="err" hidden></p>
+    <div class="cfg-form-actions">
+      <button type="submit" class="primary">Finish</button>
+    </div>`;
+}
+
+loginForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const finish = loginForm.querySelector('button[type="submit"]');
+  if (!finish) return;
+  finish.disabled = true;
+  showLoginError('');
+  try {
+    await mcpLoginRequest('/login/finish', {callback_url: loginForm.elements.callback.value.trim()});
+    loginDialog.close();
+    loadExtensions(body.dataset.session);
+  } catch (e) {
+    showLoginError(e.message);
+  }
+  finish.disabled = false;
+});
+
+body.addEventListener('click', event => {
+  const start = event.target.closest('[data-mcp-login]');
+  if (start) startMcpLogin(start.dataset.mcpLogin);
+});
 
 function pluginLines(plugins, failures) {
   return [
@@ -143,6 +224,7 @@ function render(sess) {
       </div>` : ''}
     </form>`;
   dirty = false;
+  body.dataset.session = sess.id;
   if (!sess.router && !sess.subagent) loadExtensions(sess.id);
   if (!editable) return;
 
